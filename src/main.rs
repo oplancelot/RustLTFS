@@ -11,7 +11,6 @@ mod tests;
 
 use crate::cli::{Cli, Commands};
 use crate::error::Result;
-use anyhow::Context;
 use tracing::{info, error};
 
 #[tokio::main]

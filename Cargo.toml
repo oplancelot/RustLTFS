@@ -50,7 +50,8 @@ winapi = { version = "0.3", features = [
     "errhandlingapi",
     "setupapi",
     "cfgmgr32",
-    "winerror"
+    "winerror",
+    "winioctl"
 ]}
 
 [dev-dependencies]
