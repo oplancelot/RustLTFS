@@ -1,0 +1,74 @@
+[package]
+name = "rust-ltfs"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "A Rust CLI tool for IBM tape direct read/write operations"
+license = "Apache-2.0"
+repository = "https://github.com/your-org/rust-ltfs"
+readme = "README.md"
+keywords = ["ltfs", "tape", "ibm", "cli", "storage"]
+categories = ["command-line-utilities", "hardware-support"]
+
+[[bin]]
+name = "rustltfs"
+path = "src/main.rs"
+
+[dependencies]
+# CLI 参数解析
+clap = { version = "4.4", features = ["derive", "color"] }
+
+# 异步运行时
+tokio = { version = "1.0", features = ["full"] }
+
+# 错误处理
+anyhow = "1.0"
+thiserror = "1.0"
+
+# 日志系统
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# 序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# 进度显示
+indicatif = "0.17"
+
+# 文件处理
+walkdir = "2.3"
+
+# Windows 系统 API
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = [
+    "winbase",
+    "fileapi",
+    "handleapi", 
+    "ioapiset",
+    "winnt",
+    "errhandlingapi",
+    "setupapi",
+    "cfgmgr32",
+    "winerror"
+]}
+
+[dev-dependencies]
+tempfile = "3.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+# 交叉编译配置
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+
+[target.x86_64-pc-windows-msvc]
+linker = "lld-link"
