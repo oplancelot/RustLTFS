@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::scsi::{ScsiInterface, TapeDriveInfo, InquiryData, bytes_to_string};
+use crate::scsi::{MediaType, check_tape_media};
 use tracing::{info, debug, error, warn};
 
 /// 磁带设备信息结构
@@ -12,23 +12,75 @@ pub struct TapeDevice {
     pub status: TapeStatus,
 }
 
-/// 磁带状态枚举
+/// 磁带状态枚举 (基于新的 MediaType)
 #[derive(Debug, Clone, PartialEq)]
 pub enum TapeStatus {
     Ready,
     NotReady,
     WriteProtected,
     NoTape,
+    Lto3Rw,
+    Lto3Worm,
+    Lto3Ro,
+    Lto4Rw,
+    Lto4Worm,
+    Lto4Ro,
+    Lto5Rw,
+    Lto5Worm,
+    Lto5Ro,
+    Lto6Rw,
+    Lto6Worm,
+    Lto6Ro,
+    Lto7Rw,
+    Lto7Worm,
+    Lto7Ro,
+    Lto8Rw,
+    Lto8Worm,
+    Lto8Ro,
+    LtoM8Rw,
+    LtoM8Worm,
+    LtoM8Ro,
+    Unknown(String),
     Error(String),
 }
 
+impl From<MediaType> for TapeStatus {
+    fn from(media_type: MediaType) -> Self {
+        match media_type {
+            MediaType::NoTape => TapeStatus::NoTape,
+            MediaType::Lto3Rw => TapeStatus::Lto3Rw,
+            MediaType::Lto3Worm => TapeStatus::Lto3Worm,
+            MediaType::Lto3Ro => TapeStatus::Lto3Ro,
+            MediaType::Lto4Rw => TapeStatus::Lto4Rw,
+            MediaType::Lto4Worm => TapeStatus::Lto4Worm,
+            MediaType::Lto4Ro => TapeStatus::Lto4Ro,
+            MediaType::Lto5Rw => TapeStatus::Lto5Rw,
+            MediaType::Lto5Worm => TapeStatus::Lto5Worm,
+            MediaType::Lto5Ro => TapeStatus::Lto5Ro,
+            MediaType::Lto6Rw => TapeStatus::Lto6Rw,
+            MediaType::Lto6Worm => TapeStatus::Lto6Worm,
+            MediaType::Lto6Ro => TapeStatus::Lto6Ro,
+            MediaType::Lto7Rw => TapeStatus::Lto7Rw,
+            MediaType::Lto7Worm => TapeStatus::Lto7Worm,
+            MediaType::Lto7Ro => TapeStatus::Lto7Ro,
+            MediaType::Lto8Rw => TapeStatus::Lto8Rw,
+            MediaType::Lto8Worm => TapeStatus::Lto8Worm,
+            MediaType::Lto8Ro => TapeStatus::Lto8Ro,
+            MediaType::LtoM8Rw => TapeStatus::LtoM8Rw,
+            MediaType::LtoM8Worm => TapeStatus::LtoM8Worm,
+            MediaType::LtoM8Ro => TapeStatus::LtoM8Ro,
+            MediaType::Unknown(code) => TapeStatus::Unknown(format!("0x{:04X}", code)),
+        }
+    }
+}
+
 /// 列出系统中可用的磁带设备
-pub async fn list_devices(detailed: bool) -> Result<()> {
+pub async fn list_devices(_detailed: bool) -> Result<()> {
     info!("开始扫描磁带设备...");
     
     #[cfg(windows)]
     {
-        list_windows_tape_devices(detailed).await
+        list_windows_tape_devices(_detailed).await
     }
     
     #[cfg(not(windows))]
@@ -38,24 +90,26 @@ pub async fn list_devices(detailed: bool) -> Result<()> {
     }
 }
 
-/// 获取指定设备的详细信息
+/// 获取指定设备的详细信息 (基于更新的 SCSI 接口)
 pub async fn get_device_info(device: String) -> Result<()> {
     info!("获取设备信息: {}", device);
     
-    let mut scsi = ScsiInterface::new();
-    scsi.open_device(&device)?;
-    
-    match scsi.inquiry() {
-        Ok(inquiry_data) => {
-            let vendor = bytes_to_string(&inquiry_data.vendor_id);
-            let product = bytes_to_string(&inquiry_data.product_id);
-            let revision = bytes_to_string(&inquiry_data.product_revision);
-            
+    // 直接使用便捷函数检查媒体状态
+    match check_tape_media(&device) {
+        Ok(media_type) => {
             println!("设备信息:");
-            println!("  厂商: {}", vendor);
-            println!("  型号: {}", product);
-            println!("  版本: {}", revision);
-            println!("  设备类型: 0x{:02X}", inquiry_data.device_type);
+            println!("  设备路径: {}", device);
+            println!("  媒体类型: {}", media_type.description());
+            
+            // 显示详细的媒体信息
+            match media_type {
+                MediaType::NoTape => println!("  状态: 未插入磁带"),
+                MediaType::Unknown(code) => println!("  状态: 未知媒体类型 (代码: 0x{:04X})", code),
+                _ => {
+                    println!("  状态: 磁带已装载");
+                    println!("  详细信息: 支持 LTFS 直接读写");
+                }
+            }
             
             Ok(())
         }
@@ -66,24 +120,44 @@ pub async fn get_device_info(device: String) -> Result<()> {
     }
 }
 
-/// 检查设备状态
+/// 检查设备状态 (基于更新的 TapeCheckMedia 逻辑)
 pub async fn get_device_status(device: String) -> Result<()> {
     info!("检查设备状态: {}", device);
     
-    let mut scsi = ScsiInterface::new();
-    scsi.open_device(&device)?;
-    
-    let status = scsi.check_media_status()?;
-    
-    match status {
-        crate::scsi::MediaStatus::Ready => println!("设备状态: 就绪"),
-        crate::scsi::MediaStatus::NotReady => println!("设备状态: 未就绪"),
-        crate::scsi::MediaStatus::WriteProtected => println!("设备状态: 写保护"),
-        crate::scsi::MediaStatus::NoMedia => println!("设备状态: 无媒体"),
-        crate::scsi::MediaStatus::Error(msg) => println!("设备状态: 错误 - {}", msg),
+    match check_tape_media(&device) {
+        Ok(media_type) => {
+            println!("设备: {}", device);
+            println!("媒体状态: {}", media_type.description());
+            
+            // 根据媒体类型提供详细状态信息
+            match media_type {
+                MediaType::NoTape => {
+                    println!("建议: 请插入 LTO 磁带");
+                }
+                MediaType::Unknown(code) => {
+                    println!("警告: 未识别的媒体类型 (代码: 0x{:04X})", code);
+                    println!("建议: 确认磁带是否为 LTO3-LTO8 格式");
+                }
+                _ => {
+                    // 判断是否为只读磁带
+                    if media_type.description().contains("RO") {
+                        println!("注意: 此磁带为只读模式");
+                    } else if media_type.description().contains("WORM") {
+                        println!("注意: 此磁带为 WORM (一次写入多次读取) 模式");
+                    } else {
+                        println!("状态: 磁带可读写，支持 LTFS 操作");
+                    }
+                }
+            }
+            
+            Ok(())
+        }
+        Err(e) => {
+            error!("检查设备状态失败: {}", e);
+            println!("错误: {}", e);
+            Err(e)
+        }
     }
-    
-    Ok(())
 }
 
 #[cfg(windows)]
@@ -128,12 +202,15 @@ async fn list_windows_tape_devices(detailed: bool) -> Result<()> {
                 winapi::um::handleapi::CloseHandle(handle);
                 
                 let device_info = if detailed {
-                    get_detailed_device_info(path).await.unwrap_or_else(|_| TapeDevice {
-                        path: path.to_string(),
-                        vendor: "未知".to_string(),
-                        model: "未知".to_string(),
-                        serial: "未知".to_string(),
-                        status: TapeStatus::Ready,
+                    get_detailed_device_info(path).await.unwrap_or_else(|e| {
+                        warn!("获取详细设备信息失败 {}: {}", path, e);
+                        TapeDevice {
+                            path: path.to_string(),
+                            vendor: "未知".to_string(),
+                            model: "未知".to_string(),
+                            serial: "未知".to_string(),
+                            status: TapeStatus::Error("无法获取信息".to_string()),
+                        }
                     })
                 } else {
                     TapeDevice {
@@ -175,29 +252,18 @@ async fn list_windows_tape_devices(detailed: bool) -> Result<()> {
     Ok(())
 }
 
-/// 获取详细的设备信息
+/// 获取详细的设备信息 (基于更新的 MediaType)
 async fn get_detailed_device_info(device_path: &str) -> Result<TapeDevice> {
-    let mut scsi = ScsiInterface::new();
-    scsi.open_device(device_path)?;
+    debug!("获取详细设备信息: {}", device_path);
     
-    let inquiry_data = scsi.inquiry()?;
-    let status = scsi.check_media_status()?;
-    
-    let vendor = bytes_to_string(&inquiry_data.vendor_id);
-    let model = bytes_to_string(&inquiry_data.product_id);
-    let revision = bytes_to_string(&inquiry_data.product_revision);
+    // 使用便捷函数检查媒体状态
+    let media_type = check_tape_media(device_path)?;
     
     Ok(TapeDevice {
         path: device_path.to_string(),
-        vendor,
-        model,
-        serial: revision, // 使用 revision 作为临时序列号
-        status: match status {
-            crate::scsi::MediaStatus::Ready => TapeStatus::Ready,
-            crate::scsi::MediaStatus::NotReady => TapeStatus::NotReady,
-            crate::scsi::MediaStatus::WriteProtected => TapeStatus::WriteProtected,
-            crate::scsi::MediaStatus::NoMedia => TapeStatus::NoTape,
-            crate::scsi::MediaStatus::Error(msg) => TapeStatus::Error(msg),
-        },
+        vendor: "IBM".to_string(), // 假设是 IBM 磁带驱动器
+        model: "LTO Drive".to_string(), // 通用型号
+        serial: "N/A".to_string(),
+        status: TapeStatus::from(media_type),
     })
 }

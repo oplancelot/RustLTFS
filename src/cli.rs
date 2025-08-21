@@ -40,7 +40,7 @@ pub enum Commands {
         force: bool,
 
         /// 验证写入数据
-        #[arg(short, long)]
+        #[arg(long)]
         verify: bool,
 
         /// 显示详细进度
@@ -77,7 +77,7 @@ pub enum Commands {
         destination: PathBuf,
 
         /// 验证读取数据
-        #[arg(short, long)]
+        #[arg(long)]
         verify: bool,
     },
 

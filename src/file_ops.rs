@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::ltfs::LtfsDirectAccess;
 use std::path::PathBuf;
-use tracing::{info, debug, warn, error};
+use tracing::{info, debug, error};
 use walkdir::WalkDir;
 use tokio::fs;
 use indicatif::{ProgressBar, ProgressStyle};
