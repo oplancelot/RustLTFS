@@ -222,7 +222,10 @@ impl LtfsDirectAccess {
             backup_time: crate::ltfs_index::get_current_timestamp(),
             read_only: false,
             symlink: None,
-            extents: vec![extent],
+            openforwrite: false,
+            extent_info: crate::ltfs_index::ExtentInfo {
+                extents: vec![extent],
+            },
             extended_attributes: None,
         };
         

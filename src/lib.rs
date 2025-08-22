@@ -21,3 +21,6 @@ pub use ltfs_index::{LtfsIndex, PathType, DirectoryEntry, File, FileExtent};
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod xml_test;
