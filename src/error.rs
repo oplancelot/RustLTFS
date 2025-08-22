@@ -4,40 +4,40 @@ pub type Result<T> = std::result::Result<T, RustLtfsError>;
 
 #[derive(Error, Debug)]
 pub enum RustLtfsError {
-    #[error("IO 错误: {0}")]
+    #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     
-    #[error("SCSI 操作错误: {0}")]
+    #[error("SCSI operation error: {0}")]
     Scsi(String),
     
-    #[error("磁带设备错误: {0}")]
+    #[error("Tape device error: {0}")]
     TapeDevice(String),
     
-    #[error("文件操作错误: {0}")]
+    #[error("File operation error: {0}")]
     FileOperation(String),
     
-    #[error("配置错误: {0}")]
+    #[error("Configuration error: {0}")]
     Config(String),
     
-    #[error("验证错误: {0}")]
+    #[error("Verification error: {0}")]
     Verification(String),
     
-    #[error("不支持的操作: {0}")]
+    #[error("Unsupported operation: {0}")]
     UnsupportedOperation(String),
     
-    #[error("系统错误: {0}")]
+    #[error("System error: {0}")]
     System(String),
     
-    #[error("权限错误: {0}")]
+    #[error("Permission error: {0}")]
     Permission(String),
     
-    #[error("网络或连接错误: {0}")]
+    #[error("Network or connection error: {0}")]
     Connection(String),
     
-    #[error("解析错误: {0}")]
+    #[error("Parse error: {0}")]
     Parse(String),
     
-    #[error("通用错误: {0}")]
+    #[error("Generic error: {0}")]
     Generic(#[from] anyhow::Error),
 }
 

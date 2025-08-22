@@ -10,80 +10,84 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
 
-    /// 启用详细输出
+    /// Enable verbose output
     #[arg(short, long, global = true)]
     pub verbose: bool,
 
-    /// 指定配置文件路径
+    /// Specify configuration file path
     #[arg(short, long, global = true)]
     pub config: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// 将文件或文件夹写入到磁带
+    /// Write files or folders to tape
     Copy {
-        /// 源文件或文件夹路径
+        /// Source file or folder path
         #[arg(value_name = "SOURCE")]
         source: PathBuf,
 
-        /// 磁带设备路径 (例如: \\.\TAPE0)
+        /// Tape device path (e.g. \\.\TAPE0)
         #[arg(value_name = "DEVICE")]
         device: String,
 
-        /// 目标磁带路径
+        /// Target tape path
         #[arg(value_name = "DESTINATION")]
         destination: PathBuf,
 
-        /// 跳过确认提示
+        /// Skip confirmation prompt
         #[arg(short, long)]
         force: bool,
 
-        /// 验证写入数据
+        /// Verify written data
         #[arg(long)]
         verify: bool,
 
-        /// 显示详细进度
+        /// Show detailed progress
         #[arg(short, long)]
         progress: bool,
     },
 
-    /// 列出磁带设备
+    /// List tape devices
     List {
-        /// 显示详细设备信息
+        /// Show detailed device information
         #[arg(short, long)]
         detailed: bool,
     },
 
-    /// 获取磁带信息
+    /// Get tape information
     Info {
-        /// 磁带设备路径
+        /// Tape device path
         #[arg(value_name = "DEVICE")]
         device: String,
     },
 
-    /// 读取磁带内容到本地
+    /// Read tape content (display or copy to local)
     Read {
-        /// 磁带设备路径
+        /// Tape device path
         #[arg(value_name = "DEVICE")]
         device: String,
 
-        /// 磁带中的源路径
+        /// Source path in tape
         #[arg(value_name = "SOURCE")]
         source: PathBuf,
 
-        /// 本地目标路径
+        /// Local destination path (optional - if not provided, display content)
         #[arg(value_name = "DESTINATION")]
-        destination: PathBuf,
+        destination: Option<PathBuf>,
 
-        /// 验证读取数据
+        /// Verify read data
         #[arg(long)]
         verify: bool,
+
+        /// Limit output lines for file content display
+        #[arg(long, default_value = "50")]
+        lines: usize,
     },
 
-    /// 检查磁带状态
+    /// Check tape status
     Status {
-        /// 磁带设备路径
+        /// Tape device path
         #[arg(value_name = "DEVICE")]
         device: String,
     },
