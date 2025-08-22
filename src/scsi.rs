@@ -193,11 +193,16 @@ impl ScsiInterface {
         #[cfg(windows)]
         {
             // Build complete device path, similar to "\\\\.\\TAPE0" format in C code
-            let full_path = if device_path.starts_with("\\\\\\\\\\.\\\\") {
+            let full_path = if device_path.starts_with(r"\\.\") {
                 device_path.to_string()
+            } else if device_path.starts_with("TAPE") {
+                format!(r"\\.\{}", device_path)
             } else {
-                format!("\\\\\\\\\\.\\\\{}", device_path)
+                // Already formatted path like \\.\TAPE1
+                device_path.to_string()
             };
+            
+            debug!("Full device path: {}", full_path);
             
             let path_cstring = CString::new(full_path.clone())
                 .map_err(|e| crate::error::RustLtfsError::system(format!("Device path conversion error: {}", e)))?;

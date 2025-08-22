@@ -187,8 +187,8 @@ pub fn display_file_info(file: &File) {
     }
     
     if file.has_extents() {
-        println!("  Extents: {} extent(s)", file.extents.len());
-        for (i, extent) in file.extents.iter().enumerate() {
+        println!("  Extents: {} extent(s)", file.extent_info.extents.len());
+        for (i, extent) in file.extent_info.extents.iter().enumerate() {
             println!("    Extent {}: partition={}, block={}, size={}", 
                 i + 1, extent.partition, extent.start_block, format_size(extent.byte_count));
         }

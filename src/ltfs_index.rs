@@ -5,6 +5,7 @@ use tracing::{debug, info, warn};
 
 /// LTFS Index structure based on LTFS specification
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename = "ltfsindex")]
 pub struct LtfsIndex {
     #[serde(rename = "@version")]
     pub version: String,
@@ -13,8 +14,15 @@ pub struct LtfsIndex {
     pub generationnumber: u64,
     pub updatetime: String,
     pub location: Location,
+    #[serde(default)]
+    pub previousgenerationlocation: Option<Location>,
+    #[serde(default)]
     pub allowpolicyupdate: Option<bool>,
-    #[serde(rename = "contents")]
+    #[serde(default)]
+    pub volumelockstate: Option<String>,
+    #[serde(default)]
+    pub highestfileuid: Option<u64>,
+    #[serde(rename = "directory")]
     pub root_directory: Directory,
 }
 
@@ -53,6 +61,12 @@ pub struct DirectoryContents {
     pub files: Vec<File>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtentInfo {
+    #[serde(rename = "extent", default)]
+    pub extents: Vec<FileExtent>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct File {
     pub name: String,
@@ -71,11 +85,12 @@ pub struct File {
     pub backup_time: String,
     #[serde(rename = "readonly")]
     pub read_only: bool,
-    #[serde(rename = "symlink")]
+    pub openforwrite: bool,
+    #[serde(rename = "symlink", default)]
     pub symlink: Option<String>,
     #[serde(rename = "extentinfo", default)]
-    pub extents: Vec<FileExtent>,
-    #[serde(rename = "extendedattributes")]
+    pub extent_info: ExtentInfo,
+    #[serde(rename = "extendedattributes", default)]
     pub extended_attributes: Option<ExtendedAttributes>,
 }
 
@@ -360,7 +375,7 @@ impl File {
 
     /// Get all extents sorted by file offset
     pub fn get_sorted_extents(&self) -> Vec<FileExtent> {
-        let mut extents = self.extents.clone();
+        let mut extents = self.extent_info.extents.clone();
         extents.sort_by(|a, b| a.file_offset.cmp(&b.file_offset));
         extents
     }
@@ -382,7 +397,7 @@ impl File {
 
     /// Check if file has any extents
     pub fn has_extents(&self) -> bool {
-        !self.extents.is_empty()
+        !self.extent_info.extents.is_empty()
     }
 }
 
@@ -425,7 +440,10 @@ mod tests {
                 partition: "a".to_string(),
                 startblock: 0,
             },
+            previousgenerationlocation: None,
             allowpolicyupdate: None,
+            volumelockstate: None,
+            highestfileuid: None,
             root_directory: Directory {
                 name: "".to_string(),
                 uid: 0,
@@ -457,8 +475,9 @@ mod tests {
             access_time: "2023-01-01T00:00:00Z".to_string(),
             backup_time: "2023-01-01T00:00:00Z".to_string(),
             read_only: false,
+            openforwrite: false,
             symlink: None,
-            extents: vec![],
+            extent_info: ExtentInfo::default(),
             extended_attributes: None,
         };
 
