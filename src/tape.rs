@@ -2,7 +2,7 @@ use crate::error::Result;
 use crate::scsi::{MediaType, check_tape_media};
 use tracing::{info, debug, error, warn};
 
-/// 磁带设备信息结构
+/// Tape device information structure
 #[derive(Debug, Clone)]
 pub struct TapeDevice {
     pub path: String,
@@ -12,7 +12,7 @@ pub struct TapeDevice {
     pub status: TapeStatus,
 }
 
-/// 磁带状态枚举 (基于新的 MediaType)
+/// Tape status enumeration (based on new MediaType)
 #[derive(Debug, Clone, PartialEq)]
 pub enum TapeStatus {
     Ready,
@@ -74,9 +74,9 @@ impl From<MediaType> for TapeStatus {
     }
 }
 
-/// 列出系统中可用的磁带设备
+/// List available tape devices in the system
 pub async fn list_devices(_detailed: bool) -> Result<()> {
-    info!("开始扫描磁带设备...");
+    info!("Starting to scan tape devices...");
     
     #[cfg(windows)]
     {
@@ -85,67 +85,67 @@ pub async fn list_devices(_detailed: bool) -> Result<()> {
     
     #[cfg(not(windows))]
     {
-        error!("此工具目前仅支持 Windows 平台");
-        Err(crate::error::RustLtfsError::unsupported("非 Windows 平台"))
+        error!("This tool currently only supports Windows platform");
+        Err(crate::error::RustLtfsError::unsupported("Non-Windows platform"))
     }
 }
 
-/// 获取指定设备的详细信息 (基于更新的 SCSI 接口)
+/// Get detailed information for the specified device (based on updated SCSI interface)
 pub async fn get_device_info(device: String) -> Result<()> {
-    info!("获取设备信息: {}", device);
+    info!("Getting device information: {}", device);
     
-    // 直接使用便捷函数检查媒体状态
+    // Use convenience function to check media status
     match check_tape_media(&device) {
         Ok(media_type) => {
-            println!("设备信息:");
-            println!("  设备路径: {}", device);
-            println!("  媒体类型: {}", media_type.description());
+            println!("Device information:");
+            println!("  Device path: {}", device);
+            println!("  Media type: {}", media_type.description());
             
-            // 显示详细的媒体信息
+            // Display detailed media information
             match media_type {
-                MediaType::NoTape => println!("  状态: 未插入磁带"),
-                MediaType::Unknown(code) => println!("  状态: 未知媒体类型 (代码: 0x{:04X})", code),
+                MediaType::NoTape => println!("  Status: No tape inserted"),
+                MediaType::Unknown(code) => println!("  Status: Unknown media type (code: 0x{:04X})", code),
                 _ => {
-                    println!("  状态: 磁带已装载");
-                    println!("  详细信息: 支持 LTFS 直接读写");
+                    println!("  Status: Tape loaded");
+                    println!("  Detail: Supports LTFS direct read/write");
                 }
             }
             
             Ok(())
         }
         Err(e) => {
-            error!("获取设备信息失败: {}", e);
+            error!("Failed to get device information: {}", e);
             Err(e)
         }
     }
 }
 
-/// 检查设备状态 (基于更新的 TapeCheckMedia 逻辑)
+/// Check device status (based on updated TapeCheckMedia logic)
 pub async fn get_device_status(device: String) -> Result<()> {
-    info!("检查设备状态: {}", device);
+    info!("Checking device status: {}", device);
     
     match check_tape_media(&device) {
         Ok(media_type) => {
-            println!("设备: {}", device);
-            println!("媒体状态: {}", media_type.description());
+            println!("Device: {}", device);
+            println!("Media status: {}", media_type.description());
             
-            // 根据媒体类型提供详细状态信息
+            // Provide detailed status information based on media type
             match media_type {
                 MediaType::NoTape => {
-                    println!("建议: 请插入 LTO 磁带");
+                    println!("Suggestion: Please insert LTO tape");
                 }
                 MediaType::Unknown(code) => {
-                    println!("警告: 未识别的媒体类型 (代码: 0x{:04X})", code);
-                    println!("建议: 确认磁带是否为 LTO3-LTO8 格式");
+                    println!("Warning: Unrecognized media type (code: 0x{:04X})", code);
+                    println!("Suggestion: Confirm if tape is LTO3-LTO8 format");
                 }
                 _ => {
-                    // 判断是否为只读磁带
+                    // Check if it's a read-only tape
                     if media_type.description().contains("RO") {
-                        println!("注意: 此磁带为只读模式");
+                        println!("Note: This tape is in read-only mode");
                     } else if media_type.description().contains("WORM") {
-                        println!("注意: 此磁带为 WORM (一次写入多次读取) 模式");
+                        println!("Note: This tape is in WORM (Write Once Read Many) mode");
                     } else {
-                        println!("状态: 磁带可读写，支持 LTFS 操作");
+                        println!("Status: Tape is readable and writable, supports LTFS operations");
                     }
                 }
             }
@@ -153,8 +153,8 @@ pub async fn get_device_status(device: String) -> Result<()> {
             Ok(())
         }
         Err(e) => {
-            error!("检查设备状态失败: {}", e);
-            println!("错误: {}", e);
+            error!("Failed to check device status: {}", e);
+            println!("Error: {}", e);
             Err(e)
         }
     }
@@ -166,9 +166,9 @@ async fn list_windows_tape_devices(detailed: bool) -> Result<()> {
     use winapi::um::winnt::{FILE_ATTRIBUTE_NORMAL, GENERIC_READ, GENERIC_WRITE};
     use std::ffi::CString;
     
-    debug!("扫描 Windows 磁带设备");
+    debug!("Scanning Windows tape devices");
     
-    // 检查常见的磁带设备路径
+    // Check common tape device paths
     let tape_paths = vec![
         r"\\.\TAPE0",
         r"\\.\TAPE1", 
@@ -181,10 +181,10 @@ async fn list_windows_tape_devices(detailed: bool) -> Result<()> {
     let mut found_devices = Vec::new();
     
     for path in tape_paths {
-        debug!("检查设备路径: {}", path);
+        debug!("Checking device path: {}", path);
         
         let path_cstring = CString::new(path).map_err(|e| {
-            crate::error::RustLtfsError::system(format!("路径转换错误: {}", e))
+            crate::error::RustLtfsError::system(format!("Path conversion error: {}", e))
         })?;
         
         unsafe {
@@ -203,21 +203,21 @@ async fn list_windows_tape_devices(detailed: bool) -> Result<()> {
                 
                 let device_info = if detailed {
                     get_detailed_device_info(path).await.unwrap_or_else(|e| {
-                        warn!("获取详细设备信息失败 {}: {}", path, e);
+                        warn!("Failed to get detailed device information {}: {}", path, e);
                         TapeDevice {
                             path: path.to_string(),
-                            vendor: "未知".to_string(),
-                            model: "未知".to_string(),
-                            serial: "未知".to_string(),
-                            status: TapeStatus::Error("无法获取信息".to_string()),
+                            vendor: "Unknown".to_string(),
+                            model: "Unknown".to_string(),
+                            serial: "Unknown".to_string(),
+                            status: TapeStatus::Error("Unable to get information".to_string()),
                         }
                     })
                 } else {
                     TapeDevice {
                         path: path.to_string(),
-                        vendor: "未知".to_string(),
-                        model: "未知".to_string(),
-                        serial: "未知".to_string(),
+                        vendor: "Unknown".to_string(),
+                        model: "Unknown".to_string(),
+                        serial: "Unknown".to_string(),
                         status: TapeStatus::Ready,
                     }
                 };
@@ -228,41 +228,41 @@ async fn list_windows_tape_devices(detailed: bool) -> Result<()> {
     }
     
     if found_devices.is_empty() {
-        println!("未找到可用的磁带设备");
-        println!("请确保:");
-        println!("1. 磁带驱动器已正确连接");
-        println!("2. 驱动程序已安装");
-        println!("3. 以管理员权限运行此工具");
+        println!("No available tape devices found");
+        println!("Please ensure:");
+        println!("1. Tape drive is properly connected");
+        println!("2. Drivers are installed");
+        println!("3. Run this tool with administrator privileges");
     } else {
-        println!("找到 {} 个磁带设备:", found_devices.len());
+        println!("Found {} tape devices found:", found_devices.len());
         
         for device in &found_devices {
-            println!("  设备: {}", device.path);
+            println!("  Device: {}", device.path);
             if detailed {
-                println!("    厂商: {}", device.vendor);
-                println!("    型号: {}", device.model);
-                println!("    序列号: {}", device.serial);
-                println!("    状态: {:?}", device.status);
+                println!("    Vendor: {}", device.vendor);
+                println!("    Model: {}", device.model);
+                println!("    Serial number: {}", device.serial);
+                println!("    Status: {:?}", device.status);
             }
         }
         
-        info!("找到 {} 个磁带设备", found_devices.len());
+        info!("Found {} tape devices found", found_devices.len());
     }
     
     Ok(())
 }
 
-/// 获取详细的设备信息 (基于更新的 MediaType)
+/// Get detailed device information (based on updated MediaType)
 async fn get_detailed_device_info(device_path: &str) -> Result<TapeDevice> {
-    debug!("获取详细设备信息: {}", device_path);
+    debug!("Getting detailed device information: {}", device_path);
     
-    // 使用便捷函数检查媒体状态
+    // Use convenience function to check media status
     let media_type = check_tape_media(device_path)?;
     
     Ok(TapeDevice {
         path: device_path.to_string(),
-        vendor: "IBM".to_string(), // 假设是 IBM 磁带驱动器
-        model: "LTO Drive".to_string(), // 通用型号
+        vendor: "IBM".to_string(), // Assuming IBM tape drive
+        model: "LTO Drive".to_string(), // Generic model
         serial: "N/A".to_string(),
         status: TapeStatus::from(media_type),
     })
