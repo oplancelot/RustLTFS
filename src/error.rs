@@ -37,6 +37,12 @@ pub enum RustLtfsError {
     #[error("Parse error: {0}")]
     Parse(String),
     
+    #[error("CLI error: {0}")]
+    Cli(String),
+    
+    #[error("LTFS index error: {0}")]
+    LtfsIndex(String),
+    
     #[error("Generic error: {0}")]
     Generic(#[from] anyhow::Error),
 }
@@ -80,6 +86,14 @@ impl RustLtfsError {
     
     pub fn parse<T: Into<String>>(msg: T) -> Self {
         Self::Parse(msg.into())
+    }
+    
+    pub fn cli_error<T: Into<String>>(msg: T) -> Self {
+        Self::Cli(msg.into())
+    }
+    
+    pub fn ltfs_index<T: Into<String>>(msg: T) -> Self {
+        Self::LtfsIndex(msg.into())
     }
 }
 

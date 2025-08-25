@@ -1,5 +1,5 @@
 use crate::error::Result;
-use tracing::{debug, warn};
+use tracing::{debug, warn, info};
 use std::ffi::CString;
 
 #[cfg(windows)]
@@ -494,7 +494,7 @@ impl ScsiInterface {
         }
     }
     
-    /// Read tape blocks (based on LTFSCopyGUI implementation)
+    /// Read tape blocks (enhanced implementation for large file support)
     pub fn read_blocks(&self, block_count: u32, buffer: &mut [u8]) -> Result<u32> {
         debug!("Reading {} blocks from tape", block_count);
         
@@ -504,32 +504,65 @@ impl ScsiInterface {
             ));
         }
         
+        // For large block counts, break into smaller chunks to avoid SCSI timeout
+        const MAX_BLOCKS_PER_READ: u32 = 256; // 16MB chunks (256 * 64KB)
+        
+        if block_count <= MAX_BLOCKS_PER_READ {
+            // Direct read for smaller requests
+            self.read_blocks_direct(block_count, buffer)
+        } else {
+            // Chunked read for larger requests
+            self.read_blocks_chunked(block_count, buffer)
+        }
+    }
+    
+    /// Direct block read implementation (private)
+    fn read_blocks_direct(&self, block_count: u32, buffer: &mut [u8]) -> Result<u32> {
+        debug!("Direct reading {} blocks", block_count);
+        
         #[cfg(windows)]
         {
-            let mut cdb = [0u8; 6];
-            cdb[0] = scsi_commands::READ_6;
+            // Use READ(10) command for better parameter range support
+            let mut cdb = [0u8; 10];
+            cdb[0] = scsi_commands::READ_10;
             
-            // Fixed block mode (MSB=1), transfer length in blocks
-            cdb[1] = 0x01; // Fixed block mode
-            cdb[2] = ((block_count >> 16) & 0xFF) as u8;
-            cdb[3] = ((block_count >> 8) & 0xFF) as u8;
-            cdb[4] = (block_count & 0xFF) as u8;
-            // cdb[5] is control byte, leave as 0
+            // Fixed block mode - use DPO=0, FUA=0, RelAddr=0
+            cdb[1] = 0x00;
+            
+            // Logical Block Address (LBA) - set to 0 for sequential access
+            cdb[2] = 0x00;
+            cdb[3] = 0x00;
+            cdb[4] = 0x00;
+            cdb[5] = 0x00;
+            
+            // Reserved
+            cdb[6] = 0x00;
+            
+            // Transfer Length (in blocks)
+            cdb[7] = ((block_count >> 8) & 0xFF) as u8;
+            cdb[8] = (block_count & 0xFF) as u8;
+            
+            // Control
+            cdb[9] = 0x00;
             
             let data_length = (block_count * block_sizes::LTO_BLOCK_SIZE) as usize;
+            
+            // Adjust timeout based on block count
+            let timeout = std::cmp::max(300, (block_count / 10) * 60); // Min 5min, scale with size
+            
             let result = self.scsi_io_control(
                 &cdb,
                 Some(&mut buffer[..data_length]),
                 SCSI_IOCTL_DATA_IN,
-                300, // 5 minute timeout for read operations
+                timeout,
                 None,
             )?;
             
             if result {
-                debug!("Successfully read {} blocks", block_count);
+                debug!("Successfully read {} blocks directly", block_count);
                 Ok(block_count)
             } else {
-                Err(crate::error::RustLtfsError::scsi("Block read operation failed"))
+                Err(crate::error::RustLtfsError::scsi("Direct block read operation failed"))
             }
         }
         
@@ -537,6 +570,119 @@ impl ScsiInterface {
         {
             let _ = (block_count, buffer);
             Err(crate::error::RustLtfsError::unsupported("Non-Windows platform"))
+        }
+    }
+    
+    /// Chunked block read for large files (private)
+    fn read_blocks_chunked(&self, block_count: u32, buffer: &mut [u8]) -> Result<u32> {
+        debug!("Chunked reading {} blocks", block_count);
+        
+        const CHUNK_SIZE: u32 = 128; // 8MB chunks for better performance
+        let mut total_read = 0u32;
+        let mut remaining = block_count;
+        
+        while remaining > 0 {
+            let current_chunk = std::cmp::min(remaining, CHUNK_SIZE);
+            let offset = (total_read * block_sizes::LTO_BLOCK_SIZE) as usize;
+            
+            debug!("Reading chunk: {} blocks (offset: {} bytes)", current_chunk, offset);
+            
+            // Read current chunk
+            let chunk_buffer = &mut buffer[offset..(offset + (current_chunk * block_sizes::LTO_BLOCK_SIZE) as usize)];
+            
+            match self.read_blocks_direct(current_chunk, chunk_buffer) {
+                Ok(read_count) => {
+                    if read_count != current_chunk {
+                        warn!("Partial chunk read: expected {}, got {}", current_chunk, read_count);
+                        total_read += read_count;
+                        break; // Stop on partial read
+                    }
+                    total_read += read_count;
+                    remaining -= read_count;
+                    
+                    // Small delay between chunks to prevent overloading the drive
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => {
+                    if total_read > 0 {
+                        warn!("Chunked read failed after {} blocks: {}", total_read, e);
+                        break; // Return partial success
+                    } else {
+                        return Err(e); // Return error if no data read
+                    }
+                }
+            }
+        }
+        
+        info!("Chunked read completed: {} of {} blocks", total_read, block_count);
+        Ok(total_read)
+    }
+    
+    /// Read blocks with retry mechanism for improved reliability
+    pub fn read_blocks_with_retry(&self, block_count: u32, buffer: &mut [u8], max_retries: u32) -> Result<u32> {
+        debug!("Reading {} blocks with retry (max {} retries)", block_count, max_retries);
+        
+        let mut last_error = None;
+        
+        for retry in 0..=max_retries {
+            if retry > 0 {
+                warn!("Retrying block read, attempt {} of {}", retry + 1, max_retries + 1);
+                
+                // Progressive backoff delay
+                let delay_ms = std::cmp::min(1000 * retry, 5000); // Max 5 second delay
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms as u64));
+                
+                // Try to recover tape position on retry
+                if let Err(e) = self.recover_tape_position() {
+                    debug!("Position recovery failed: {}", e);
+                }
+            }
+            
+            match self.read_blocks(block_count, buffer) {
+                Ok(result) => {
+                    if retry > 0 {
+                        info!("Block read succeeded on retry {}", retry);
+                    }
+                    return Ok(result);
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                    debug!("Block read attempt {} failed: {:?}", retry + 1, last_error);
+                }
+            }
+        }
+        
+        Err(last_error.unwrap_or_else(|| {
+            crate::error::RustLtfsError::scsi("All retry attempts failed")
+        }))
+    }
+    
+    /// Attempt to recover tape position after read error
+    fn recover_tape_position(&self) -> Result<()> {
+        debug!("Attempting tape position recovery");
+        
+        // Try to read current position
+        match self.read_position() {
+            Ok(pos) => {
+                debug!("Current position: partition {}, block {}", pos.partition, pos.block_number);
+                
+                // If we can read position, try a small test read
+                let mut test_buffer = vec![0u8; block_sizes::LTO_BLOCK_SIZE as usize];
+                match self.read_blocks_direct(1, &mut test_buffer) {
+                    Ok(_) => {
+                        debug!("Position recovery successful - test read OK");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        debug!("Position recovery failed - test read failed: {}", e);
+                        Err(e)
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("Position recovery failed - cannot read position: {}", e);
+                Err(e)
+            }
         }
     }
     
