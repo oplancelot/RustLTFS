@@ -149,6 +149,40 @@ pub enum Commands {
         #[arg(value_name = "DEVICE")]
         device: String,
     },
+
+    /// Diagnose tape drive and media status
+    /// 
+    /// 诊断磁带驱动器和媒体状态，用于排除故障
+    Diagnose {
+        /// Tape device path (e.g., \\.\TAPE0)
+        #[arg(short = 't', long = "tape", value_name = "DEVICE")]
+        device: String,
+        
+        /// Detailed diagnostic output
+        #[arg(short = 'd', long = "detailed")]
+        detailed: bool,
+        
+        /// Test basic read operations
+        #[arg(short = 'r', long = "test-read")]
+        test_read: bool,
+    },
+
+    /// Show tape space information (free/total)
+    /// 
+    /// 显示磁带的可用空间和总空间信息
+    Space {
+        /// Tape device path (e.g. \\.\TAPE0)
+        #[arg(short = 't', long = "tape", value_name = "DEVICE")]
+        device: String,
+
+        /// Skip automatic index reading (offline mode)
+        #[arg(short = 's', long = "skip-index")]
+        skip_index: bool,
+
+        /// Show detailed space breakdown
+        #[arg(short = 'd', long = "detailed")]
+        detailed: bool,
+    },
 }
 
 impl Cli {

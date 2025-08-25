@@ -109,6 +109,34 @@ async fn run(args: Cli) -> Result<()> {
                 }
                 Err(e) => {
                     warn!("Device initialization failed: {}", e);
+                    
+                    // Provide helpful suggestions for common errors
+                    if e.to_string().contains("Windows error code 0x00000002") {
+                        error!("Device not found: {}", device);
+                        info!("🔍 Suggestions:");
+                        info!("  1. Check if a tape drive is connected to your system");
+                        info!("  2. Try different device paths: \\\\.\\TAPE0, \\\\.\\TAPE1, etc.");
+                        info!("  3. Run diagnostics: rustltfs.exe diagnose --tape {} --detailed --test-read", device);
+                        info!("  4. Use --skip-index option for offline mode: rustltfs.exe read --tape {} --skip-index", device);
+                    } else if e.to_string().contains("No tape loaded") {
+                        error!("No tape cartridge detected in drive: {}", device);
+                        info!("🔍 Suggestions:");
+                        info!("  1. Insert a tape cartridge into the drive");
+                        info!("  2. Wait for the drive to recognize the tape");
+                        info!("  3. Run diagnostics: rustltfs.exe diagnose --tape {} --detailed", device);
+                    } else if e.to_string().contains("Direct block read operation failed") {
+                        error!("Failed to read LTFS index from tape: {}", device);
+                        info!("🔍 This may indicate:");
+                        info!("  1. Tape is blank or not LTFS formatted");
+                        info!("  2. Tape position is incorrect");
+                        info!("  3. Tape drive hardware issue");
+                        info!("  4. SCSI communication problem");
+                        info!("🔧 Suggestions:");
+                        info!("  1. Try using --skip-index option to bypass automatic index reading");
+                        info!("  2. Run full diagnostics: rustltfs.exe diagnose --tape {} --detailed --test-read", device);
+                        info!("  3. If you have a local index file, use: --index-file <path>");
+                    }
+                    
                     // Continue with offline operation if index file is provided
                     if index_file.is_some() {
                         info!("Continuing with offline operation using index file");
@@ -286,6 +314,22 @@ async fn run(args: Cli) -> Result<()> {
         Commands::Status { device } => {
             info!("Checking device status: {}", device);
             tape::get_device_status(device).await
+        }
+        
+        Commands::Diagnose { device, detailed, test_read } => {
+            info!("Starting tape diagnosis: {}", device);
+            let mut ops = tape_ops::TapeOperations::new(&device, false); // Force real device mode
+            ops.diagnose_tape_status(detailed, test_read).await
+        }
+
+        Commands::Space { device, skip_index, detailed } => {
+            info!("Getting tape space information: {}", device);
+            
+            // Create tape operations instance
+            let mut ops = tape_ops::TapeOperations::new(&device, skip_index);
+            
+            // Get space information
+            ops.get_tape_space_info(detailed).await
         }
     }
 }

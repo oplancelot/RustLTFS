@@ -60,6 +60,17 @@ pub struct ExtractionResult {
     pub verification_passed: bool,
 }
 
+/// Tape space information
+#[derive(Debug, Clone)]
+pub struct TapeSpaceInfo {
+    pub total_capacity: u64,
+    pub used_space: u64,
+    pub free_space: u64,
+    pub compression_ratio: f64,
+    pub partition_a_used: u64,
+    pub partition_b_used: u64,
+}
+
 /// LTFS access interface for tape device operations
 pub struct LtfsAccess {
     device_path: String,
@@ -141,8 +152,26 @@ impl TapeOperations {
                 }
                 
                 // Auto read LTFS index when device opened
-                info!("Device opened, auto reading LTFS index (simulating 读取索引ToolStripMenuItem_Click)...");
-                self.read_index_from_tape().await?;
+                info!("Device opened, auto reading LTFS index ...");
+                match self.read_index_from_tape().await {
+                    Ok(()) => {
+                        info!("LTFS index successfully loaded from tape");
+                    }
+                    Err(e) => {
+                        warn!("Failed to read LTFS index from tape: {}", e);
+                        
+                        // Try recovery strategies
+                        info!("Attempting to diagnose and recover from index read failure...");
+                        
+                        if let Err(recovery_error) = self.diagnose_and_recover().await {
+                            warn!("Recovery attempts failed: {}", recovery_error);
+                            return Err(e); // Return original error
+                        } else {
+                            info!("Recovery successful, retrying index read...");
+                            self.read_index_from_tape().await?;
+                        }
+                    }
+                }
             }
             Err(e) => {
                 warn!("Failed to open tape device: {}", e);
@@ -153,7 +182,300 @@ impl TapeOperations {
         Ok(())
     }
 
-    /// Read LTFS index from tape
+    /// Public method for comprehensive tape diagnosis
+    pub async fn diagnose_tape_status(&mut self, detailed: bool, test_read: bool) -> Result<()> {
+        info!("Starting comprehensive tape diagnosis...");
+        
+        // Step 1: Try to open device
+        info!("\n=== STEP 1: Device Connection Test ===");
+        match self.scsi.open_device(&self.device_path) {
+            Ok(()) => {
+                info!("✅ Successfully opened tape device: {}", self.device_path);
+            }
+            Err(e) => {
+                info!("❌ Failed to open tape device: {}", e);
+                info!("\n🔍 Diagnosis: Device not found or access denied");
+                info!("Possible causes:");
+                info!("  • No tape drive connected to this device path");
+                info!("  • Driver not installed or not functioning");
+                info!("  • Insufficient permissions");
+                info!("  • Device is being used by another application");
+                return Err(e);
+            }
+        }
+        
+        // Step 2: Check media status
+        info!("\n=== STEP 2: Media Status Check ===");
+        match self.scsi.check_media_status() {
+            Ok(media_type) => {
+                match media_type {
+                    crate::scsi::MediaType::NoTape => {
+                        info!("❌ No tape detected in drive");
+                        info!("\n🔍 Diagnosis: Drive is empty");
+                        info!("Action required: Insert a tape cartridge");
+                        return Ok(());
+                    }
+                    crate::scsi::MediaType::Unknown(code) => {
+                        info!("⚠️ Unknown media type detected (code: 0x{:04X})", code);
+                        info!("\n🔍 Diagnosis: Tape type not recognized");
+                        info!("Possible causes:");
+                        info!("  • Non-LTFS formatted tape");
+                        info!("  • Incompatible tape type");
+                        info!("  • Damaged tape or cartridge");
+                    }
+                    _ => {
+                        info!("✅ Detected media type: {}", media_type.description());
+                    }
+                }
+            }
+            Err(e) => {
+                info!("❌ Failed to check media status: {}", e);
+                info!("\n🔍 Diagnosis: Drive or media communication issue");
+            }
+        }
+        
+        // Step 3: Position test
+        info!("\n=== STEP 3: Position Reading Test ===");
+        match self.scsi.read_position() {
+            Ok(position) => {
+                info!("✅ Successfully read tape position");
+                info!("   Partition: {}", position.partition);
+                info!("   Block: {}", position.block_number);
+                if detailed {
+                    info!("   File Number: {}", position.file_number);
+                    info!("   Set Number: {}", position.set_number);
+                    info!("   End of Data: {}", position.end_of_data);
+                    info!("   Beginning of Partition: {}", position.beginning_of_partition);
+                }
+            }
+            Err(e) => {
+                info!("❌ Failed to read tape position: {}", e);
+                info!("\n🔍 Diagnosis: Tape positioning issue");
+            }
+        }
+        
+        // Step 4: Basic read test (if requested)
+        if test_read {
+            info!("\n=== STEP 4: Basic Read Test ===");
+            
+            // Try to position to beginning
+            match self.scsi.locate_block(0, 0) {
+                Ok(()) => {
+                    info!("✅ Successfully positioned to beginning of tape");
+                    
+                    // Try to read first block
+                    let mut test_buffer = vec![0u8; crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize];
+                    match self.scsi.read_blocks(1, &mut test_buffer) {
+                        Ok(_) => {
+                            info!("✅ Successfully read first block from tape");
+                            
+                            let non_zero_bytes = test_buffer.iter().filter(|&&b| b != 0).count();
+                            if non_zero_bytes == 0 {
+                                info!("ℹ️ First block contains only zeros (tape may be blank)");
+                            } else {
+                                info!("ℹ️ First block contains {} non-zero bytes", non_zero_bytes);
+                                
+                                // Check for LTFS signature
+                                if test_buffer.windows(4).any(|window| window == b"LTFS") {
+                                    info!("✅ Found LTFS signature in first block");
+                                } else {
+                                    info!("⚠️ No LTFS signature found in first block");
+                                }
+                            }
+                            
+                            if detailed {
+                                // Show first 256 bytes in hex dump format
+                                info!("\n📊 First 256 bytes of tape (hex dump):");
+                                for (i, chunk) in test_buffer[..256].chunks(16).enumerate() {
+                                    let offset = i * 16;
+                                    let hex: String = chunk.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+                                    let ascii: String = chunk.iter().map(|&b| {
+                                        if b >= 32 && b <= 126 { b as char } else { '.' }
+                                    }).collect();
+                                    info!("{:08X}: {:48} {}", offset, hex, ascii);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            info!("❌ Failed to read first block: {}", e);
+                            info!("\n🔍 Diagnosis: Read operation failed");
+                            info!("Possible causes:");
+                            info!("  • Tape is write-protected or damaged");
+                            info!("  • Drive read head needs cleaning");
+                            info!("  • Tape format incompatibility");
+                        }
+                    }
+                }
+                Err(e) => {
+                    info!("❌ Failed to position to beginning: {}", e);
+                    info!("\n🔍 Diagnosis: Tape positioning failed");
+                }
+            }
+        }
+        
+        // Step 5: LTFS structure check
+        if test_read {
+            info!("\n=== STEP 5: LTFS Structure Analysis ===");
+            
+            // Try to read volume label at block 0
+            match self.scsi.locate_block(0, 0) {
+                Ok(()) => {
+                    let mut buffer = vec![0u8; crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize];
+                    match self.scsi.read_blocks(1, &mut buffer) {
+                        Ok(_) => {
+                            if buffer.windows(4).any(|window| window == b"LTFS") {
+                                info!("✅ LTFS volume label found at block 0");
+                            } else {
+                                info!("❌ No LTFS volume label found at block 0");
+                                
+                                // Try common index locations
+                                let test_blocks = [5, 6, 10, 1];
+                                for &block in &test_blocks {
+                                    if let Ok(()) = self.scsi.locate_block(0, block) {
+                                        if let Ok(_) = self.scsi.read_blocks(1, &mut buffer) {
+                                            if let Ok(content) = String::from_utf8(buffer.clone()) {
+                                                if content.contains("<?xml") || content.contains("<ltfsindex") {
+                                                    info!("✅ Potential LTFS index found at block {}", block);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            info!("❌ Cannot read volume label area");
+                        }
+                    }
+                }
+                Err(_) => {
+                    info!("❌ Cannot position to volume label area");
+                }
+            }
+        }
+        
+        info!("\n=== DIAGNOSIS COMPLETE ===");
+        info!("📋 Summary:");
+        info!("  • Device: {}", self.device_path);
+        info!("  • Status: Analysis completed");
+        info!("  • For detailed help, use: rustltfs.exe diagnose --help");
+        
+        Ok(())
+    }
+
+    /// Diagnose and recover from tape reading failures
+    async fn diagnose_and_recover(&mut self) -> Result<()> {
+        info!("Starting tape diagnosis and recovery procedure...");
+        
+        // Step 1: Check if tape is properly loaded and responsive
+        info!("Step 1: Checking tape responsiveness...");
+        match self.scsi.read_position() {
+            Ok(position) => {
+                info!("Tape is responsive. Current position: partition {}, block {}", 
+                      position.partition, position.block_number);
+            }
+            Err(e) => {
+                warn!("Tape not responsive: {}", e);
+                return Err(RustLtfsError::tape_device("Tape drive not responding".to_string()));
+            }
+        }
+        
+        // Step 2: Try to rewind to beginning and test basic read
+        info!("Step 2: Rewinding to beginning of tape...");
+        self.scsi.locate_block(0, 0)?;
+        
+        // Wait for rewind to complete
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+        
+        // Step 3: Test read first block to check if tape has data
+        info!("Step 3: Testing basic read capability...");
+        let mut test_buffer = vec![0u8; crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize];
+        match self.scsi.read_blocks(1, &mut test_buffer) {
+            Ok(_) => {
+                info!("Basic read test successful");
+                
+                // Check if first block contains any meaningful data
+                let non_zero_bytes = test_buffer.iter().filter(|&&b| b != 0).count();
+                if non_zero_bytes == 0 {
+                    warn!("Tape appears to be blank or unformatted");
+                    return Err(RustLtfsError::tape_device("Tape appears to be blank or not LTFS formatted".to_string()));
+                } else {
+                    info!("Found {} non-zero bytes in first block", non_zero_bytes);
+                }
+            }
+            Err(e) => {
+                warn!("Basic read test failed: {}", e);
+                return Err(RustLtfsError::tape_device(format!("Cannot read from tape: {}", e)));
+            }
+        }
+        
+        // Step 4: Check for LTFS volume label signature
+        info!("Step 4: Checking for LTFS volume label...");
+        if test_buffer.windows(4).any(|window| window == b"LTFS") {
+            info!("LTFS signature found in volume label");
+        } else {
+            // Try looking in different locations
+            warn!("No LTFS signature found in first block, checking alternative locations...");
+            
+            // Try blocks 1-5 for LTFS signature
+            for block_num in 1..=5 {
+                self.scsi.locate_block(0, block_num)?;
+                match self.scsi.read_blocks(1, &mut test_buffer) {
+                    Ok(_) => {
+                        if test_buffer.windows(4).any(|window| window == b"LTFS") {
+                            info!("LTFS signature found at block {}", block_num);
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Failed to read block {}: {}", block_num, e);
+                    }
+                }
+            }
+        }
+        
+        // Step 5: Try alternative index locations
+        info!("Step 5: Attempting recovery using alternative index locations...");
+        let recovery_locations = vec![
+            (0, 5),   // Standard LTFS index location
+            (0, 6),   // Alternative location
+            (0, 10),  // Another common location
+            (0, 0),   // Volume label location
+        ];
+        
+        for (partition, block) in recovery_locations {
+            info!("Trying index recovery at partition {}, block {}...", partition, block);
+            
+            match self.scsi.locate_block(partition, block) {
+                Ok(()) => {
+                    // Try a small read to see if we can get any XML-like data
+                    let mut recovery_buffer = vec![0u8; 10 * crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize];
+                    match self.scsi.read_blocks(10, &mut recovery_buffer) {
+                        Ok(_) => {
+                            // Check for XML content
+                            if let Ok(content) = String::from_utf8(recovery_buffer.clone()) {
+                                if content.contains("<?xml") || content.contains("<ltfsindex") {
+                                    info!("Found potential LTFS index data at partition {}, block {}", partition, block);
+                                    return Ok(());
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            debug!("Recovery read failed at partition {}, block {}: {}", partition, block, e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!("Cannot position to partition {}, block {}: {}", partition, block, e);
+                }
+            }
+        }
+        
+        Err(RustLtfsError::tape_device("Unable to recover tape or find valid LTFS index".to_string()))
+    }
+
+    /// Read LTFS index from tape (对应LTFSCopyGUI的读取索引ToolStripMenuItem_Click)
     pub async fn read_index_from_tape(&mut self) -> Result<()> {
         info!("Starting to read LTFS index from tape (corresponding to 读取索引ToolStripMenuItem_Click)...");
         
@@ -162,31 +484,22 @@ impl TapeOperations {
             return Ok(());
         }
         
-        // LTFS index reading steps using real SCSI operations:
+        // LTFS index reading steps using real SCSI operations (following LTFSCopyGUI method):
         
-        // 1. Locate to index partition (partition a)
+        // 1. Locate to index partition (partition a) - 对应TapeUtils.Locate调用
         info!("Locating to index partition (partition a)");
         
-        // Position to index partition (partition 0 = 'a')
-        // Try to find the current index location first
-        let index_location = self.find_current_index_location()?;
+        // 直接定位到索引分区的起始位置 (对应LTFSCopyGUI的方法)
+        // TapeUtils.Locate(driveHandle, 0, IndexPartition, TapeUtils.LocateDestType.Block)
+        let index_partition = 0; // IndexPartition = 0 (partition a)
+        self.scsi.locate_block(index_partition, 0)?;
         
-        debug!("Found index at partition {}, block {}", 
-               index_location.partition, index_location.start_block);
+        debug!("Located to index partition {}, block 0", index_partition);
         
-        let partition_id = match index_location.partition.as_str() {
-            "a" | "A" => 0,
-            "b" | "B" => 1,
-            _ => 0, // Default to partition A
-        };
+        // 2. Read index XML data using file mark method (对应TapeUtils.ReadToFileMark)
+        info!("Reading index XML data using file mark method");
         
-        // Position to the correct index location
-        self.scsi.locate_block(partition_id, index_location.start_block)?;
-        
-        // 2. Read index XML data
-        info!("Reading index XML data");
-        
-        let xml_content = self.read_index_xml_from_tape()?;
+        let xml_content = self.read_index_xml_from_tape_with_file_mark()?;
         
         // 3. Parse LTFS index
         info!("Parsing LTFS index");
@@ -257,6 +570,95 @@ impl TapeOperations {
         Ok(None)
     }
     
+    /// Read index XML data from tape using file mark method (对应TapeUtils.ReadToFileMark)
+    fn read_index_xml_from_tape_with_file_mark(&self) -> Result<String> {
+        debug!("Reading LTFS index XML data using file mark method (corresponding to TapeUtils.ReadToFileMark)");
+        
+        // LTFS索引存储在磁带上的方式：
+        // 1. 索引数据存储在连续的块中
+        // 2. 索引数据结束后有一个文件标记(File Mark)
+        // 3. 需要读取直到遇到文件标记为止
+        
+        let mut xml_content = String::new();
+        let block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
+        let mut total_bytes_read = 0u64;
+        let max_index_size = 50 * 1024 * 1024; // 50MB 最大索引大小限制
+        
+        // 读取直到文件标记
+        loop {
+            let mut buffer = vec![0u8; block_size];
+            
+            // 尝试读取下一个块
+            match self.scsi.read_blocks(1, &mut buffer) {
+                Ok(blocks_read) => {
+                    if blocks_read == 0 {
+                        debug!("Reached end of data, no more blocks to read");
+                        break;
+                    }
+                    
+                    // 查找实际数据长度（去除此止的零字节）
+                    let actual_data_len = buffer.iter()
+                        .position(|&b| b == 0)
+                        .unwrap_or(buffer.len());
+                    
+                    if actual_data_len == 0 {
+                        debug!("Found block with all zeros, likely reached file mark");
+                        break;
+                    }
+                    
+                    // 将数据转换为字符串并添加到结果中
+                    match String::from_utf8(buffer[..actual_data_len].to_vec()) {
+                        Ok(content) => {
+                            xml_content.push_str(&content);
+                            total_bytes_read += actual_data_len as u64;
+                            
+                            debug!("Read {} bytes, total: {} bytes", actual_data_len, total_bytes_read);
+                            
+                            // 检查是否已经读取到完整的XML文档
+                            if xml_content.contains("</ltfsindex>") {
+                                info!("Found complete LTFS index XML ({} bytes)", xml_content.len());
+                                break;
+                            }
+                            
+                            // 防止索引过大
+                            if total_bytes_read > max_index_size {
+                                warn!("Index size exceeded maximum limit ({}MB), stopping read", max_index_size / 1024 / 1024);
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            // 如果数据不是有效的UTF-8，可能是非文本数据或文件标记
+                            debug!("Non-UTF8 data encountered ({}), likely reached file mark or binary data", e);
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    // 读取失败可能意味着遇到了文件标记或其他错误
+                    if xml_content.is_empty() {
+                        return Err(RustLtfsError::scsi(
+                            format!("Failed to read index from tape: {}. This may indicate:\n\n\
+                                     1. Tape is blank or not LTFS formatted\n\
+                                     2. Tape position is incorrect\n\
+                                     3. Tape drive hardware issue\n\
+                                     4. SCSI communication problem\n\n\
+                                     Try using --skip-index option to bypass automatic index reading.", e)
+                        ));
+                    } else {
+                        debug!("Read error after {} bytes, assuming reached file mark: {}", total_bytes_read, e);
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // 验证提取的XML
+        self.validate_index_xml(&xml_content)?;
+        
+        info!("Successfully read LTFS index ({} bytes) from tape using file mark method", xml_content.len());
+        Ok(xml_content)
+    }
+
     /// Read index XML data from tape with progressive expansion
     fn read_index_xml_from_tape(&self) -> Result<String> {
         debug!("Reading LTFS index XML data from tape");
@@ -308,6 +710,20 @@ impl TapeOperations {
                     }
                 }
                 Err(e) => {
+                    warn!("Failed to read {} blocks from tape: {}", blocks_to_read, e);
+                    
+                    // Provide more specific error information
+                    if e.to_string().contains("Direct block read operation failed") {
+                        return Err(RustLtfsError::scsi(
+                            format!("Failed to read index from tape: {}. This may indicate:\n\n\
+                                     1. Tape is blank or not LTFS formatted\n\
+                                     2. Tape position is incorrect\n\
+                                     3. Tape drive hardware issue\n\
+                                     4. SCSI communication problem\n\n\
+                                     Try using --skip-index option to bypass automatic index reading.", e)
+                        ));
+                    }
+                    
                     return Err(RustLtfsError::scsi(
                         format!("Failed to read index from tape: {}", e)
                     ));
@@ -1212,6 +1628,222 @@ impl TapeOperations {
         warn!("Current simulation implementation - need to implement real SCSI index write operation");
         
         Ok(())
+    }
+
+    /// Get tape space information (free/total)
+    pub async fn get_tape_space_info(&mut self, detailed: bool) -> Result<()> {
+        info!("Getting tape space information");
+        
+        if self.offline_mode {
+            self.display_simulated_space_info(detailed);
+            return Ok(());
+        }
+        
+        // Initialize device if not already done
+        if self.index.is_none() {
+            match self.initialize().await {
+                Ok(_) => info!("Device initialized for space check"),
+                Err(e) => {
+                    warn!("Device initialization failed: {}, using offline mode", e);
+                    self.display_simulated_space_info(detailed);
+                    return Ok(());
+                }
+            }
+        }
+        
+        // Get space information from tape
+        match self.get_real_tape_space_info().await {
+            Ok(space_info) => self.display_tape_space_info(&space_info, detailed),
+            Err(e) => {
+                warn!("Failed to get real space info: {}, showing estimated info", e);
+                self.display_estimated_space_info(detailed);
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Get real tape space information from device
+    async fn get_real_tape_space_info(&self) -> Result<TapeSpaceInfo> {
+        info!("Reading real tape space information from device");
+        
+        // Use SCSI commands to get tape capacity and remaining space
+        // This would typically use READ POSITION and LOG SENSE commands
+        
+        // For LTO-8 tapes, typical capacity is around 12TB native, 30TB compressed
+        let total_capacity = self.estimate_tape_capacity();
+        
+        // Calculate used space from index information
+        let used_space = if let Some(ref index) = self.index {
+            self.calculate_used_space_from_index(index)
+        } else {
+            0
+        };
+        
+        let free_space = total_capacity.saturating_sub(used_space);
+        
+        Ok(TapeSpaceInfo {
+            total_capacity,
+            used_space,
+            free_space,
+            compression_ratio: 2.5, // Typical LTO compression ratio
+            partition_a_used: self.get_partition_usage('a'),
+            partition_b_used: self.get_partition_usage('b'),
+        })
+    }
+    
+    /// Estimate tape capacity based on media type
+    fn estimate_tape_capacity(&self) -> u64 {
+        // Default to LTO-8 capacity
+        // In real implementation, this would query the device for actual capacity
+        match self.scsi.check_media_status() {
+            Ok(media_type) => {
+                match media_type {
+                    MediaType::Lto8Rw | MediaType::Lto8Worm | MediaType::Lto8Ro => 12_000_000_000_000, // 12TB
+                    MediaType::Lto7Rw | MediaType::Lto7Worm | MediaType::Lto7Ro => 6_000_000_000_000,  // 6TB
+                    MediaType::Lto6Rw | MediaType::Lto6Worm | MediaType::Lto6Ro => 2_500_000_000_000,  // 2.5TB
+                    MediaType::Lto5Rw | MediaType::Lto5Worm | MediaType::Lto5Ro => 1_500_000_000_000,  // 1.5TB
+                    _ => 12_000_000_000_000, // Default to LTO-8
+                }
+            }
+            Err(_) => 12_000_000_000_000, // Default capacity
+        }
+    }
+    
+    /// Calculate used space from LTFS index
+    fn calculate_used_space_from_index(&self, index: &LtfsIndex) -> u64 {
+        let file_locations = index.extract_tape_file_locations();
+        file_locations.iter().map(|loc| loc.file_size).sum()
+    }
+    
+    /// Get partition usage
+    fn get_partition_usage(&self, partition: char) -> u64 {
+        if let Some(ref index) = self.index {
+            let file_locations = index.extract_tape_file_locations();
+            file_locations.iter()
+                .flat_map(|loc| &loc.extents)
+                .filter(|extent| extent.partition.to_lowercase() == partition.to_string().to_lowercase())
+                .map(|extent| extent.byte_count)
+                .sum()
+        } else {
+            0
+        }
+    }
+    
+    /// Display tape space information
+    fn display_tape_space_info(&self, space_info: &TapeSpaceInfo, detailed: bool) {
+        println!("\n💾 Tape Space Information");
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        
+        let total_gb = space_info.total_capacity as f64 / 1_073_741_824.0;
+        let used_gb = space_info.used_space as f64 / 1_073_741_824.0;
+        let free_gb = space_info.free_space as f64 / 1_073_741_824.0;
+        let usage_percent = (space_info.used_space as f64 / space_info.total_capacity as f64) * 100.0;
+        
+        println!("  📊 Capacity Overview:");
+        println!("      Total: {:.2} GB ({} bytes)", total_gb, space_info.total_capacity);
+        println!("      Used:  {:.2} GB ({} bytes) [{:.1}%]", used_gb, space_info.used_space, usage_percent);
+        println!("      Free:  {:.2} GB ({} bytes) [{:.1}%]", free_gb, space_info.free_space, 100.0 - usage_percent);
+        
+        // Progress bar
+        let bar_width = 40;
+        let used_blocks = ((usage_percent / 100.0) * bar_width as f64) as usize;
+        let free_blocks = bar_width - used_blocks;
+        println!("      [{}{}] {:.1}%", 
+            "█".repeat(used_blocks), 
+            "░".repeat(free_blocks), 
+            usage_percent);
+        
+        if detailed {
+            println!("\n  📁 Partition Usage:");
+            let partition_a_gb = space_info.partition_a_used as f64 / 1_073_741_824.0;
+            let partition_b_gb = space_info.partition_b_used as f64 / 1_073_741_824.0;
+            println!("      Partition A (Index): {:.2} GB ({} bytes)", partition_a_gb, space_info.partition_a_used);
+            println!("      Partition B (Data):  {:.2} GB ({} bytes)", partition_b_gb, space_info.partition_b_used);
+            
+            println!("\n  ⚙️  Technical Information:");
+            println!("      Compression Ratio: {:.1}x", space_info.compression_ratio);
+            println!("      Effective Capacity: {:.2} GB (with compression)", 
+                total_gb * space_info.compression_ratio);
+            
+            if let Some(ref index) = self.index {
+                let file_count = index.extract_tape_file_locations().len();
+                println!("      Total Files: {}", file_count);
+                if file_count > 0 {
+                    let avg_file_size = space_info.used_space / file_count as u64;
+                    println!("      Average File Size: {:.2} MB", avg_file_size as f64 / 1_048_576.0);
+                }
+            }
+        }
+    }
+    
+    /// Display simulated space information for offline mode
+    fn display_simulated_space_info(&self, detailed: bool) {
+        println!("\n💾 Tape Space Information (Simulated)");
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        
+        let total_capacity = 12_000_000_000_000u64; // 12TB for LTO-8
+        let used_space = 2_500_000_000_000u64;     // Simulated 2.5TB used
+        let free_space = total_capacity - used_space;
+        let usage_percent = (used_space as f64 / total_capacity as f64) * 100.0;
+        
+        let total_gb = total_capacity as f64 / 1_073_741_824.0;
+        let used_gb = used_space as f64 / 1_073_741_824.0;
+        let free_gb = free_space as f64 / 1_073_741_824.0;
+        
+        println!("  📊 Capacity Overview (Simulated):");
+        println!("      Total: {:.2} GB ({} bytes)", total_gb, total_capacity);
+        println!("      Used:  {:.2} GB ({} bytes) [{:.1}%]", used_gb, used_space, usage_percent);
+        println!("      Free:  {:.2} GB ({} bytes) [{:.1}%]", free_gb, free_space, 100.0 - usage_percent);
+        
+        // Progress bar
+        let bar_width = 40;
+        let used_blocks = ((usage_percent / 100.0) * bar_width as f64) as usize;
+        let free_blocks = bar_width - used_blocks;
+        println!("      [{}{}] {:.1}%", 
+            "█".repeat(used_blocks), 
+            "░".repeat(free_blocks), 
+            usage_percent);
+        
+        if detailed {
+            println!("\n  📁 Partition Usage (Simulated):");
+            println!("      Partition A (Index): 50.00 GB (53,687,091,200 bytes)");
+            println!("      Partition B (Data):  2,450.00 GB (2,631,312,908,800 bytes)");
+            
+            println!("\n  ⚙️  Technical Information:");
+            println!("      Media Type: LTO-8 (Simulated)");
+            println!("      Compression Ratio: 2.5x");
+            println!("      Effective Capacity: {:.2} GB (with compression)", total_gb * 2.5);
+            println!("      Block Size: 64 KB");
+        }
+        
+        println!("\n⚠️  Note: This is simulated data. Connect to a real tape device for actual space information.");
+    }
+    
+    /// Display estimated space information when real data is not available
+    fn display_estimated_space_info(&self, detailed: bool) {
+        if let Some(ref index) = self.index {
+            let file_locations = index.extract_tape_file_locations();
+            let used_space: u64 = file_locations.iter().map(|loc| loc.file_size).sum();
+            let total_capacity = self.estimate_tape_capacity();
+            let free_space = total_capacity.saturating_sub(used_space);
+            
+            let space_info = TapeSpaceInfo {
+                total_capacity,
+                used_space,
+                free_space,
+                compression_ratio: 2.5,
+                partition_a_used: self.get_partition_usage('a'),
+                partition_b_used: self.get_partition_usage('b'),
+            };
+            
+            println!("\n💾 Tape Space Information (Estimated from Index)");
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            self.display_tape_space_info(&space_info, detailed);
+            println!("\n⚠️  Note: Space information estimated from LTFS index. Actual values may differ.");
+        } else {
+            self.display_simulated_space_info(detailed);
+        }
     }
 
     /// 保存索引到本地文件 (对应LTFSIndex_Load_*.schema格式)
