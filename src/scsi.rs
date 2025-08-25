@@ -159,6 +159,8 @@ impl MediaType {
 /// SCSI operation structure that encapsulates low-level SCSI commands
 pub struct ScsiInterface {
     device_handle: Option<DeviceHandle>,
+    drive_type: DriveType,
+    allow_partition: bool,
 }
 
 /// Device handle wrapper that ensures proper resource cleanup
@@ -183,6 +185,17 @@ impl ScsiInterface {
     pub fn new() -> Self {
         Self {
             device_handle: None,
+            drive_type: DriveType::Standard,
+            allow_partition: true,
+        }
+    }
+    
+    /// Create new SCSI interface with specific drive type
+    pub fn with_drive_type(drive_type: DriveType) -> Self {
+        Self {
+            device_handle: None,
+            drive_type,
+            allow_partition: true,
         }
     }
     
@@ -1007,6 +1020,316 @@ impl ScsiInterface {
             Err(crate::error::RustLtfsError::unsupported("Non-Windows platform"))
         }
     }
+    
+    /// Comprehensive locate method (based on LTFSCopyGUI TapeUtils.Locate)
+    /// Supports block, file mark, and EOD positioning with drive-specific optimizations
+    pub fn locate(&self, block_address: u64, partition: u8, dest_type: LocateDestType) -> Result<u16> {
+        debug!("Locating to partition {} {} {:?} {}", 
+               partition, 
+               match dest_type {
+                   LocateDestType::Block => "block",
+                   LocateDestType::FileMark => "filemark",
+                   LocateDestType::EOD => "EOD",
+               },
+               dest_type,
+               block_address);
+        
+        #[cfg(windows)]
+        {
+            let mut sense_buffer = [0u8; SENSE_INFO_LEN];
+            
+            // Execute locate command based on drive type
+            match self.drive_type {
+                DriveType::M2488 => {
+                    // M2488 specific implementation (placeholder)
+                    warn!("M2488 drive type not fully implemented");
+                    self.locate_standard(block_address, partition, dest_type, &mut sense_buffer)
+                }
+                DriveType::SLR3 => {
+                    self.locate_slr3(block_address, partition, dest_type, &mut sense_buffer)
+                }
+                DriveType::SLR1 => {
+                    self.locate_slr1(block_address, partition, dest_type, &mut sense_buffer)
+                }
+                DriveType::Standard => {
+                    self.locate_standard(block_address, partition, dest_type, &mut sense_buffer)
+                }
+            }
+        }
+        
+        #[cfg(not(windows))]
+        {
+            let _ = (block_address, partition, dest_type);
+            Err(crate::error::RustLtfsError::unsupported("Non-Windows platform"))
+        }
+    }
+    
+    /// Standard/modern drive locate implementation
+    #[cfg(windows)]
+    fn locate_standard(&self, block_address: u64, partition: u8, dest_type: LocateDestType, sense_buffer: &mut [u8; SENSE_INFO_LEN]) -> Result<u16> {
+        if self.allow_partition || dest_type != LocateDestType::Block {
+            // Use LOCATE(16) command for modern drives with partition support
+            let mut cp = 0u8;
+            if let Ok(current_pos) = self.read_position() {
+                if current_pos.partition != partition {
+                    cp = 1; // Change partition flag
+                }
+            }
+            
+            let mut cdb = [0u8; 16];
+            cdb[0] = 0x92; // LOCATE(16)
+            cdb[1] = (dest_type as u8) << 3 | (cp << 1);
+            cdb[2] = 0;
+            cdb[3] = partition;
+            
+            // 64-bit block address
+            cdb[4] = ((block_address >> 56) & 0xFF) as u8;
+            cdb[5] = ((block_address >> 48) & 0xFF) as u8;
+            cdb[6] = ((block_address >> 40) & 0xFF) as u8;
+            cdb[7] = ((block_address >> 32) & 0xFF) as u8;
+            cdb[8] = ((block_address >> 24) & 0xFF) as u8;
+            cdb[9] = ((block_address >> 16) & 0xFF) as u8;
+            cdb[10] = ((block_address >> 8) & 0xFF) as u8;
+            cdb[11] = (block_address & 0xFF) as u8;
+            
+            self.execute_locate_command(&cdb, sense_buffer)
+        } else {
+            // Use LOCATE(10) for simple block positioning
+            let mut cdb = [0u8; 10];
+            cdb[0] = 0x2B; // LOCATE(10)
+            cdb[1] = 0;
+            cdb[2] = 0;
+            cdb[3] = ((block_address >> 24) & 0xFF) as u8;
+            cdb[4] = ((block_address >> 16) & 0xFF) as u8;
+            cdb[5] = ((block_address >> 8) & 0xFF) as u8;
+            cdb[6] = (block_address & 0xFF) as u8;
+            cdb[7] = 0;
+            cdb[8] = 0;
+            cdb[9] = 0;
+            
+            self.execute_locate_command(&cdb, sense_buffer)
+        }
+    }
+    
+    /// SLR3 drive specific locate implementation
+    #[cfg(windows)]
+    fn locate_slr3(&self, block_address: u64, partition: u8, dest_type: LocateDestType, sense_buffer: &mut [u8; SENSE_INFO_LEN]) -> Result<u16> {
+        match dest_type {
+            LocateDestType::Block => {
+                let mut cdb = [0u8; 10];
+                cdb[0] = 0x2B; // LOCATE(10)
+                cdb[1] = 4; // SLR3 specific flags
+                cdb[2] = 0;
+                cdb[3] = ((block_address >> 24) & 0xFF) as u8;
+                cdb[4] = ((block_address >> 16) & 0xFF) as u8;
+                cdb[5] = ((block_address >> 8) & 0xFF) as u8;
+                cdb[6] = (block_address & 0xFF) as u8;
+                cdb[7] = 0;
+                cdb[8] = 0;
+                cdb[9] = 0;
+                
+                self.execute_locate_command(&cdb, sense_buffer)
+            }
+            LocateDestType::FileMark => {
+                // First locate to beginning, then space to filemark
+                self.locate(0, 0, LocateDestType::Block)?;
+                self.space(SpaceType::FileMarks, block_address as i32)?;
+                Ok(0)
+            }
+            LocateDestType::EOD => {
+                if let Ok(pos) = self.read_position() {
+                    if !pos.end_of_data {
+                        let mut cdb = [0u8; 6];
+                        cdb[0] = 0x11; // SPACE
+                        cdb[1] = 3; // EOD
+                        cdb[2] = 0;
+                        cdb[3] = 0;
+                        cdb[4] = 0;
+                        cdb[5] = 0;
+                        
+                        self.execute_locate_command(&cdb, sense_buffer)
+                    } else {
+                        Ok(0)
+                    }
+                } else {
+                    Err(crate::error::RustLtfsError::scsi("Cannot read position for EOD locate"))
+                }
+            }
+        }
+    }
+    
+    /// SLR1 drive specific locate implementation
+    #[cfg(windows)]
+    fn locate_slr1(&self, block_address: u64, partition: u8, dest_type: LocateDestType, sense_buffer: &mut [u8; SENSE_INFO_LEN]) -> Result<u16> {
+        match dest_type {
+            LocateDestType::Block => {
+                let mut cdb = [0u8; 6];
+                cdb[0] = 0x0C; // SLR1 specific locate command
+                cdb[1] = 0;
+                cdb[2] = ((block_address >> 16) & 0x0F) as u8; // Only 20-bit address
+                cdb[3] = ((block_address >> 8) & 0xFF) as u8;
+                cdb[4] = (block_address & 0xFF) as u8;
+                cdb[5] = 0;
+                
+                self.execute_locate_command(&cdb, sense_buffer)
+            }
+            LocateDestType::FileMark => {
+                // First locate to beginning, then space to filemark
+                self.locate(0, 0, LocateDestType::Block)?;
+                self.space(SpaceType::FileMarks, block_address as i32)?;
+                Ok(0)
+            }
+            LocateDestType::EOD => {
+                if let Ok(pos) = self.read_position() {
+                    if !pos.end_of_data {
+                        let mut cdb = [0u8; 6];
+                        cdb[0] = 0x11; // SPACE
+                        cdb[1] = 3; // EOD
+                        cdb[2] = 0;
+                        cdb[3] = 0;
+                        cdb[4] = 0;
+                        cdb[5] = 0;
+                        
+                        self.execute_locate_command(&cdb, sense_buffer)
+                    } else {
+                        Ok(0)
+                    }
+                } else {
+                    Err(crate::error::RustLtfsError::scsi("Cannot read position for EOD locate"))
+                }
+            }
+        }
+    }
+    
+    /// Execute locate command and handle errors (based on LTFSCopyGUI error handling)
+    #[cfg(windows)]
+    fn execute_locate_command(&self, cdb: &[u8], sense_buffer: &mut [u8; SENSE_INFO_LEN]) -> Result<u16> {
+        let result = self.scsi_io_control(
+            cdb,
+            None,
+            SCSI_IOCTL_DATA_UNSPECIFIED,
+            600, // 10 minute timeout for positioning
+            Some(sense_buffer),
+        )?;
+        
+        if !result {
+            return Err(crate::error::RustLtfsError::scsi("Locate command failed"));
+        }
+        
+        // Parse sense data for additional status code (ASC/ASCQ)
+        let asc_ascq = ((sense_buffer[12] as u16) << 8) | (sense_buffer[13] as u16);
+        
+        if asc_ascq != 0 && (sense_buffer[2] & 0x0F) != 8 {
+            // Error occurred, attempt recovery based on LTFSCopyGUI logic
+            warn!("Locate command returned error: ASC/ASCQ = 0x{:04X}", asc_ascq);
+            
+            // Retry with different strategy if first attempt failed
+            self.retry_locate_on_error(cdb, sense_buffer, asc_ascq)
+        } else {
+            debug!("Locate command completed successfully");
+            Ok(0)
+        }
+    }
+    
+    /// Retry locate operation on error (based on LTFSCopyGUI retry logic)
+    #[cfg(windows)]
+    fn retry_locate_on_error(&self, original_cdb: &[u8], sense_buffer: &mut [u8; SENSE_INFO_LEN], error_code: u16) -> Result<u16> {
+        debug!("Attempting locate retry for error code: 0x{:04X}", error_code);
+        
+        // Parse original command to determine retry strategy
+        let original_command = original_cdb[0];
+        
+        match original_command {
+            0x92 => { // LOCATE(16) failed, try LOCATE(10)
+                if original_cdb.len() >= 12 {
+                    let block_address = ((original_cdb[8] as u64) << 24) |
+                                       ((original_cdb[9] as u64) << 16) |
+                                       ((original_cdb[10] as u64) << 8) |
+                                       (original_cdb[11] as u64);
+                    
+                    let mut retry_cdb = [0u8; 10];
+                    retry_cdb[0] = 0x2B; // LOCATE(10)
+                    retry_cdb[1] = (original_cdb[1] & 0x07) << 3; // Preserve destination type
+                    retry_cdb[2] = 0;
+                    retry_cdb[3] = ((block_address >> 24) & 0xFF) as u8;
+                    retry_cdb[4] = ((block_address >> 16) & 0xFF) as u8;
+                    retry_cdb[5] = ((block_address >> 8) & 0xFF) as u8;
+                    retry_cdb[6] = (block_address & 0xFF) as u8;
+                    retry_cdb[7] = 0;
+                    retry_cdb[8] = 0;
+                    retry_cdb[9] = 0;
+                    
+                    debug!("Retrying with LOCATE(10) command");
+                    
+                    let result = self.scsi_io_control(
+                        &retry_cdb,
+                        None,
+                        SCSI_IOCTL_DATA_UNSPECIFIED,
+                        600,
+                        Some(sense_buffer),
+                    )?;
+                    
+                    if result {
+                        let retry_asc_ascq = ((sense_buffer[12] as u16) << 8) | (sense_buffer[13] as u16);
+                        debug!("Retry result: ASC/ASCQ = 0x{:04X}", retry_asc_ascq);
+                        Ok(retry_asc_ascq)
+                    } else {
+                        Err(crate::error::RustLtfsError::scsi("Locate retry also failed"))
+                    }
+                } else {
+                    Err(crate::error::RustLtfsError::scsi("Invalid CDB for retry"))
+                }
+            }
+            _ => {
+                // For other commands, return the original error
+                Err(crate::error::RustLtfsError::scsi(
+                    format!("Locate operation failed with ASC/ASCQ: 0x{:04X}", error_code)
+                ))
+            }
+        }
+    }
+    
+    /// Convenience method: locate to file mark
+    pub fn locate_to_filemark(&self, filemark_number: u64, partition: u8) -> Result<()> {
+        self.locate(filemark_number, partition, LocateDestType::FileMark)?;
+        Ok(())
+    }
+    
+    /// Convenience method: locate to end of data  
+    pub fn locate_to_eod(&self, partition: u8) -> Result<()> {
+        self.locate(0, partition, LocateDestType::EOD)?;
+        Ok(())
+    }
+    
+    /// Enhanced locate_block method that uses the comprehensive locate function
+    pub fn locate_block_enhanced(&self, partition: u8, block_number: u64) -> Result<()> {
+        let error_code = self.locate(block_number, partition, LocateDestType::Block)?;
+        if error_code == 0 {
+            debug!("Successfully positioned to partition {} block {}", partition, block_number);
+            Ok(())
+        } else {
+            Err(crate::error::RustLtfsError::scsi(
+                format!("Locate operation completed with warning: 0x{:04X}", error_code)
+            ))
+        }
+    }
+    
+    /// Set drive type for optimization
+    pub fn set_drive_type(&mut self, drive_type: DriveType) {
+        self.drive_type = drive_type;
+        debug!("Drive type set to: {:?}", drive_type);
+    }
+    
+    /// Set partition support flag
+    pub fn set_allow_partition(&mut self, allow: bool) {
+        self.allow_partition = allow;
+        debug!("Partition support set to: {}", allow);
+    }
+    
+    /// Get current drive type
+    pub fn get_drive_type(&self) -> DriveType {
+        self.drive_type
+    }
 }
 
 /// Convenience function: Directly check media status of specified device
@@ -1028,6 +1351,41 @@ pub fn eject_tape(tape_drive: &str) -> Result<bool> {
     let mut scsi = ScsiInterface::new();
     scsi.open_device(tape_drive)?;
     scsi.eject_tape()
+}
+
+/// Convenience function: Locate to specific block (corresponding to LTFSCopyGUI overloads)
+pub fn locate_block(tape_drive: &str, block_address: u64, partition: u8) -> Result<u16> {
+    let mut scsi = ScsiInterface::new();
+    scsi.open_device(tape_drive)?;
+    scsi.locate(block_address, partition, LocateDestType::Block)
+}
+
+/// Convenience function: Locate with destination type
+pub fn locate_with_type(tape_drive: &str, block_address: u64, partition: u8, dest_type: LocateDestType) -> Result<u16> {
+    let mut scsi = ScsiInterface::new();
+    scsi.open_device(tape_drive)?;
+    scsi.locate(block_address, partition, dest_type)
+}
+
+/// Convenience function: Locate with drive type optimization
+pub fn locate_with_drive_type(tape_drive: &str, block_address: u64, partition: u8, dest_type: LocateDestType, drive_type: DriveType) -> Result<u16> {
+    let mut scsi = ScsiInterface::with_drive_type(drive_type);
+    scsi.open_device(tape_drive)?;
+    scsi.locate(block_address, partition, dest_type)
+}
+
+/// Convenience function: Locate to file mark
+pub fn locate_to_filemark(tape_drive: &str, filemark_number: u64, partition: u8) -> Result<u16> {
+    let mut scsi = ScsiInterface::new();
+    scsi.open_device(tape_drive)?;
+    scsi.locate(filemark_number, partition, LocateDestType::FileMark)
+}
+
+/// Convenience function: Locate to end of data
+pub fn locate_to_eod(tape_drive: &str, partition: u8) -> Result<u16> {
+    let mut scsi = ScsiInterface::new();
+    scsi.open_device(tape_drive)?;
+    scsi.locate(0, partition, LocateDestType::EOD)
 }
 
 /// Implement Drop trait to ensure device handle is properly closed
@@ -1099,6 +1457,30 @@ pub enum SpaceType {
     FileMarks = 1,
     SequentialFileMarks = 2,
     EndOfData = 3,
+}
+
+/// Locate destination types (corresponding to LTFSCopyGUI LocateDestType)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LocateDestType {
+    /// Locate to specific block number
+    Block = 0,
+    /// Locate to file mark
+    FileMark = 1,
+    /// Locate to end of data
+    EOD = 3,
+}
+
+/// Drive type enumeration for specific driver optimizations
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DriveType {
+    /// Standard/Generic drive
+    Standard,
+    /// Legacy SLR3 drive type
+    SLR3,
+    /// Legacy SLR1 drive type
+    SLR1,
+    /// M2488 drive type
+    M2488,
 }
 
 /// Block size constants for LTO tapes
