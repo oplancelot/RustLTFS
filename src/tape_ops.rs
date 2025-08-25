@@ -550,6 +550,38 @@ impl TapeOperations {
             return Ok(());
         }
         
+        // 首先检测LTFS格式化状态，但对于空白检测要更谨慎
+        let format_status = self.detect_ltfs_format_status().await?;
+        
+        match format_status {
+            LtfsFormatStatus::LtfsFormatted(_) => {
+                info!("Tape is LTFS formatted, proceeding with index reading");
+            }
+            LtfsFormatStatus::BlankTape => {
+                warn!("Initial format detection suggests blank tape, but attempting direct read anyway");
+                info!("Note: LTFSCopyGUI may use different detection methods");
+            }
+            LtfsFormatStatus::PositioningFailed => {
+                return Err(RustLtfsError::tape_device(
+                    "Failed to position tape for index reading".to_string()
+                ));
+            }
+            LtfsFormatStatus::HardwareError => {
+                return Err(RustLtfsError::scsi(
+                    "Hardware error detected during format detection".to_string()
+                ));
+            }
+            LtfsFormatStatus::NonLtfsFormat => {
+                warn!("Tape appears to have non-LTFS format, attempting direct read anyway");
+            }
+            LtfsFormatStatus::CorruptedIndex => {
+                warn!("Corrupted index detected, attempting direct read anyway");
+            }
+            LtfsFormatStatus::Unknown => {
+                warn!("Unknown format status, attempting direct index read");
+            }
+        }
+        
         // LTFS index reading steps using real SCSI operations (following LTFSCopyGUI method):
         
         // 1. Locate to index partition (partition a) - 对应TapeUtils.Locate调用
@@ -649,17 +681,44 @@ impl TapeOperations {
         let block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
         let mut total_bytes_read = 0u64;
         let max_index_size = 50 * 1024 * 1024; // 50MB 最大索引大小限制
+        let mut blocks_attempted = 0;
+        let max_blocks_to_try = 100; // 最多尝试读取100个块
+        
+        info!("Starting index read from current position, will try up to {} blocks", max_blocks_to_try);
         
         // 读取直到文件标记
         loop {
+            if blocks_attempted >= max_blocks_to_try {
+                warn!("Reached maximum block attempt limit ({}), stopping", max_blocks_to_try);
+                break;
+            }
+            
             let mut buffer = vec![0u8; block_size];
+            blocks_attempted += 1;
             
             // 尝试读取下一个块
             match self.scsi.read_blocks(1, &mut buffer) {
                 Ok(blocks_read) => {
                     if blocks_read == 0 {
-                        debug!("Reached end of data, no more blocks to read");
+                        debug!("Reached end of data at block {}, no more blocks to read", blocks_attempted);
                         break;
+                    }
+                    
+                    // 检查是否有非零数据
+                    let non_zero_count = buffer.iter().filter(|&&b| b != 0).count();
+                    debug!("Block {}: {} bytes read, {} non-zero bytes", blocks_attempted, block_size, non_zero_count);
+                    
+                    if non_zero_count == 0 {
+                        // 全零块可能是文件标记或空数据
+                        debug!("Zero block encountered at block {}, might be file mark", blocks_attempted);
+                        if xml_content.trim().is_empty() && blocks_attempted <= 5 {
+                            // 如果在前几个块就遇到零块，继续尝试
+                            debug!("Continuing past zero block in early read attempt");
+                            continue;
+                        } else {
+                            debug!("Treating zero block as file mark, stopping read");
+                            break;
+                        }
                     }
                     
                     // 查找实际数据长度（去除此止的零字节）
@@ -718,11 +777,28 @@ impl TapeOperations {
             }
         }
         
-        // 验证提取的XML
-        self.validate_index_xml(&xml_content)?;
+        let cleaned_xml = xml_content.replace('\0', "").trim().to_string();
         
-        info!("Successfully read LTFS index ({} bytes) from tape using file mark method", xml_content.len());
-        Ok(xml_content)
+        // 提供详细的读取报告
+        info!("Index read completed: {} blocks attempted, {} bytes extracted", blocks_attempted, cleaned_xml.len());
+        
+        if cleaned_xml.is_empty() {
+            warn!("No LTFS index data found after reading {} blocks", blocks_attempted);
+            warn!("This could indicate:");
+            warn!("  1. Tape is at incorrect position");
+            warn!("  2. LTFS index is located elsewhere");
+            warn!("  3. Tape uses different block structure");
+            warn!("  4. Index may be corrupted or compressed");
+            return Err(RustLtfsError::ltfs_index("Index XML is empty".to_string()));
+        } else {
+            info!("Found {} bytes of potential index data", cleaned_xml.len());
+        }
+        
+        // 验证提取的XML
+        self.validate_index_xml(&cleaned_xml)?;
+        
+        info!("Successfully read LTFS index ({} bytes) from tape using file mark method", cleaned_xml.len());
+        Ok(cleaned_xml)
     }
 
     /// Read index XML data from tape with progressive expansion
