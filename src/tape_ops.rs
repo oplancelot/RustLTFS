@@ -276,12 +276,7 @@ impl TapeOperations {
             }
             Err(e) => {
                 info!("❌ Failed to open tape device: {}", e);
-                info!("\n🔍 Diagnosis: Device not found or access denied");
-                info!("Possible causes:");
-                info!("  • No tape drive connected to this device path");
-                info!("  • Driver not installed or not functioning");
-                info!("  • Insufficient permissions");
-                info!("  • Device is being used by another application");
+                info!("\n🔍 Diagnosis: Device not found/access denied (no drive, driver issue, permissions, or device in use)");
                 return Err(e);
             }
         }
@@ -299,11 +294,7 @@ impl TapeOperations {
                     }
                     crate::scsi::MediaType::Unknown(code) => {
                         info!("⚠️ Unknown media type detected (code: 0x{:04X})", code);
-                        info!("\n🔍 Diagnosis: Tape type not recognized");
-                        info!("Possible causes:");
-                        info!("  • Non-LTFS formatted tape");
-                        info!("  • Incompatible tape type");
-                        info!("  • Damaged tape or cartridge");
+                        info!("\n🔍 Diagnosis: Tape type not recognized (non-LTFS, incompatible type, or damaged)");
                     }
                     _ => {
                         info!("✅ Detected media type: {}", media_type.description());
@@ -407,11 +398,7 @@ impl TapeOperations {
                         }
                         Err(e) => {
                             info!("❌ Failed to read first block: {}", e);
-                            info!("\n🔍 Diagnosis: Read operation failed");
-                            info!("Possible causes:");
-                            info!("  • Tape is write-protected or damaged");
-                            info!("  • Drive read head needs cleaning");
-                            info!("  • Tape format incompatibility");
+                            info!("\n🔍 Diagnosis: Read operation failed (tape write-protected/damaged, drive needs cleaning, format incompatibility)");
                         }
                     }
                 }
@@ -1115,12 +1102,7 @@ impl TapeOperations {
         
         if cleaned_xml.is_empty() {
             warn!("No LTFS index data found after reading {} blocks", blocks_attempted);
-            warn!("This could indicate:");
-            warn!("  1. Tape is at incorrect position");
-            warn!("  2. LTFS index is located elsewhere");
-            warn!("  3. Tape uses different block structure");
-            warn!("  4. Index may be corrupted or compressed");
-            warn!("  5. Blocksize mismatch (tried: {} bytes)", block_size);
+            warn!("Possible causes: incorrect position, different block structure, corrupted index, blocksize mismatch ({})", block_size);
             return Err(RustLtfsError::ltfs_index("Index XML is empty".to_string()));
         } else {
             info!("Found {} bytes of potential index data using blocksize {}", 
@@ -1206,12 +1188,7 @@ impl TapeOperations {
                     // Provide more specific error information
                     if e.to_string().contains("Direct block read operation failed") {
                         return Err(RustLtfsError::scsi(
-                            format!("Failed to read index from tape: {}. This may indicate:\n\n\
-                                     1. Tape is blank or not LTFS formatted\n\
-                                     2. Tape position is incorrect\n\
-                                     3. Tape drive hardware issue\n\
-                                     4. SCSI communication problem\n\n\
-                                     Try using --skip-index option to bypass automatic index reading.", e)
+                            format!("Failed to read index from tape: {}. Possible causes: blank tape, incorrect position, hardware issue, SCSI problem. Try --skip-index option.", e)
                         ));
                     }
                     
