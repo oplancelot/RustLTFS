@@ -47,6 +47,7 @@ cargo build
 
 # 发布构建（优化版本）
 cargo build --release
+cargo build --release --target x86_64-pc-windows-msvc
 
 # 运行测试
 cargo test

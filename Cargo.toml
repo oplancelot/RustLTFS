@@ -2,10 +2,10 @@
 name = "rust-ltfs"
 version = "0.1.0"
 edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["<oplancelot@gmail.com>"]
 description = "A Rust CLI tool for IBM tape direct read/write operations"
 license = "Apache-2.0"
-repository = "https://github.com/your-org/rust-ltfs"
+repository = "https://github.com/oplancelot/RustLTFS"
 readme = "README.md"
 keywords = ["ltfs", "tape", "ibm", "cli", "storage"]
 categories = ["command-line-utilities", "hardware-support"]
