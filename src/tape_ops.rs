@@ -5,6 +5,45 @@ use tracing::{info, warn, debug};
 use std::path::Path;
 use uuid::Uuid;
 
+/// LTFS格式化状态枚举（基于LTFSCopyGUI的检测策略）
+#[derive(Debug, Clone, PartialEq)]
+pub enum LtfsFormatStatus {
+    /// 磁带已正常格式化为LTFS（包含索引大小）
+    LtfsFormatted(usize),
+    /// 磁带为空白（未写入任何数据）
+    BlankTape,
+    /// 磁带有数据但不是LTFS格式
+    NonLtfsFormat,
+    /// LTFS索引损坏或不完整
+    CorruptedIndex,
+    /// 磁带定位失败
+    PositioningFailed,
+    /// 硬件错误或通信问题
+    HardwareError,
+    /// 未知状态（无法确定）
+    Unknown,
+}
+
+impl LtfsFormatStatus {
+    /// 获取状态描述
+    pub fn description(&self) -> &'static str {
+        match self {
+            LtfsFormatStatus::LtfsFormatted(_) => "LTFS formatted tape",
+            LtfsFormatStatus::BlankTape => "Blank tape (no data)",
+            LtfsFormatStatus::NonLtfsFormat => "Non-LTFS formatted tape",
+            LtfsFormatStatus::CorruptedIndex => "LTFS tape with corrupted index",
+            LtfsFormatStatus::PositioningFailed => "Tape positioning failed",
+            LtfsFormatStatus::HardwareError => "Hardware or communication error",
+            LtfsFormatStatus::Unknown => "Unknown format status",
+        }
+    }
+    
+    /// 判断是否为正常的LTFS格式
+    pub fn is_ltfs_formatted(&self) -> bool {
+        matches!(self, LtfsFormatStatus::LtfsFormatted(_))
+    }
+}
+
 /// Index location information
 #[derive(Debug, Clone)]
 struct IndexLocation {
@@ -231,6 +270,33 @@ impl TapeOperations {
             Err(e) => {
                 info!("❌ Failed to check media status: {}", e);
                 info!("\n🔍 Diagnosis: Drive or media communication issue");
+            }
+        }
+        
+        // Step 2.5: LTFS Format Detection (using LTFSCopyGUI strategy)
+        info!("\n=== STEP 2.5: LTFS Format Detection (LTFSCopyGUI Strategy) ===");
+        match self.detect_ltfs_format_status().await {
+            Ok(format_status) => {
+                match format_status {
+                    LtfsFormatStatus::LtfsFormatted(size) => {
+                        info!("✅ LTFS formatted tape detected (index size: {} bytes)", size);
+                    }
+                    LtfsFormatStatus::BlankTape => {
+                        info!("📭 Blank tape detected (no data written)");
+                    }
+                    LtfsFormatStatus::NonLtfsFormat => {
+                        info!("⚠️ Non-LTFS format detected (has data but not LTFS)");
+                    }
+                    LtfsFormatStatus::CorruptedIndex => {
+                        info!("❌ LTFS tape with corrupted index");
+                    }
+                    _ => {
+                        info!("❌ Format detection failed: {}", format_status.description());
+                    }
+                }
+            }
+            Err(e) => {
+                info!("❌ Format detection error: {}", e);
             }
         }
         
@@ -477,7 +543,7 @@ impl TapeOperations {
 
     /// Read LTFS index from tape (对应LTFSCopyGUI的读取索引ToolStripMenuItem_Click)
     pub async fn read_index_from_tape(&mut self) -> Result<()> {
-        info!("Starting to read LTFS index from tape (corresponding to 读取索引ToolStripMenuItem_Click)...");
+        info!("Starting to read LTFS index from tape ...");
         
         if self.offline_mode {
             info!("Offline mode: using dummy index for simulation");
@@ -572,7 +638,7 @@ impl TapeOperations {
     
     /// Read index XML data from tape using file mark method (对应TapeUtils.ReadToFileMark)
     fn read_index_xml_from_tape_with_file_mark(&self) -> Result<String> {
-        debug!("Reading LTFS index XML data using file mark method (corresponding to TapeUtils.ReadToFileMark)");
+        debug!("Reading LTFS index XML data using file mark method");
         
         // LTFS索引存储在磁带上的方式：
         // 1. 索引数据存储在连续的块中
@@ -736,6 +802,150 @@ impl TapeOperations {
         
         info!("Successfully read LTFS index ({} bytes) from tape", xml_content.len());
         Ok(xml_content)
+    }
+    
+    /// 检测磁带LTFS格式化状态（基于LTFSCopyGUI的策略）
+    /// 不通过卷标判断，而是直接尝试读取LTFS索引
+    pub async fn detect_ltfs_format_status(&mut self) -> Result<LtfsFormatStatus> {
+        info!("Detecting LTFS format status using LTFSCopyGUI strategy...");
+        
+        if self.offline_mode {
+            return Ok(LtfsFormatStatus::Unknown);
+        }
+        
+        // 步骤1：定位到索引分区（partition a）的block 0
+        info!("Step 1: Locating to index partition (partition a, block 0)");
+        match self.scsi.locate_block(0, 0) {
+            Ok(()) => {
+                info!("Successfully positioned to index location");
+            }
+            Err(e) => {
+                warn!("Failed to position to index location: {}", e);
+                return Ok(LtfsFormatStatus::PositioningFailed);
+            }
+        }
+        
+        // 步骤2：尝试使用ReadToFileMark方法读取索引
+        info!("Step 2: Attempting to read LTFS index using ReadToFileMark method");
+        let index_read_result = self.try_read_ltfs_index();
+        
+        // 步骤3：基于读取结果判断格式化状态
+        match index_read_result {
+            Ok(xml_content) => {
+                if !xml_content.trim().is_empty() {
+                    // 尝试解析XML以验证LTFS索引的有效性
+                    match self.validate_index_xml(&xml_content) {
+                        Ok(()) => {
+                            info!("✅ Valid LTFS index found - tape is LTFS formatted");
+                            Ok(LtfsFormatStatus::LtfsFormatted(xml_content.len()))
+                        }
+                        Err(e) => {
+                            warn!("⚠️ Found data but invalid LTFS index: {}", e);
+                            Ok(LtfsFormatStatus::CorruptedIndex)
+                        }
+                    }
+                } else {
+                    info!("📭 No index data found - tape appears blank");
+                    Ok(LtfsFormatStatus::BlankTape)
+                }
+            }
+            Err(e) => {
+                info!("❌ Failed to read index: {}", e);
+                self.classify_format_detection_error(e)
+            }
+        }
+    }
+    
+    /// 尝试读取LTFS索引（模拟LTFSCopyGUI的ReadToFileMark方法）
+    fn try_read_ltfs_index(&self) -> Result<String> {
+        info!("Trying to read LTFS index using file mark method...");
+        
+        let mut xml_content = String::new();
+        let block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
+        let mut blocks_read = 0u32;
+        let max_blocks = 50; // 限制读取块数，避免读取过多数据
+        let mut has_data = false;
+        
+        // 使用文件标记方法读取，直到遇到文件标记或错误
+        loop {
+            if blocks_read >= max_blocks {
+                info!("Reached maximum read limit ({}), stopping", max_blocks);
+                break;
+            }
+            
+            let mut buffer = vec![0u8; block_size];
+            
+            match self.scsi.read_blocks(1, &mut buffer) {
+                Ok(read_count) => {
+                    if read_count == 0 {
+                        info!("No more blocks to read (reached end)");
+                        break;
+                    }
+                    
+                    blocks_read += 1;
+                    
+                    // 检查是否有非零数据
+                    let non_zero_count = buffer.iter().filter(|&&b| b != 0).count();
+                    if non_zero_count > 0 {
+                        has_data = true;
+                        info!("Block {}: {} non-zero bytes", blocks_read, non_zero_count);
+                    }
+                    
+                    // 检查是否全零块（可能表示文件标记）
+                    if buffer.iter().all(|&b| b == 0) {
+                        info!("Encountered zero block at {}, assuming file mark", blocks_read);
+                        break;
+                    }
+                    
+                    // 尝试转换为UTF-8并添加到XML内容
+                    match String::from_utf8(buffer) {
+                        Ok(block_content) => {
+                            let trimmed = block_content.trim_end_matches('\0');
+                            xml_content.push_str(trimmed);
+                            
+                            // 检查是否已读取完整的XML
+                            if xml_content.contains("</ltfsindex>") {
+                                info!("Found complete LTFS index XML");
+                                break;
+                            }
+                        }
+                        Err(_) => {
+                            // 非UTF-8数据，可能到达了文件标记或二进制数据
+                            info!("Non-UTF8 data encountered, stopping read");
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    info!("Read error after {} blocks: {}", blocks_read, e);
+                    if !has_data {
+                        // 第一次读取就失败，可能是空白磁带
+                        return Err(RustLtfsError::ltfs_index("No data could be read from tape".to_string()));
+                    }
+                    break;
+                }
+            }
+        }
+        
+        let cleaned_xml = xml_content.replace('\0', "").trim().to_string();
+        info!("Read completed: {} blocks, {} characters", blocks_read, cleaned_xml.len());
+        
+        Ok(cleaned_xml)
+    }
+    
+    /// 分类格式检测错误
+    fn classify_format_detection_error(&self, error: crate::error::RustLtfsError) -> Result<LtfsFormatStatus> {
+        let error_msg = error.to_string();
+        
+        if error_msg.contains("No data could be read") {
+            Ok(LtfsFormatStatus::BlankTape)
+        } else if error_msg.contains("positioning") || error_msg.contains("locate") {
+            Ok(LtfsFormatStatus::PositioningFailed)
+        } else if error_msg.contains("SCSI") || error_msg.contains("communication") {
+            Ok(LtfsFormatStatus::HardwareError)
+        } else {
+            Ok(LtfsFormatStatus::Unknown)
+        }
     }
     
     /// Validate index XML structure
@@ -1545,7 +1755,7 @@ impl TapeOperations {
 
     /// Auto update LTFS index on tape
     pub async fn update_index_on_tape(&mut self) -> Result<()> {
-        info!("Starting to update tape LTFS index (corresponding to 更新数据区索引ToolStripMenuItem_Click)...");
+        info!("Starting to update tape LTFS index...");
         
         // Allow execution in offline mode but skip actual tape operations
         if self.offline_mode {
