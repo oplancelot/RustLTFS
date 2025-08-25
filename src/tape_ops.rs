@@ -673,11 +673,11 @@ impl TapeOperations {
             }
         }
         
-        // 策略2: 使用固定64KB blocksize重试
-        warn!("Trying fallback strategy 2: fixed 64KB blocksize");
-        match self.read_index_with_fixed_blocksize(65536) {
+        // 策略2: 读取数据区最新索引 (LTFSCopyGUI特有策略)
+        warn!("Trying strategy 2: read latest index from data partition");
+        match self.read_latest_index_from_data_partition() {
             Ok(xml_content) => {
-                info!("Strategy 2 (fixed 64KB blocksize) succeeded");
+                info!("Strategy 2 (latest index from data partition) succeeded");
                 return Ok(xml_content);
             }
             Err(e) => {
@@ -685,11 +685,11 @@ impl TapeOperations {
             }
         }
         
-        // 策略3: 使用固定512KB blocksize重试
-        warn!("Trying fallback strategy 3: fixed 512KB blocksize");
-        match self.read_index_with_fixed_blocksize(524288) {
+        // 策略3: 使用固定64KB blocksize重试
+        warn!("Trying fallback strategy 3: fixed 64KB blocksize");
+        match self.read_index_with_fixed_blocksize(65536) {
             Ok(xml_content) => {
-                info!("Strategy 3 (fixed 512KB blocksize) succeeded");
+                info!("Strategy 3 (fixed 64KB blocksize) succeeded");
                 return Ok(xml_content);
             }
             Err(e) => {
@@ -697,15 +697,27 @@ impl TapeOperations {
             }
         }
         
-        // 策略4: 使用渐进式扩展读取 (最后的尝试)
-        warn!("Trying final fallback strategy 4: progressive expansion");
-        match self.read_index_xml_from_tape() {
+        // 策略4: 使用固定512KB blocksize重试
+        warn!("Trying fallback strategy 4: fixed 512KB blocksize");
+        match self.read_index_with_fixed_blocksize(524288) {
             Ok(xml_content) => {
-                info!("Strategy 4 (progressive expansion) succeeded");
+                info!("Strategy 4 (fixed 512KB blocksize) succeeded");
                 return Ok(xml_content);
             }
             Err(e) => {
                 warn!("Strategy 4 failed: {}", e);
+            }
+        }
+        
+        // 策略5: 使用渐进式扩展读取 (最后的尝试)
+        warn!("Trying final fallback strategy 5: progressive expansion");
+        match self.read_index_xml_from_tape() {
+            Ok(xml_content) => {
+                info!("Strategy 5 (progressive expansion) succeeded");
+                return Ok(xml_content);
+            }
+            Err(e) => {
+                warn!("Strategy 5 failed: {}", e);
             }
         }
         
@@ -733,6 +745,199 @@ impl TapeOperations {
         // 创建临时的TapeOperations来使用不同的blocksize
         // 这里简化实现，直接调用read_to_file_mark_with_temp_file
         self.read_to_file_mark_with_temp_file(blocksize as usize)
+    }
+    
+    /// 读取数据区最新索引 (对应LTFSCopyGUI的"读取数据区最新索引"功能)
+    fn read_latest_index_from_data_partition(&self) -> Result<String> {
+        info!("Attempting to read latest index from data partition (partition B)");
+        
+        // LTFS标准：数据区（partition B）可能包含最新的索引副本
+        // 这是LTFSCopyGUI特有的策略，用于处理索引分区损坏的情况
+        
+        // 第1步：尝试从volume label获取最新索引位置
+        if let Ok(latest_location) = self.get_latest_index_location_from_volume_label() {
+            info!("Found latest index location from volume label: partition {}, block {}", 
+                  latest_location.partition, latest_location.start_block);
+                  
+            if let Ok(xml_content) = self.read_index_from_specific_location(&latest_location) {
+                return Ok(xml_content);
+            }
+        }
+        
+        // 第2步：搜索数据分区中的索引副本
+        self.search_index_copies_in_data_partition()
+    }
+    
+    /// 从volume label获取最新索引位置
+    fn get_latest_index_location_from_volume_label(&self) -> Result<IndexLocation> {
+        info!("Reading volume label to find latest index location");
+        
+        // 定位到volume label (partition A, block 0)
+        self.scsi.locate_block(0, 0)?;
+        
+        let mut buffer = vec![0u8; crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize];
+        self.scsi.read_blocks(1, &mut buffer)?;
+        
+        // 解析volume label中的索引位置指针
+        // LTFS volume label格式包含：
+        // - Current index location (当前索引位置)
+        // - Previous index location (上一个索引位置)
+        
+        self.parse_index_locations_from_volume_label(&buffer)
+    }
+    
+    /// 解析volume label中的索引位置信息
+    fn parse_index_locations_from_volume_label(&self, buffer: &[u8]) -> Result<IndexLocation> {
+        // 查找LTFS volume label标识
+        let ltfs_signature = b"LTFS";
+        
+        if let Some(ltfs_pos) = buffer.windows(4).position(|w| w == ltfs_signature) {
+            info!("Found LTFS volume label at offset {}", ltfs_pos);
+            
+            // LTFS volume label结构（简化版本）：
+            // - LTFS signature (4 bytes)
+            // - Version info
+            // - Current index location (partition + block)  
+            // - Previous index location (partition + block)
+            
+            // 搜索可能的索引位置信息
+            // 通常在LTFS签名后的几百字节内
+            let search_area = &buffer[ltfs_pos..std::cmp::min(ltfs_pos + 1024, buffer.len())];
+            
+            // 查找非零的块号（可能的索引位置）
+            for i in (0..search_area.len()-8).step_by(4) {
+                let potential_block = u32::from_le_bytes([
+                    search_area[i], search_area[i+1], 
+                    search_area[i+2], search_area[i+3]
+                ]) as u64;
+                
+                // 合理的索引位置：通常在block 5-1000之间
+                if potential_block >= 5 && potential_block <= 1000 {
+                    info!("Found potential index location at block {}", potential_block);
+                    return Ok(IndexLocation {
+                        partition: "a".to_string(),
+                        start_block: potential_block,
+                    });
+                }
+            }
+            
+            // 如果没找到，尝试查找数据分区的索引
+            // 搜索大的块号（数据分区的索引位置）
+            for i in (0..search_area.len()-8).step_by(4) {
+                let potential_block = u32::from_le_bytes([
+                    search_area[i], search_area[i+1], 
+                    search_area[i+2], search_area[i+3]
+                ]) as u64;
+                
+                // 数据分区的索引位置：通常是较大的块号
+                if potential_block >= 1000 && potential_block <= 1000000 {
+                    info!("Found potential data partition index location at block {}", potential_block);
+                    return Ok(IndexLocation {
+                        partition: "b".to_string(),
+                        start_block: potential_block,
+                    });
+                }
+            }
+        }
+        
+        Err(RustLtfsError::ltfs_index("No valid index location found in volume label".to_string()))
+    }
+    
+    /// 从指定位置读取索引
+    fn read_index_from_specific_location(&self, location: &IndexLocation) -> Result<String> {
+        info!("Reading index from partition {}, block {}", 
+              location.partition, location.start_block);
+        
+        let partition_id = match location.partition.to_lowercase().as_str() {
+            "a" => 0,
+            "b" => 1,
+            _ => return Err(RustLtfsError::ltfs_index(
+                format!("Invalid partition: {}", location.partition)
+            ))
+        };
+        
+        // 定位到指定位置
+        self.scsi.locate_block(partition_id, location.start_block)?;
+        
+        // 使用动态blocksize读取
+        let block_size = self.partition_label
+            .as_ref()
+            .map(|plabel| plabel.blocksize as usize)
+            .unwrap_or(crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize);
+        
+        self.read_to_file_mark_with_temp_file(block_size)
+    }
+    
+    /// 在数据分区中搜索索引副本
+    fn search_index_copies_in_data_partition(&self) -> Result<String> {
+        info!("Searching for index copies in data partition (partition B)");
+        
+        // 策略：在数据分区的几个常见位置搜索索引
+        let search_locations = vec![
+            100,    // 数据分区开始附近
+            500,    // 中等位置
+            1000,   // 更远的位置
+            5000,   // 大文件后可能的索引位置
+            10000,  // 更大的数据后
+        ];
+        
+        for &block in &search_locations {
+            info!("Searching for index at data partition block {}", block);
+            
+            match self.scsi.locate_block(1, block) {
+                Ok(()) => {
+                    // 尝试读取并检查是否是有效的LTFS索引
+                    let block_size = self.partition_label
+                        .as_ref()
+                        .map(|plabel| plabel.blocksize as usize)
+                        .unwrap_or(crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize);
+                    
+                    match self.try_read_index_at_current_position(block_size) {
+                        Ok(xml_content) => {
+                            if self.is_valid_ltfs_index(&xml_content) {
+                                info!("Found valid LTFS index at data partition block {}", block);
+                                return Ok(xml_content);
+                            }
+                        }
+                        Err(_) => {
+                            debug!("No valid index found at data partition block {}", block);
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!("Cannot position to data partition block {}: {}", block, e);
+                }
+            }
+        }
+        
+        Err(RustLtfsError::ltfs_index("No valid index found in data partition".to_string()))
+    }
+    
+    /// 在当前位置尝试读取索引（简化版本）
+    fn try_read_index_at_current_position(&self, block_size: usize) -> Result<String> {
+        let mut buffer = vec![0u8; block_size * 10]; // 读取10个块
+        
+        match self.scsi.read_blocks(10, &mut buffer) {
+            Ok(_) => {
+                let content = String::from_utf8_lossy(&buffer);
+                let cleaned = content.replace('\0', "").trim().to_string();
+                
+                if cleaned.len() > 100 {
+                    Ok(cleaned)
+                } else {
+                    Err(RustLtfsError::ltfs_index("No sufficient data at position".to_string()))
+                }
+            }
+            Err(e) => Err(e)
+        }
+    }
+    
+    /// 检查是否是有效的LTFS索引
+    fn is_valid_ltfs_index(&self, xml_content: &str) -> bool {
+        xml_content.contains("<ltfsindex") && 
+        xml_content.contains("</ltfsindex>") &&
+        xml_content.contains("<directory") &&
+        xml_content.len() > 200
     }
     
     /// Find current LTFS index location from volume label
