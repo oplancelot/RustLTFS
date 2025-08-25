@@ -126,15 +126,8 @@ async fn run(args: Cli) -> Result<()> {
                         info!("  3. Run diagnostics: rustltfs.exe diagnose --tape {} --detailed", device);
                     } else if e.to_string().contains("Direct block read operation failed") {
                         error!("Failed to read LTFS index from tape: {}", device);
-                        info!("🔍 This may indicate:");
-                        info!("  1. Tape is blank or not LTFS formatted");
-                        info!("  2. Tape position is incorrect");
-                        info!("  3. Tape drive hardware issue");
-                        info!("  4. SCSI communication problem");
-                        info!("🔧 Suggestions:");
-                        info!("  1. Try using --skip-index option to bypass automatic index reading");
-                        info!("  2. Run full diagnostics: rustltfs.exe diagnose --tape {} --detailed --test-read", device);
-                        info!("  3. If you have a local index file, use: --index-file <path>");
+                        info!("🔍 Possible causes: blank tape, incorrect position, hardware issue, SCSI problem");
+                        info!("🔧 Try: --skip-index option, full diagnostics, or --index-file <path>");
                     }
                     
                     // Continue with offline operation if index file is provided
