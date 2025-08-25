@@ -51,6 +51,30 @@ struct IndexLocation {
     start_block: u64,
 }
 
+/// LTFS分区标签结构 (对应LTFSCopyGUI的ltfslabel)
+#[derive(Debug, Clone)]
+pub struct LtfsPartitionLabel {
+    pub volume_uuid: String,
+    pub blocksize: u32,
+    pub compression: bool,
+    pub index_partition: u8,      // 通常是0 (partition a)
+    pub data_partition: u8,       // 通常是1 (partition b) 
+    pub format_time: String,
+}
+
+impl Default for LtfsPartitionLabel {
+    fn default() -> Self {
+        Self {
+            volume_uuid: String::new(),
+            blocksize: crate::scsi::block_sizes::LTO_BLOCK_SIZE, // 默认64KB
+            compression: false,
+            index_partition: 0,
+            data_partition: 1,
+            format_time: String::new(),
+        }
+    }
+}
+
 /// Helper function to warn about deep directory nesting
 fn warn_if_deep_nesting(subdirs: &[crate::ltfs_index::Directory]) {
     if !subdirs.is_empty() {
@@ -136,6 +160,7 @@ pub struct TapeOperations {
     block_size: u32,
     tape_drive: String,
     scsi: ScsiInterface,
+    partition_label: Option<LtfsPartitionLabel>,  // 对应LTFSCopyGUI的plabel
 }
 
 impl TapeOperations {
@@ -151,6 +176,7 @@ impl TapeOperations {
             block_size: 524288, // Default block size
             tape_drive: device.to_string(),
             scsi: ScsiInterface::new(),
+            partition_label: None,  // 初始化为None，稍后读取
         }
     }
 
@@ -187,6 +213,23 @@ impl TapeOperations {
                     Err(e) => {
                         warn!("Failed to check media status: {}", e);
                         return Err(RustLtfsError::tape_device(format!("Media status check failed: {}", e)));
+                    }
+                }
+                
+                // 首先读取分区标签 (对应LTFSCopyGUI的plabel读取)
+                info!("Reading LTFS partition label...");
+                match self.read_partition_label().await {
+                    Ok(plabel) => {
+                        info!("Partition label loaded: UUID={}, blocksize={}", 
+                              plabel.volume_uuid, plabel.blocksize);
+                        self.partition_label = Some(plabel.clone());
+                        // 更新block_size为从分区标签读取的值
+                        self.block_size = plabel.blocksize;
+                    }
+                    Err(e) => {
+                        warn!("Failed to read partition label: {}, using defaults", e);
+                        // 使用默认分区标签
+                        self.partition_label = Some(LtfsPartitionLabel::default());
                     }
                 }
                 
@@ -597,7 +640,7 @@ impl TapeOperations {
         // 2. Read index XML data using file mark method (对应TapeUtils.ReadToFileMark)
         info!("Reading index XML data using file mark method");
         
-        let xml_content = self.read_index_xml_from_tape_with_file_mark()?;
+        let xml_content = self.read_index_with_multiple_strategies()?;
         
         // 3. Parse LTFS index
         info!("Parsing LTFS index");
@@ -613,6 +656,83 @@ impl TapeOperations {
         info!("LTFS index successfully loaded from tape");
         
         Ok(())
+    }
+    
+    /// 使用多种策略读取LTFS索引 (增强容错能力)
+    fn read_index_with_multiple_strategies(&self) -> Result<String> {
+        info!("Attempting index read with multiple strategies");
+        
+        // 策略1: 使用动态blocksize和临时文件 (主要策略)
+        match self.read_index_xml_from_tape_with_file_mark() {
+            Ok(xml_content) => {
+                info!("Strategy 1 (dynamic blocksize + temp file) succeeded");
+                return Ok(xml_content);
+            }
+            Err(e) => {
+                warn!("Strategy 1 failed: {}", e);
+            }
+        }
+        
+        // 策略2: 使用固定64KB blocksize重试
+        warn!("Trying fallback strategy 2: fixed 64KB blocksize");
+        match self.read_index_with_fixed_blocksize(65536) {
+            Ok(xml_content) => {
+                info!("Strategy 2 (fixed 64KB blocksize) succeeded");
+                return Ok(xml_content);
+            }
+            Err(e) => {
+                warn!("Strategy 2 failed: {}", e);
+            }
+        }
+        
+        // 策略3: 使用固定512KB blocksize重试
+        warn!("Trying fallback strategy 3: fixed 512KB blocksize");
+        match self.read_index_with_fixed_blocksize(524288) {
+            Ok(xml_content) => {
+                info!("Strategy 3 (fixed 512KB blocksize) succeeded");
+                return Ok(xml_content);
+            }
+            Err(e) => {
+                warn!("Strategy 3 failed: {}", e);
+            }
+        }
+        
+        // 策略4: 使用渐进式扩展读取 (最后的尝试)
+        warn!("Trying final fallback strategy 4: progressive expansion");
+        match self.read_index_xml_from_tape() {
+            Ok(xml_content) => {
+                info!("Strategy 4 (progressive expansion) succeeded");
+                return Ok(xml_content);
+            }
+            Err(e) => {
+                warn!("Strategy 4 failed: {}", e);
+            }
+        }
+        
+        // 所有策略都失败
+        Err(RustLtfsError::ltfs_index(
+            "All index reading strategies failed. The tape may be:\n\
+             1. Blank or unformatted\n\
+             2. Using an unsupported LTFS version\n\
+             3. Corrupted or damaged\n\
+             4. Using a non-standard blocksize\n\
+             5. Positioned incorrectly".to_string()
+        ))
+    }
+    
+    /// 使用固定blocksize读取索引 (回退策略)
+    fn read_index_with_fixed_blocksize(&self, blocksize: u32) -> Result<String> {
+        info!("Trying fixed blocksize: {} bytes", blocksize);
+        
+        // 临时修改分区标签以使用指定的blocksize
+        let temp_plabel = LtfsPartitionLabel {
+            blocksize,
+            ..LtfsPartitionLabel::default()
+        };
+        
+        // 创建临时的TapeOperations来使用不同的blocksize
+        // 这里简化实现，直接调用read_to_file_mark_with_temp_file
+        self.read_to_file_mark_with_temp_file(blocksize as usize)
     }
     
     /// Find current LTFS index location from volume label
@@ -672,24 +792,49 @@ impl TapeOperations {
     fn read_index_xml_from_tape_with_file_mark(&self) -> Result<String> {
         debug!("Reading LTFS index XML data using file mark method");
         
-        // LTFS索引存储在磁带上的方式：
-        // 1. 索引数据存储在连续的块中
-        // 2. 索引数据结束后有一个文件标记(File Mark)
-        // 3. 需要读取直到遇到文件标记为止
+        // 获取动态blocksize (对应LTFSCopyGUI的plabel.blocksize)
+        let block_size = self.partition_label
+            .as_ref()
+            .map(|plabel| plabel.blocksize as usize)
+            .unwrap_or(crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize);
         
-        let mut xml_content = String::new();
-        let block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
-        let mut total_bytes_read = 0u64;
-        let max_index_size = 50 * 1024 * 1024; // 50MB 最大索引大小限制
+        info!("Using dynamic blocksize: {} bytes", block_size);
+        
+        // 使用临时文件策略，模仿LTFSCopyGUI的方法
+        self.read_to_file_mark_with_temp_file(block_size)
+    }
+    
+    /// 使用临时文件读取到文件标记 (对应TapeUtils.ReadToFileMark)
+    fn read_to_file_mark_with_temp_file(&self, block_size: usize) -> Result<String> {
+        use std::io::Write;
+        
+        // 创建临时文件 (对应LTFSCopyGUI的tmpFile)
+        let temp_dir = std::env::temp_dir();
+        let temp_filename = format!("LTFSIndex_{}.tmp", 
+            chrono::Utc::now().format("%Y%m%d_%H%M%S"));
+        let temp_path = temp_dir.join(temp_filename);
+        
+        info!("Creating temporary index file: {:?}", temp_path);
+        
+        let mut temp_file = std::fs::File::create(&temp_path)?;
+        let mut total_bytes_written = 0u64;
         let mut blocks_attempted = 0;
-        let max_blocks_to_try = 100; // 最多尝试读取100个块
+        let max_blocks_to_try = 200; // 增加尝试次数
+        let max_index_size = 50 * 1024 * 1024; // 50MB 最大索引大小限制
         
-        info!("Starting index read from current position, will try up to {} blocks", max_blocks_to_try);
+        info!("Starting index read with blocksize {}, will try up to {} blocks", 
+              block_size, max_blocks_to_try);
         
-        // 读取直到文件标记
+        // 读取直到文件标记 (对应LTFSCopyGUI的ReadToFileMark实现)
         loop {
             if blocks_attempted >= max_blocks_to_try {
                 warn!("Reached maximum block attempt limit ({}), stopping", max_blocks_to_try);
+                break;
+            }
+            
+            if total_bytes_written > max_index_size {
+                warn!("Reached maximum index size limit ({}MB), stopping", 
+                      max_index_size / 1024 / 1024);
                 break;
             }
             
@@ -706,81 +851,62 @@ impl TapeOperations {
                     
                     // 检查是否有非零数据
                     let non_zero_count = buffer.iter().filter(|&&b| b != 0).count();
-                    debug!("Block {}: {} bytes read, {} non-zero bytes", blocks_attempted, block_size, non_zero_count);
+                    debug!("Block {}: {} bytes read, {} non-zero bytes", 
+                           blocks_attempted, block_size, non_zero_count);
                     
                     if non_zero_count == 0 {
-                        // 全零块可能是文件标记或空数据
-                        debug!("Zero block encountered at block {}, might be file mark", blocks_attempted);
-                        if xml_content.trim().is_empty() && blocks_attempted <= 5 {
-                            // 如果在前几个块就遇到零块，继续尝试
-                            debug!("Continuing past zero block in early read attempt");
-                            continue;
-                        } else {
-                            debug!("Treating zero block as file mark, stopping read");
-                            break;
-                        }
-                    }
-                    
-                    // 查找实际数据长度（去除此止的零字节）
-                    let actual_data_len = buffer.iter()
-                        .position(|&b| b == 0)
-                        .unwrap_or(buffer.len());
-                    
-                    if actual_data_len == 0 {
-                        debug!("Found block with all zeros, likely reached file mark");
+                        // 全零块可能是文件标记
+                        debug!("Zero block encountered at block {}, treating as file mark", blocks_attempted);
                         break;
                     }
                     
-                    // 将数据转换为字符串并添加到结果中
-                    match String::from_utf8(buffer[..actual_data_len].to_vec()) {
-                        Ok(content) => {
-                            xml_content.push_str(&content);
-                            total_bytes_read += actual_data_len as u64;
-                            
-                            debug!("Read {} bytes, total: {} bytes", actual_data_len, total_bytes_read);
-                            
-                            // 检查是否已经读取到完整的XML文档
-                            if xml_content.contains("</ltfsindex>") {
-                                info!("Found complete LTFS index XML ({} bytes)", xml_content.len());
-                                break;
-                            }
-                            
-                            // 防止索引过大
-                            if total_bytes_read > max_index_size {
-                                warn!("Index size exceeded maximum limit ({}MB), stopping read", max_index_size / 1024 / 1024);
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            // 如果数据不是有效的UTF-8，可能是非文本数据或文件标记
-                            debug!("Non-UTF8 data encountered ({}), likely reached file mark or binary data", e);
+                    // 将数据写入临时文件 (关键：使用文件而非内存)
+                    temp_file.write_all(&buffer)?;
+                    total_bytes_written += block_size as u64;
+                    
+                    debug!("Wrote {} bytes to temp file, total: {} bytes", 
+                           block_size, total_bytes_written);
+                    
+                    // 检查是否可能包含完整的XML (提前结束优化)
+                    if total_bytes_written > 1024 && blocks_attempted % 10 == 0 {
+                        // 每10个块检查一次是否包含XML结束标记
+                        temp_file.flush()?;
+                        if self.check_temp_file_for_xml_end(&temp_path)? {
+                            info!("Found XML end marker, stopping read");
                             break;
                         }
                     }
                 }
                 Err(e) => {
-                    // 读取失败可能意味着遇到了文件标记或其他错误
-                    if xml_content.is_empty() {
-                        return Err(RustLtfsError::scsi(
-                            format!("Failed to read index from tape: {}. This may indicate:\n\n\
-                                     1. Tape is blank or not LTFS formatted\n\
-                                     2. Tape position is incorrect\n\
-                                     3. Tape drive hardware issue\n\
-                                     4. SCSI communication problem\n\n\
-                                     Try using --skip-index option to bypass automatic index reading.", e)
+                    debug!("Read error after {} blocks: {}", blocks_attempted, e);
+                    
+                    if total_bytes_written == 0 {
+                        // 第一次读取就失败
+                        return Err(RustLtfsError::ltfs_index(
+                            "No data could be read from tape".to_string()
                         ));
-                    } else {
-                        debug!("Read error after {} bytes, assuming reached file mark: {}", total_bytes_read, e);
-                        break;
                     }
+                    // 如果已经读取了一些数据，就停止并尝试解析
+                    break;
                 }
             }
         }
         
-        let cleaned_xml = xml_content.replace('\0', "").trim().to_string();
+        temp_file.flush()?;
+        drop(temp_file); // 确保文件关闭
         
-        // 提供详细的读取报告
-        info!("Index read completed: {} blocks attempted, {} bytes extracted", blocks_attempted, cleaned_xml.len());
+        info!("Index read completed: {} blocks attempted, {} bytes written to temp file", 
+              blocks_attempted, total_bytes_written);
+        
+        // 从临时文件读取并清理 (对应LTFSCopyGUI的处理方式)
+        let xml_content = std::fs::read_to_string(&temp_path)?;
+        
+        // 清理临时文件
+        if let Err(e) = std::fs::remove_file(&temp_path) {
+            warn!("Failed to remove temporary file {:?}: {}", temp_path, e);
+        }
+        
+        let cleaned_xml = xml_content.replace('\0', "").trim().to_string();
         
         if cleaned_xml.is_empty() {
             warn!("No LTFS index data found after reading {} blocks", blocks_attempted);
@@ -789,16 +915,34 @@ impl TapeOperations {
             warn!("  2. LTFS index is located elsewhere");
             warn!("  3. Tape uses different block structure");
             warn!("  4. Index may be corrupted or compressed");
+            warn!("  5. Blocksize mismatch (tried: {} bytes)", block_size);
             return Err(RustLtfsError::ltfs_index("Index XML is empty".to_string()));
         } else {
-            info!("Found {} bytes of potential index data", cleaned_xml.len());
+            info!("Found {} bytes of potential index data using blocksize {}", 
+                  cleaned_xml.len(), block_size);
         }
         
-        // 验证提取的XML
-        self.validate_index_xml(&cleaned_xml)?;
-        
-        info!("Successfully read LTFS index ({} bytes) from tape using file mark method", cleaned_xml.len());
         Ok(cleaned_xml)
+    }
+    
+    /// 检查临时文件是否包含XML结束标记
+    fn check_temp_file_for_xml_end(&self, temp_path: &std::path::Path) -> Result<bool> {
+        use std::io::{BufRead, BufReader, Seek, SeekFrom};
+        
+        let mut file = std::fs::File::open(temp_path)?;
+        
+        // 检查文件末尾1KB的数据
+        let file_len = file.seek(SeekFrom::End(0))?;
+        let check_len = std::cmp::min(1024, file_len);
+        file.seek(SeekFrom::End(-(check_len as i64)))?;
+        
+        let reader = BufReader::new(file);
+        let content: String = reader.lines()
+            .map(|line| line.unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n");
+        
+        Ok(content.contains("</ltfsindex>"))
     }
 
     /// Read index XML data from tape with progressive expansion
@@ -1060,6 +1204,96 @@ impl TapeOperations {
         
         info!("Index file loaded successfully");
         Ok(())
+    }
+
+    /// 读取LTFS分区标签 (对应LTFSCopyGUI的plabel读取)
+    async fn read_partition_label(&mut self) -> Result<LtfsPartitionLabel> {
+        info!("Reading LTFS partition label from tape");
+        
+        if self.offline_mode {
+            return Ok(LtfsPartitionLabel::default());
+        }
+        
+        // LTFS分区标签通常位于分区a的block 0
+        // 首先定位到开头
+        self.scsi.locate_block(0, 0)?; // 分区a, 块0 (相当于rewind)
+        
+        // 读取第一个块，包含LTFS卷标签
+        let mut buffer = vec![0u8; crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize];
+        self.scsi.read_blocks(1, &mut buffer)?;
+        
+        // 解析LTFS卷标签
+        self.parse_ltfs_volume_label(&buffer)
+    }
+    
+    /// 解析LTFS卷标签获取分区标签信息
+    fn parse_ltfs_volume_label(&self, buffer: &[u8]) -> Result<LtfsPartitionLabel> {
+        // LTFS卷标签是一个复杂的二进制结构
+        // 这里实现简化版本，重点获取blocksize
+        
+        // 查找LTFS签名 "LTFS"
+        let ltfs_signature = b"LTFS";
+        if let Some(pos) = buffer.windows(4).position(|w| w == ltfs_signature) {
+            info!("Found LTFS signature at offset {}", pos);
+            
+            // 尝试从标签中提取信息
+            // 注意：这是简化实现，真正的LTFS标签解析更复杂
+            let mut plabel = LtfsPartitionLabel::default();
+            
+            // 尝试在标签附近查找blocksize信息
+            // 常见的blocksize值：65536 (64KB), 524288 (512KB), 1048576 (1MB)
+            let common_blocksizes = [524288u32, 1048576u32, 262144u32, 131072u32, 65536u32];
+            
+            // 在LTFS签名后的数据中查找可能的blocksize
+            let search_data = &buffer[pos..std::cmp::min(pos + 512, buffer.len())];
+            for &blocksize in &common_blocksizes {
+                let blocksize_bytes = blocksize.to_le_bytes();
+                if search_data.windows(4).any(|w| w == blocksize_bytes) {
+                    info!("Found potential blocksize: {}", blocksize);
+                    plabel.blocksize = blocksize;
+                    break;
+                }
+            }
+            
+            // 尝试提取UUID（如果可能）
+            // 这里简化处理，在实际实现中需要按照LTFS规范解析
+            
+            Ok(plabel)
+        } else {
+            warn!("No LTFS signature found in volume label");
+            // 如果没有找到LTFS签名，使用启发式方法
+            self.detect_blocksize_heuristic(buffer)
+        }
+    }
+    
+    /// 启发式检测blocksize
+    fn detect_blocksize_heuristic(&self, buffer: &[u8]) -> Result<LtfsPartitionLabel> {
+        info!("Using heuristic blocksize detection");
+        
+        let mut plabel = LtfsPartitionLabel::default();
+        
+        // 分析buffer中的模式来猜测blocksize
+        // 如果buffer主要是零，可能使用了较大的blocksize
+        let non_zero_count = buffer.iter().filter(|&&b| b != 0).count();
+        let zero_ratio = (buffer.len() - non_zero_count) as f64 / buffer.len() as f64;
+        
+        info!("Buffer analysis: {:.1}% zeros", zero_ratio * 100.0);
+        
+        if zero_ratio > 0.8 {
+            // 高零比率，可能是大blocksize
+            plabel.blocksize = 524288; // 512KB
+            info!("High zero ratio detected, using 512KB blocksize");
+        } else if non_zero_count > 32768 {
+            // 较多数据，可能是标准blocksize
+            plabel.blocksize = 65536; // 64KB
+            info!("Standard data pattern detected, using 64KB blocksize");
+        } else {
+            // 默认使用常见的512KB
+            plabel.blocksize = 524288;
+            info!("Using default 512KB blocksize");
+        }
+        
+        Ok(plabel)
     }
 
     /// Get index statistics
