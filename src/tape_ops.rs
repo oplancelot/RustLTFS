@@ -996,7 +996,7 @@ impl TapeOperations {
         self.read_to_file_mark_with_temp_file(block_size)
     }
     
-    /// 使用临时文件读取到文件标记 (对应TapeUtils.ReadToFileMark)
+    /// 使用临时文件读取到文件标记 (精准对应TapeUtils.ReadToFileMark)
     fn read_to_file_mark_with_temp_file(&self, block_size: usize) -> Result<String> {
         use std::io::Write;
         
@@ -1009,71 +1009,50 @@ impl TapeOperations {
         info!("Creating temporary index file: {:?}", temp_path);
         
         let mut temp_file = std::fs::File::create(&temp_path)?;
-        let mut total_bytes_written = 0u64;
-        let mut blocks_attempted = 0;
-        let max_blocks_to_try = 200; // 增加尝试次数
-        let max_index_size = 50 * 1024 * 1024; // 50MB 最大索引大小限制
+        let mut total_bytes_read = 0u64;
+        let mut blocks_read = 0;
+        let max_blocks = 200; // 对应LTFSCopyGUI的固定限制
         
-        info!("Starting index read with blocksize {}, will try up to {} blocks", 
-              block_size, max_blocks_to_try);
+        info!("Starting ReadToFileMark with blocksize {}, max {} blocks", 
+              block_size, max_blocks);
         
-        // 读取直到文件标记 (对应LTFSCopyGUI的ReadToFileMark实现)
+        // 精准模仿LTFSCopyGUI的ReadToFileMark循环
         loop {
-            if blocks_attempted >= max_blocks_to_try {
-                warn!("Reached maximum block attempt limit ({}), stopping", max_blocks_to_try);
-                break;
-            }
-            
-            if total_bytes_written > max_index_size {
-                warn!("Reached maximum index size limit ({}MB), stopping", 
-                      max_index_size / 1024 / 1024);
+            // 安全限制 - 防止无限读取（对应LTFSCopyGUI逻辑）
+            if blocks_read >= max_blocks {
+                warn!("Reached maximum block limit ({}), stopping", max_blocks);
                 break;
             }
             
             let mut buffer = vec![0u8; block_size];
-            blocks_attempted += 1;
             
-            // 尝试读取下一个块
+            // 执行SCSI READ命令 (对应ScsiRead调用)
             match self.scsi.read_blocks(1, &mut buffer) {
-                Ok(blocks_read) => {
-                    if blocks_read == 0 {
-                        debug!("Reached end of data at block {}, no more blocks to read", blocks_attempted);
+                Ok(blocks_read_count) => {
+                    // 对应: If bytesRead = 0 Then Exit Do
+                    if blocks_read_count == 0 {
+                        debug!("Reached file mark (bytesRead = 0), stopping read");
                         break;
                     }
                     
-                    // 检查是否有非零数据
-                    let non_zero_count = buffer.iter().filter(|&&b| b != 0).count();
-                    debug!("Block {}: {} bytes read, {} non-zero bytes", 
-                           blocks_attempted, block_size, non_zero_count);
-                    
-                    if non_zero_count == 0 {
-                        // 全零块可能是文件标记
-                        debug!("Zero block encountered at block {}, treating as file mark", blocks_attempted);
+                    // 检查是否为全零块（对应IsAllZeros检查）
+                    if self.is_all_zeros(&buffer, block_size) {
+                        debug!("Encountered all-zero block (file mark indicator), stopping read");
                         break;
                     }
                     
-                    // 将数据写入临时文件 (关键：使用文件而非内存)
+                    // 写入到输出文件 (对应fileStream.Write(buffer, 0, bytesRead))
                     temp_file.write_all(&buffer)?;
-                    total_bytes_written += block_size as u64;
+                    total_bytes_read += block_size as u64;
+                    blocks_read += 1;
                     
-                    debug!("Wrote {} bytes to temp file, total: {} bytes", 
-                           block_size, total_bytes_written);
-                    
-                    // 检查是否可能包含完整的XML (提前结束优化)
-                    if total_bytes_written > 1024 && blocks_attempted % 10 == 0 {
-                        // 每10个块检查一次是否包含XML结束标记
-                        temp_file.flush()?;
-                        if self.check_temp_file_for_xml_end(&temp_path)? {
-                            info!("Found XML end marker, stopping read");
-                            break;
-                        }
-                    }
+                    debug!("Read block {}: {} bytes, total: {} bytes", 
+                           blocks_read, block_size, total_bytes_read);
                 }
                 Err(e) => {
-                    debug!("Read error after {} blocks: {}", blocks_attempted, e);
-                    
-                    if total_bytes_written == 0 {
-                        // 第一次读取就失败
+                    debug!("SCSI read error after {} blocks: {}", blocks_read, e);
+                    // 如果没有读取任何数据就失败，返回错误
+                    if blocks_read == 0 {
                         return Err(RustLtfsError::ltfs_index(
                             "No data could be read from tape".to_string()
                         ));
@@ -1087,10 +1066,10 @@ impl TapeOperations {
         temp_file.flush()?;
         drop(temp_file); // 确保文件关闭
         
-        info!("Index read completed: {} blocks attempted, {} bytes written to temp file", 
-              blocks_attempted, total_bytes_written);
+        info!("ReadToFileMark completed: {} blocks read, {} total bytes", 
+              blocks_read, total_bytes_read);
         
-        // 从临时文件读取并清理 (对应LTFSCopyGUI的处理方式)
+        // 从临时文件读取并清理 (对应FromSchFile的处理)
         let xml_content = std::fs::read_to_string(&temp_path)?;
         
         // 清理临时文件
@@ -1098,18 +1077,23 @@ impl TapeOperations {
             warn!("Failed to remove temporary file {:?}: {}", temp_path, e);
         }
         
+        // 清理XML内容（对应VB的Replace和Trim）
         let cleaned_xml = xml_content.replace('\0', "").trim().to_string();
         
         if cleaned_xml.is_empty() {
-            warn!("No LTFS index data found after reading {} blocks", blocks_attempted);
+            warn!("No LTFS index data found after reading {} blocks", blocks_read);
             warn!("Possible causes: incorrect position, different block structure, corrupted index, blocksize mismatch ({})", block_size);
             return Err(RustLtfsError::ltfs_index("Index XML is empty".to_string()));
         } else {
-            info!("Found {} bytes of potential index data using blocksize {}", 
-                  cleaned_xml.len(), block_size);
+            info!("ReadToFileMark extracted {} bytes of index data", cleaned_xml.len());
         }
         
         Ok(cleaned_xml)
+    }
+    
+    /// 检查buffer是否全为零 (对应LTFSCopyGUI的IsAllZeros函数)
+    fn is_all_zeros(&self, buffer: &[u8], length: usize) -> bool {
+        buffer.iter().take(length).all(|&b| b == 0)
     }
     
     /// 检查临时文件是否包含XML结束标记
