@@ -1,171 +1,292 @@
-# RustLTFS - Windows x86-64 发布版
+# RustLTFS - LTFS Direct Access Tool for Tape Drives
 
-## 概述
+## Overview
 
-RustLTFS 是一个用 Rust 编写的 IBM LTFS 磁带直接读写命令行工具，支持无需挂载磁带文件系统即可直接读写 LTO 磁带。
+RustLTFS is an IBM LTFS tape direct read/write command-line tool written in Rust, supporting direct read/write access to LTO tapes without mounting the tape file system.
 
-## 系统要求
+## System Requirements
 
 - Windows 10/11 x64
-- 兼容的 LTO 磁带驱动器（LTO-3 到 LTO-8）
-- 管理员权限（用于 SCSI 命令）
+- Compatible LTO tape drives (LTO-3 to LTO-8)
+- Administrator privileges (for SCSI commands)
 
-## 安装
+## Development Environment Setup
 
-1. 下载 `rustltfs.exe` 文件
-2. 将其放置在 PATH 环境变量包含的目录中，或直接使用完整路径
+### Required Tools
 
-## 主要功能
+- Rust compiler (nightly)
+- mingw-w64 or Visual Studio Build Tools
+- Git
 
-### 智能读取命令
+### Installing Rust Development Environment
 
 ```cmd
-# 列出磁带根目录内容
-rustltfs read TAPE0 /
+# Install Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# 显示文件内容（前50行）
-rustltfs read TAPE0 /backup/file.txt
+# Install nightly toolchain
+rustup install nightly
+rustup default nightly
 
-# 复制文件到本地
-rustltfs read TAPE0 /backup/file.txt C:\restore\file.txt --verify
-
-# 列出目录内容
-rustltfs read TAPE0 /backup/documents/
+# Install Windows target platforms
+rustup target add x86_64-pc-windows-gnu
+rustup target add x86_64-pc-windows-msvc
 ```
 
-### 写入文件到磁带
+## Building
+
+### Building from Source Code
 
 ```cmd
-# 写入单个文件
-rustltfs copy C:\data\file.txt TAPE0 /backup/file.txt --verify --progress
+# Clone the project
+git clone https://github.com/oplancelot/RustLTFS.git
+cd RustLTFS
 
-# 写入整个目录
-rustltfs copy C:\data\folder TAPE0 /backup/folder --verify --progress
+# Development build
+cargo build
+
+# Release build (optimized version)
+cargo build --release
+
+# Run tests
+cargo test
+
+# Check code
+cargo check
 ```
 
-### 磁带设备管理
+### Direct Execution (Development Mode)
 
 ```cmd
-# 列出可用磁带设备
+# View help
+cargo run -- --help
+
+# View specific command help
+cargo run -- read --help
+cargo run -- write --help
+cargo run -- view-index --help
+```
+
+## Installation
+
+### Method 1: Build and Install from Source
+
+```cmd
+# Build and install to ~/.cargo/bin/
+cargo install --path .
+
+# Use the installed version
+rustltfs --help
+```
+
+### Method 2: Use Pre-built Binary
+
+1. Download the `rustltfs.exe` file
+2. Place it in a directory included in the PATH environment variable, or use the full path directly
+
+## Main Features
+
+### Smart Read Commands
+
+```cmd
+# List tape root directory contents
+rustltfs read --tape TAPE0
+
+# Display file content (first 50 lines)
+rustltfs read --tape TAPE0 /backup/file.txt
+
+# Copy file to local
+rustltfs read --tape TAPE0 /backup/file.txt C:\restore\file.txt --verify
+
+# List directory contents
+rustltfs read --tape TAPE0 /backup/documents/
+```
+
+### Write Files to Tape
+
+```cmd
+# Write single file
+rustltfs write C:\data\file.txt --tape TAPE0 /backup/file.txt --verify --progress
+
+# Write entire directory
+rustltfs write C:\data\folder --tape TAPE0 /backup/folder --verify --progress
+```
+
+### View and Parse LTFS Index Files
+
+```cmd
+# Basic view of index information
+rustltfs view-index src/example/LTFSIndex_Load_71583245.schema
+
+# View detailed file information
+rustltfs view-index src/example/LTFSIndex_Load_71583245.schema --detailed
+
+# Export as TSV format (Excel compatible)
+rustltfs view-index src/example/LTFSIndex_Load_71583245.schema --export-format tsv --output filelist.tsv
+
+# Export as JSON format
+rustltfs view-index src/example/LTFSIndex_Load_71583245.schema --export-format json
+
+# Export as XML format
+rustltfs view-index src/example/LTFSIndex_Load_71583245.schema --export-format xml
+```
+
+### Offline Mode Tape Operations
+
+```cmd
+# View tape root directory in offline mode (using local index file)
+rustltfs read --tape TAPE0 --skip-index --index-file src/example/LTFSIndex_Load_71583245.schema
+
+# Simulate file write in offline mode
+rustltfs write src/example/README.md --tape TAPE0 /test/readme.md --skip-index
+
+# Simulate directory write in offline mode
+rustltfs write src/example/drivers/ --tape TAPE0 /test/drivers/ --skip-index
+```
+
+### Tape Device Management
+
+```cmd
+# List available tape devices
 rustltfs list --detailed
 
-# 查看设备状态
+# View device status
 rustltfs status TAPE0
 
-# 查看设备详细信息
+# View detailed device information
 rustltfs info TAPE0
 ```
 
-## 命令参数说明
+## Command Parameters
 
-### read 命令
+### read Command
 
-- `device`: 磁带设备名（如 TAPE0）
-- `source`: 磁带上的文件/目录路径
-- `destination`: （可选）本地目标路径
-- `--verify`: 读取后验证数据完整性
-- `--lines <N>`: 文本文件显示行数（默认 50）
+- `--tape <DEVICE>`: Tape device name (e.g., TAPE0)
+- `[SOURCE]`: File/directory path on tape (optional)
+- `[DESTINATION]`: Local destination path (optional)
+- `--skip-index`: Skip automatic index reading (offline mode)
+- `--index-file <FILE>`: Load index from local file
+- `--verify`: Verify data integrity after reading
+- `--lines <N>`: Number of lines to display for text files (default 50)
+- `--detailed`: Show detailed file information
 
-### copy 命令
+### write Command
 
-- `source`: 本地源文件/目录路径
-- `device`: 磁带设备名
-- `destination`: 磁带上的目标路径
-- `--verify`: 写入后验证数据完整性
-- `--progress`: 显示进度条
-- `--force`: 跳过确认提示
+- `<SOURCE>`: Local source file/directory path
+- `--tape <DEVICE>`: Tape device name
+- `<DESTINATION>`: Target path on tape
+- `--skip-index`: Skip automatic index reading (offline mode)
+- `--index-file <FILE>`: Load index from local file
+- `--verify`: Verify data integrity after writing
+- `--progress`: Show progress bar
+- `--force`: Skip confirmation prompt
 
-## 使用示例
+### view-index Command
 
-### 备份重要文件
+- `<INDEX_FILE>`: LTFS index file path (.schema file)
+- `--detailed`: Show detailed file information
+- `--export-format <FORMAT>`: Export file list format (tsv, json, xml, batch)
+- `--output <FILE>`: Export output file
+
+### Other Commands
+
+- `list [--detailed]`: List tape devices
+- `info <DEVICE>`: View device information
+- `status <DEVICE>`: Check device status
+
+## Usage Examples
+
+### Backup Important Files
 
 ```cmd
-# 备份文档文件夹
-rustltfs copy "C:\Users\%USERNAME%\Documents" TAPE0 /backup/documents --verify --progress
+# Backup Documents folder
+rustltfs write "C:\Users\%USERNAME%\Documents" --tape TAPE0 /backup/documents --verify --progress
 
-# 备份单个大文件
-rustltfs copy "C:\data\database.bak" TAPE0 /backup/database.bak --verify
+# Backup single large file
+rustltfs write "C:\data\database.bak" --tape TAPE0 /backup/database.bak --verify
 ```
 
-### 恢复文件
+### Restore Files
 
 ```cmd
-# 查看磁带上有什么
-rustltfs read TAPE0 /backup/
+# View what's on the tape
+rustltfs read --tape TAPE0 /backup/
 
-# 恢复整个文档文件夹
-rustltfs read TAPE0 /backup/documents "C:\restore\documents"
+# Restore entire Documents folder
+rustltfs read --tape TAPE0 /backup/documents "C:\restore\documents"
 
-# 预览文件内容
-rustltfs read TAPE0 /backup/config.txt --lines 20
+# Preview file content
+rustltfs read --tape TAPE0 /backup/config.txt --lines 20
 ```
 
-### 磁带管理
+### Tape Management
 
 ```cmd
-# 检查磁带状态
+# Check tape status
 rustltfs status TAPE0
 
-# 查看磁带容量信息
+# View tape capacity information
 rustltfs info TAPE0
 ```
 
-## 技术特性
+## Technical Features
 
-- **直接读写**: 无需挂载，直接通过 SCSI 命令访问磁带
-- **LTFS 兼容**: 完全兼容 IBM LTFS 格式
-- **智能操作**: 自动识别文件/目录，提供相应操作
-- **容量管理**: 写入前自动检查磁带剩余空间
-- **数据验证**: 支持读写后的数据完整性验证
-- **进度显示**: 大文件操作时显示进度条
-- **错误处理**: 详细的错误信息和恢复建议
+- **Direct Access**: No mounting required, direct SCSI command access to tape
+- **LTFS Compatible**: Fully compatible with IBM LTFS format
+- **Offline Mode**: Support simulation operations and index parsing without tape devices
+- **Index Parsing**: Parse and export LTFS index files to multiple formats
+- **Smart Operations**: Automatic file/directory recognition with appropriate operations
+- **Capacity Management**: Automatic tape space checking before writing
+- **Data Verification**: Support data integrity verification after read/write
+- **Progress Display**: Progress bar for large file operations
+- **Error Handling**: Detailed error messages and recovery suggestions
 
-## 性能优化
+## Performance Optimization
 
-- 使用 64KB 块大小匹配 LTO 标准
-- 异步 I/O 提高传输效率
-- 智能缓存减少磁带寻址
-- 批量操作减少开销
+- Use 64KB block size to match LTO standards
+- Asynchronous I/O for improved transfer efficiency
+- Smart caching to reduce tape seeking
+- Batch operations to reduce overhead
 
-## 注意事项
+## Important Notes
 
-1. **权限要求**: 需要管理员权限才能发送 SCSI 命令
-2. **设备兼容性**: 支持 LTO-3 到 LTO-8 驱动器
-3. **数据安全**: 建议总是使用 `--verify` 参数
-4. **容量限制**: 会自动检查磁带剩余空间
-5. **格式兼容**: 生成的磁带可与其他 LTFS 工具互操作
+1. **Permission Requirements**: Administrator privileges required for SCSI commands
+2. **Device Compatibility**: Supports LTO-3 to LTO-8 drives
+3. **Data Safety**: Always recommend using `--verify` parameter
+4. **Capacity Limits**: Automatic tape space checking
+5. **Format Compatibility**: Generated tapes are interoperable with other LTFS tools
 
-## 故障排除
+## Troubleshooting
 
-### 常见问题
+### Common Issues
 
-1. **"Access denied"错误**
+1. **"Access denied" error**
 
-   - 以管理员身份运行命令提示符
-   - 确保用户有访问磁带设备的权限
+   - Run command prompt as administrator
+   - Ensure user has tape device access permissions
 
-2. **"No tape detected"错误**
+2. **"No tape detected" error**
 
-   - 检查磁带是否正确插入
-   - 确认磁带驱动器工作正常
+   - Check if tape is properly inserted
+   - Confirm tape drive is working correctly
 
-3. **"Insufficient space"错误**
+3. **"Insufficient space" error**
 
-   - 使用 `rustltfs info TAPE0` 查看剩余空间
-   - 考虑使用新磁带或清理旧数据
+   - Use `rustltfs info TAPE0` to check remaining space
+   - Consider using new tape or cleaning old data
 
-4. **读写速度慢**
-   - 确保使用高质量 LTO 磁带
-   - 避免频繁的小文件操作
-   - 考虑批量打包后再写入
+4. **Slow read/write speeds**
+   - Ensure using high-quality LTO tapes
+   - Avoid frequent small file operations
+   - Consider batch packaging before writing
 
-## 技术支持
+## Technical Support
 
-本工具参考了 IBM LTFSCopyGUI 的实现，确保与标准 LTFS 格式的完全兼容性。
+This tool references the IBM LTFSCopyGUI implementation to ensure full compatibility with standard LTFS format.
 
-## 版本信息
+## Version Information
 
-- 版本: 0.1.0
-- 编译目标: x86_64-pc-windows-gnu
-- 编译时间: $(date)
-- Rust 版本: $(rustc --version)
+- Version: 0.1.0
+- Build Target: x86_64-pc-windows-gnu
+- Build Time: $(date)
+- Rust Version: $(rustc --version)
