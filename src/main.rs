@@ -127,7 +127,7 @@ async fn run(args: Cli) -> Result<()> {
                 if !skip_index {
                     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
                     let index_filename = format!("LTFSIndex_Load_{}.schema", timestamp);
-                    info!("自动保存索引文件到当前目录: {}", index_filename);
+                    info!("Auto saving index file to current directory: {}", index_filename);
                     
                     match ops.save_index_to_file(&std::path::PathBuf::from(&index_filename)).await {
                         Ok(_) => {
@@ -150,7 +150,7 @@ async fn run(args: Cli) -> Result<()> {
             if device_initialized && !skip_index && index_file.is_none() {
                 let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
                 let index_filename = format!("LTFSIndex_Load_{}.schema", timestamp);
-                info!("自动保存从磁带读取的索引文件到当前目录: {}", index_filename);
+                info!("Auto saving index file loaded from tape to current directory: {}", index_filename);
                 
                 match ops.save_index_to_file(&std::path::PathBuf::from(&index_filename)).await {
                     Ok(_) => {
