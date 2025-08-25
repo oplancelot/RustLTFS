@@ -158,6 +158,17 @@ rustltfs status TAPE0
 rustltfs info TAPE0
 ```
 
+### test
+```cmd
+# 先检查设备列表
+rustltfs.exe list
+
+# 然后进行详细诊断
+rustltfs.exe diagnose --tape \\.\TAPE1 --detailed --test-read
+
+# 最后尝试读取索引
+rustltfs.exe read --tape \\.\TAPE1
+```
 ## 命令参数说明
 
 ### read 命令
