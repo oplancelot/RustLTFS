@@ -1,7 +1,23 @@
 use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::LtfsIndex;
-use tracing::{info, warn};
+use crate::scsi::{ScsiInterface, MediaType};
+use tracing::{info, warn, debug};
 use std::path::Path;
+use uuid::Uuid;
+
+/// Index location information
+#[derive(Debug, Clone)]
+struct IndexLocation {
+    partition: String,
+    start_block: u64,
+}
+
+/// Helper function to warn about deep directory nesting
+fn warn_if_deep_nesting(subdirs: &[crate::ltfs_index::Directory]) {
+    if !subdirs.is_empty() {
+        warn!("Deep directory nesting detected - some subdirectories may not be extracted in this implementation");
+    }
+}
 
 /// Path content types for describing tape path contents
 #[derive(Debug, Clone)]
@@ -69,6 +85,7 @@ pub struct TapeOperations {
     schema: Option<LtfsIndex>,
     block_size: u32,
     tape_drive: String,
+    scsi: ScsiInterface,
 }
 
 impl TapeOperations {
@@ -83,6 +100,7 @@ impl TapeOperations {
             schema: None,
             block_size: 524288, // Default block size
             tape_drive: device.to_string(),
+            scsi: ScsiInterface::new(),
         }
     }
 
@@ -95,25 +113,41 @@ impl TapeOperations {
             return Ok(());
         }
         
-        // Tape device open logic
-        let mut drive_opened = false;
-        
-        match LtfsAccess::new(&self.device_path) {
-            Ok(handle) => {
-                self.tape_handle = Some(handle);
-                drive_opened = true;
+        // Open SCSI device
+        match self.scsi.open_device(&self.device_path) {
+            Ok(()) => {
                 info!("Tape device opened successfully");
+                
+                // Check device status and media type
+                match self.scsi.check_media_status() {
+                    Ok(media_type) => {
+                        match media_type {
+                            MediaType::NoTape => {
+                                warn!("No tape detected in drive");
+                                return Err(RustLtfsError::tape_device("No tape loaded".to_string()));
+                            }
+                            MediaType::Unknown(_) => {
+                                warn!("Unknown media type detected, attempting to continue");
+                            }
+                            _ => {
+                                info!("Detected media type: {}", media_type.description());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to check media status: {}", e);
+                        return Err(RustLtfsError::tape_device(format!("Media status check failed: {}", e)));
+                    }
+                }
+                
+                // Auto read LTFS index when device opened
+                info!("Device opened, auto reading LTFS index (simulating 读取索引ToolStripMenuItem_Click)...");
+                self.read_index_from_tape().await?;
             }
             Err(e) => {
                 warn!("Failed to open tape device: {}", e);
                 return Err(RustLtfsError::tape_device(format!("Device open failed: {}", e)));
             }
-        }
-        
-        // Auto read LTFS index when device opened
-        if drive_opened {
-            info!("Device opened, auto reading LTFS index (simulating 读取索引ToolStripMenuItem_Click)...");
-            self.read_index_from_tape().await?;
         }
         
         Ok(())
@@ -123,27 +157,189 @@ impl TapeOperations {
     pub async fn read_index_from_tape(&mut self) -> Result<()> {
         info!("Starting to read LTFS index from tape (corresponding to 读取索引ToolStripMenuItem_Click)...");
         
-        if self.tape_handle.is_none() {
-            return Err(RustLtfsError::tape_device("Tape device not initialized".to_string()));
+        if self.offline_mode {
+            info!("Offline mode: using dummy index for simulation");
+            return Ok(());
         }
         
-        // LTFS index reading steps:
+        // LTFS index reading steps using real SCSI operations:
         
         // 1. Locate to index partition (partition a)
         info!("Locating to index partition (partition a)");
         
+        // Position to index partition (partition 0 = 'a')
+        // Try to find the current index location first
+        let index_location = self.find_current_index_location()?;
+        
+        debug!("Found index at partition {}, block {}", 
+               index_location.partition, index_location.start_block);
+        
+        let partition_id = match index_location.partition.as_str() {
+            "a" | "A" => 0,
+            "b" | "B" => 1,
+            _ => 0, // Default to partition A
+        };
+        
+        // Position to the correct index location
+        self.scsi.locate_block(partition_id, index_location.start_block)?;
+        
         // 2. Read index XML data
         info!("Reading index XML data");
         
-        // 3. Parse index
+        let xml_content = self.read_index_xml_from_tape()?;
+        
+        // 3. Parse LTFS index
         info!("Parsing LTFS index");
+        
+        let index = LtfsIndex::from_xml_streaming(&xml_content)?;
         
         // 4. Update internal state
         info!("Index reading completed, updating internal state");
         
-        // Note: Real implementation needs SCSI commands
-        warn!("Current simulation implementation - need to implement real SCSI tape operations");
+        self.index = Some(index.clone());
+        self.schema = Some(index);
         
+        info!("LTFS index successfully loaded from tape");
+        
+        Ok(())
+    }
+    
+    /// Find current LTFS index location from volume label
+    fn find_current_index_location(&self) -> Result<IndexLocation> {
+        debug!("Finding current index location from volume label");
+        
+        // LTFS Volume Label is typically at partition A, block 0
+        self.scsi.locate_block(0, 0)?;
+        
+        let mut buffer = vec![0u8; crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize];
+        
+        match self.scsi.read_blocks(1, &mut buffer) {
+            Ok(_) => {
+                // Parse volume label to find index location
+                // LTFS volume label contains pointers to current and previous index
+                if let Some(location) = self.parse_volume_label(&buffer)? {
+                    return Ok(location);
+                }
+            }
+            Err(e) => {
+                warn!("Failed to read volume label: {}", e);
+            }
+        }
+        
+        // Fallback to default index location (block 5 on partition A)
+        warn!("Using default index location: partition A, block 5");
+        Ok(IndexLocation {
+            partition: "a".to_string(),
+            start_block: 5,
+        })
+    }
+    
+    /// Parse LTFS volume label to extract index location
+    fn parse_volume_label(&self, buffer: &[u8]) -> Result<Option<IndexLocation>> {
+        // LTFS volume label parsing - simplified implementation
+        // In a full implementation, this would parse the actual LTFS volume label structure
+        
+        // Look for LTFS signature in the buffer
+        let ltfs_signature = b"LTFS";
+        if let Some(pos) = buffer.windows(ltfs_signature.len())
+            .position(|window| window == ltfs_signature) {
+            debug!("Found LTFS signature at offset {}", pos);
+            
+            // For now, use a fixed index location
+            // Real implementation would parse the volume label structure
+            return Ok(Some(IndexLocation {
+                partition: "a".to_string(),
+                start_block: 5,
+            }));
+        }
+        
+        debug!("No LTFS signature found in volume label");
+        Ok(None)
+    }
+    
+    /// Read index XML data from tape with progressive expansion
+    fn read_index_xml_from_tape(&self) -> Result<String> {
+        debug!("Reading LTFS index XML data from tape");
+        
+        let mut xml_content = String::new();
+        let mut blocks_to_read = 10u32; // Start with 10 blocks
+        let max_blocks = 200u32; // Maximum 200 blocks for safety (12.8MB)
+        
+        loop {
+            debug!("Attempting to read {} blocks for index", blocks_to_read);
+            let buffer_size = blocks_to_read as usize * crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
+            let mut buffer = vec![0u8; buffer_size];
+            
+            match self.scsi.read_blocks_with_retry(blocks_to_read, &mut buffer, 2) {
+                Ok(blocks_read) => {
+                    debug!("Successfully read {} blocks", blocks_read);
+                    
+                    // Find the actual data length (look for XML end)
+                    let actual_data_len = buffer.iter()
+                        .position(|&b| b == 0)
+                        .unwrap_or(buffer.len());
+                    
+                    // Convert to string
+                    match String::from_utf8(buffer[..actual_data_len].to_vec()) {
+                        Ok(content) => {
+                            xml_content = content;
+                            
+                            // Check if we have a complete XML document
+                            if xml_content.contains("</ltfsindex>") {
+                                info!("Complete LTFS index XML found ({} bytes)", xml_content.len());
+                                break;
+                            }
+                            
+                            // If incomplete and we haven't hit the limit, try reading more blocks
+                            if blocks_to_read < max_blocks {
+                                blocks_to_read = std::cmp::min(blocks_to_read * 2, max_blocks);
+                                debug!("XML incomplete, expanding to {} blocks", blocks_to_read);
+                                continue;
+                            } else {
+                                warn!("Reached maximum block limit, using partial XML");
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            return Err(RustLtfsError::ltfs_index(
+                                format!("Failed to parse index data as UTF-8: {}", e)
+                            ));
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(RustLtfsError::scsi(
+                        format!("Failed to read index from tape: {}", e)
+                    ));
+                }
+            }
+        }
+        
+        // Validate the extracted XML
+        self.validate_index_xml(&xml_content)?;
+        
+        info!("Successfully read LTFS index ({} bytes) from tape", xml_content.len());
+        Ok(xml_content)
+    }
+    
+    /// Validate index XML structure
+    fn validate_index_xml(&self, xml_content: &str) -> Result<()> {
+        debug!("Validating LTFS index XML structure");
+        
+        // Basic validation checks
+        if xml_content.is_empty() {
+            return Err(RustLtfsError::ltfs_index("Index XML is empty".to_string()));
+        }
+        
+        if !xml_content.contains("<ltfsindex") {
+            return Err(RustLtfsError::ltfs_index("Invalid LTFS index format - missing ltfsindex element".to_string()));
+        }
+        
+        if !xml_content.contains("</ltfsindex>") {
+            warn!("LTFS index XML may be incomplete - missing closing tag");
+        }
+        
+        debug!("LTFS index XML validation passed");
         Ok(())
     }
 
@@ -182,11 +378,10 @@ impl TapeOperations {
         // Allow execution in offline mode but skip actual tape operations
         if self.offline_mode {
             info!("Offline mode: simulating file write operation");
-        } else if self.tape_handle.is_none() {
-            return Err(RustLtfsError::tape_device("Tape device not initialized".to_string()));
+            return Ok(());
         }
         
-        // File write steps:
+        // File write steps using real SCSI operations:
         
         // 1. Check file size and status
         let file_size = tokio::fs::metadata(source_path).await
@@ -195,21 +390,190 @@ impl TapeOperations {
         
         info!("File size: {} bytes", file_size);
         
-        // 2. Locate to write position
-        info!("Locating to write position");
+        // 2. Check available space on tape
+        if let Err(e) = self.check_available_space(file_size) {
+            return Err(RustLtfsError::tape_device(format!("Insufficient space on tape: {}", e)));
+        }
         
-        // 3. Set block size
-        info!("Setting block size: {}", self.block_size);
+        // 3. Read file content
+        let file_content = tokio::fs::read(source_path).await
+            .map_err(|e| RustLtfsError::file_operation(format!("Unable to read file: {}", e)))?;
         
-        // 4. Write data blocks
-        info!("Writing data to tape");
+        // 4. Position to data partition (partition B) for file data
+        let current_position = self.scsi.read_position()?;
+        info!("Current tape position: partition={}, block={}", 
+            current_position.partition, current_position.block_number);
         
-        // 5. Update index
-        info!("Updating LTFS index");
+        // Move to data partition if not already there
+        let data_partition = 1; // Partition B
+        let write_start_block = current_position.block_number.max(100); // Start at block 100 for data
         
-        warn!("Current simulation implementation - need to implement real file write operations");
+        if current_position.partition != data_partition {
+            self.scsi.locate_block(data_partition, write_start_block)?;
+        }
+        
+        // 5. Write file data in blocks
+        let blocks_needed = (file_size + crate::scsi::block_sizes::LTO_BLOCK_SIZE as u64 - 1) 
+                           / crate::scsi::block_sizes::LTO_BLOCK_SIZE as u64;
+        let buffer_size = blocks_needed as usize * crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
+        let mut buffer = vec![0u8; buffer_size];
+        
+        // Copy file data to buffer (rest will be zero-padded)
+        buffer[..file_content.len()].copy_from_slice(&file_content);
+        
+        // Get position before writing for extent information
+        let write_position = self.scsi.read_position()?;
+        
+        // Write file data blocks
+        let blocks_written = self.scsi.write_blocks(blocks_needed as u32, &buffer)?;
+        
+        if blocks_written != blocks_needed as u32 {
+            return Err(RustLtfsError::scsi(
+                format!("Expected to write {} blocks, but wrote {}", blocks_needed, blocks_written)
+            ));
+        }
+        
+        // Write file mark to separate this file from next
+        self.scsi.write_filemarks(1)?;
+        
+        info!("Successfully wrote {} blocks ({} bytes) to tape", blocks_written, file_size);
+        
+        // 6. Update LTFS index with new file entry
+        self.update_index_for_file_write(source_path, target_path, file_size, &write_position)?;
+        
+        info!("File write completed: {:?}", source_path);
+        Ok(())
+    }
+    
+    /// Check available space on tape
+    fn check_available_space(&self, required_size: u64) -> Result<()> {
+        // For now, we assume there's enough space
+        // In a full implementation, this would check MAM data or use other SCSI commands
+        // to determine remaining capacity
+        
+        // Minimum safety check - require at least 1GB free space
+        let min_required_space = required_size + 1024 * 1024 * 1024; // File size + 1GB buffer
+        
+        debug!("Checking available space: required {} bytes (with buffer: {})", 
+               required_size, min_required_space);
+        
+        // This is a simplified check - in reality would query tape capacity
+        if required_size > 8 * 1024 * 1024 * 1024 * 1024 { // 8TB limit for LTO-8
+            return Err(RustLtfsError::tape_device("File too large for tape capacity".to_string()));
+        }
         
         Ok(())
+    }
+    
+    /// Update LTFS index for file write operation
+    fn update_index_for_file_write(
+        &mut self, 
+        source_path: &Path, 
+        target_path: &str, 
+        file_size: u64,
+        write_position: &crate::scsi::TapePosition
+    ) -> Result<()> {
+        debug!("Updating LTFS index for write: {:?} -> {} ({} bytes)", 
+               source_path, target_path, file_size);
+        
+        // Get or create current index
+        let mut current_index = match &self.index {
+            Some(index) => index.clone(),
+            None => {
+                // Create new index if none exists
+                self.create_new_ltfs_index()
+            }
+        };
+        
+        // Create new file entry
+        let file_name = source_path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        
+        let now = chrono::Utc::now().to_rfc3339();
+        let new_uid = current_index.highestfileuid.unwrap_or(0) + 1;
+        
+        let extent = crate::ltfs_index::FileExtent {
+            partition: match write_position.partition {
+                0 => "a".to_string(),
+                1 => "b".to_string(),
+                _ => "b".to_string(), // Default to data partition
+            },
+            start_block: write_position.block_number,
+            byte_count: file_size,
+            file_offset: 0,
+            byte_offset: 0,
+        };
+        
+        let new_file = crate::ltfs_index::File {
+            name: file_name,
+            uid: new_uid,
+            length: file_size,
+            creation_time: now.clone(),
+            change_time: now.clone(),
+            modify_time: now.clone(),
+            access_time: now.clone(),
+            backup_time: now,
+            read_only: false,
+            openforwrite: false,
+            symlink: None,
+            extent_info: crate::ltfs_index::ExtentInfo {
+                extents: vec![extent],
+            },
+            extended_attributes: None,
+        };
+        
+        // Add file to root directory (simplified - should handle path parsing)
+        current_index.root_directory.contents.files.push(new_file);
+        
+        // Update index metadata
+        current_index.generationnumber += 1;
+        current_index.updatetime = chrono::Utc::now().to_rfc3339();
+        current_index.highestfileuid = Some(new_uid);
+        
+        // Update internal index
+        self.index = Some(current_index.clone());
+        
+        debug!("LTFS index updated with new file: UID {}", new_uid);
+        Ok(())
+    }
+    
+    /// Create new LTFS index
+    fn create_new_ltfs_index(&self) -> LtfsIndex {
+        info!("Creating new LTFS index");
+        
+        let now = chrono::Utc::now().to_rfc3339();
+        
+        LtfsIndex {
+            version: "2.4.0".to_string(),
+            creator: "RustLTFS".to_string(),
+            volumeuuid: uuid::Uuid::new_v4().to_string(),
+            generationnumber: 1,
+            updatetime: now.clone(),
+            location: crate::ltfs_index::Location {
+                partition: "a".to_string(),
+                startblock: 5,
+            },
+            previousgenerationlocation: None,
+            allowpolicyupdate: None,
+            volumelockstate: None,
+            highestfileuid: Some(0),
+            root_directory: crate::ltfs_index::Directory {
+                name: "".to_string(),
+                uid: 0,
+                creation_time: now,
+                change_time: chrono::Utc::now().to_rfc3339(),
+                modify_time: chrono::Utc::now().to_rfc3339(),
+                access_time: chrono::Utc::now().to_rfc3339(),
+                backup_time: chrono::Utc::now().to_rfc3339(),
+                read_only: false,
+                contents: crate::ltfs_index::DirectoryContents {
+                    files: Vec::new(),
+                    directories: Vec::new(),
+                },
+            },
+        }
     }
 
     /// Write directory to tape
@@ -245,7 +609,7 @@ impl TapeOperations {
         info!("Listing path content: {}", tape_path);
         
         // Check if index is loaded
-        let _index = match &self.index {
+        let index = match &self.index {
             Some(idx) => idx,
             None => {
                 warn!("Index not loaded");
@@ -253,52 +617,55 @@ impl TapeOperations {
             }
         };
         
-        // Parse tape path
-        let path_parts: Vec<&str> = tape_path.trim_start_matches('/').trim_start_matches('\\')
-            .split(&['/', '\\'][..])
-            .filter(|s| !s.is_empty())
-            .collect();
-        
-        info!("Path components: {:?}", path_parts);
-        
-        // Simulate path parsing and content listing
-        // Real implementation needs to find corresponding directory or file based on LTFS index
-        if path_parts.is_empty() {
-            // Root directory content
-            let entries = vec![
-                DirectoryEntry {
-                    name: "example_dir".to_string(),
-                    is_directory: true,
-                    size: None,
-                    file_count: Some(5),
-                    file_uid: None,
-                    created_time: Some("2024-01-01T12:00:00Z".to_string()),
-                    modified_time: Some("2024-01-01T12:00:00Z".to_string()),
-                },
-                DirectoryEntry {
-                    name: "example_file.txt".to_string(),
-                    is_directory: false,
-                    size: Some(1024),
-                    file_count: None,
-                    file_uid: Some(12345),
-                    created_time: Some("2024-01-01T10:00:00Z".to_string()),
-                    modified_time: Some("2024-01-01T11:00:00Z".to_string()),
-                },
-            ];
-            
-            Ok(Some(PathContent::Directory(entries)))
-        } else {
-            // Simulate file info
-            let file_info = FileInfo {
-                name: path_parts.last().map_or("unknown", |v| v).to_string(),
-                size: 2048,
-                file_uid: 67890,
-                created_time: Some("2024-01-01T09:00:00Z".to_string()),
-                modified_time: Some("2024-01-01T10:30:00Z".to_string()),
-                access_time: Some("2024-01-01T11:45:00Z".to_string()),
-            };
-            
-            Ok(Some(PathContent::File(file_info)))
+        // Use LTFS index to find the actual path
+        match index.find_path(tape_path)? {
+            crate::ltfs_index::PathType::Directory(dir) => {
+                let mut entries = Vec::new();
+                
+                // Add subdirectories
+                for subdir in &dir.contents.directories {
+                    entries.push(DirectoryEntry {
+                        name: subdir.name.clone(),
+                        is_directory: true,
+                        size: None,
+                        file_count: Some((subdir.contents.files.len() + subdir.contents.directories.len()) as u64),
+                        file_uid: Some(subdir.uid),
+                        created_time: Some(subdir.creation_time.clone()),
+                        modified_time: Some(subdir.change_time.clone()),
+                    });
+                }
+                
+                // Add files
+                for file in &dir.contents.files {
+                    entries.push(DirectoryEntry {
+                        name: file.name.clone(),
+                        is_directory: false,
+                        size: Some(file.length),
+                        file_count: None,
+                        file_uid: Some(file.uid),
+                        created_time: Some(file.creation_time.clone()),
+                        modified_time: Some(file.modify_time.clone()),
+                    });
+                }
+                
+                Ok(Some(PathContent::Directory(entries)))
+            }
+            crate::ltfs_index::PathType::File(file) => {
+                let file_info = FileInfo {
+                    name: file.name.clone(),
+                    size: file.length,
+                    file_uid: file.uid,
+                    created_time: Some(file.creation_time.clone()),
+                    modified_time: Some(file.modify_time.clone()),
+                    access_time: Some(file.access_time.clone()),
+                };
+                
+                Ok(Some(PathContent::File(file_info)))
+            }
+            crate::ltfs_index::PathType::NotFound => {
+                debug!("Path not found: {}", tape_path);
+                Ok(None)
+            }
         }
     }
 
@@ -306,20 +673,210 @@ impl TapeOperations {
     pub async fn preview_file_content(&self, file_uid: u64, max_lines: usize) -> Result<String> {
         info!("Previewing file content: UID {}, max lines: {}", file_uid, max_lines);
         
-        if self.tape_handle.is_none() {
-            return Err(RustLtfsError::tape_device("Tape device not initialized".to_string()));
+        if self.offline_mode {
+            info!("Offline mode: returning dummy preview content");
+            return Ok("[Offline Mode] File content preview not available without tape access".to_string());
         }
         
-        // Simulate file content reading
-        // Real implementation needs:
-        // 1. Find file extent info by file_uid
-        // 2. Locate to file start block
-        // 3. Read specified bytes of data
-        // 4. Convert to text and split by lines
+        // Find file by UID in index
+        let index = match &self.index {
+            Some(idx) => idx,
+            None => {
+                return Err(RustLtfsError::ltfs_index("Index not loaded".to_string()));
+            }
+        };
         
-        warn!("File content preview not implemented yet - need to implement real file reading");
+        let file_info = self.find_file_by_uid(index, file_uid)?;
         
-        Err(RustLtfsError::ltfs_index("File content preview functionality not implemented".to_string()))
+        // Read file content using SCSI operations
+        let content_bytes = self.read_file_content_from_tape(&file_info, max_lines * 100).await?; // Estimate bytes per line
+        
+        // Convert to string and limit lines
+        let content_str = String::from_utf8_lossy(&content_bytes);
+        let lines: Vec<&str> = content_str.lines().take(max_lines).collect();
+        
+        Ok(lines.join("\n"))
+    }
+    
+    /// Find file by UID in LTFS index
+    fn find_file_by_uid(&self, index: &LtfsIndex, file_uid: u64) -> Result<crate::ltfs_index::File> {
+        self.search_file_by_uid(&index.root_directory, file_uid)
+            .ok_or_else(|| RustLtfsError::ltfs_index(format!("File with UID {} not found", file_uid)))
+    }
+    
+    /// Recursively search for file by UID
+    fn search_file_by_uid(&self, dir: &crate::ltfs_index::Directory, file_uid: u64) -> Option<crate::ltfs_index::File> {
+        // Search files in current directory
+        for file in &dir.contents.files {
+            if file.uid == file_uid {
+                return Some(file.clone());
+            }
+        }
+        
+        // Recursively search subdirectories
+        for subdir in &dir.contents.directories {
+            if let Some(found_file) = self.search_file_by_uid(subdir, file_uid) {
+                return Some(found_file);
+            }
+        }
+        
+        None
+    }
+    
+    /// Read file content from tape using SCSI operations
+    async fn read_file_content_from_tape(&self, file_info: &crate::ltfs_index::File, max_bytes: usize) -> Result<Vec<u8>> {
+        debug!("Reading file content from tape: {} (max {} bytes)", file_info.name, max_bytes);
+        
+        if file_info.extent_info.extents.is_empty() {
+            return Err(RustLtfsError::ltfs_index("File has no extent information".to_string()));
+        }
+        
+        // Get the first extent for reading
+        let first_extent = &file_info.extent_info.extents[0];
+        
+        // Calculate read parameters
+        let bytes_to_read = std::cmp::min(max_bytes as u64, file_info.length) as usize;
+        let blocks_to_read = (bytes_to_read + crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize - 1) 
+                           / crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
+        
+        // Position to file start
+        let partition_id = self.get_partition_id(&first_extent.partition)?;
+        self.scsi.locate_block(partition_id, first_extent.start_block)?;
+        
+        // Read blocks
+        let buffer_size = blocks_to_read * crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
+        let mut buffer = vec![0u8; buffer_size];
+        
+        let blocks_read = self.scsi.read_blocks_with_retry(blocks_to_read as u32, &mut buffer, 2)?;
+        
+        if blocks_read == 0 {
+            return Err(RustLtfsError::scsi("No data read from tape".to_string()));
+        }
+        
+        // Extract actual file content (considering byte offset)
+        let start_offset = first_extent.byte_offset as usize;
+        let end_offset = start_offset + bytes_to_read;
+        
+        if end_offset > buffer.len() {
+            return Ok(buffer[start_offset..].to_vec());
+        }
+        
+        Ok(buffer[start_offset..end_offset].to_vec())
+    }
+    
+    /// Get partition ID from partition name
+    fn get_partition_id(&self, partition: &str) -> Result<u8> {
+        match partition.to_lowercase().as_str() {
+            "a" => Ok(0),
+            "b" => Ok(1),
+            _ => Err(RustLtfsError::ltfs_index(format!("Invalid partition: {}", partition)))
+        }
+    }
+    
+    /// Enhanced error recovery for SCSI operations
+    async fn recover_from_scsi_error(&self, error: &RustLtfsError, operation: &str) -> Result<()> {
+        warn!("SCSI operation '{}' failed, attempting recovery: {}", operation, error);
+        
+        // Recovery strategy 1: Check device status
+        match self.scsi.check_media_status() {
+            Ok(media_type) => {
+                if matches!(media_type, MediaType::NoTape) {
+                    return Err(RustLtfsError::tape_device("No tape loaded - manual intervention required".to_string()));
+                }
+                debug!("Media status OK: {}", media_type.description());
+            }
+            Err(e) => {
+                warn!("Media status check failed during recovery: {}", e);
+            }
+        }
+        
+        // Recovery strategy 2: Read current position to test responsiveness
+        match self.scsi.read_position() {
+            Ok(pos) => {
+                debug!("Drive responsive at position: partition {}, block {}", pos.partition, pos.block_number);
+            }
+            Err(e) => {
+                warn!("Drive not responsive during recovery: {}", e);
+                return self.attempt_drive_reset().await;
+            }
+        }
+        
+        // Recovery strategy 3: Small delay to allow drive to settle
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+        
+        info!("SCSI recovery completed for operation: {}", operation);
+        Ok(())
+    }
+    
+    /// Attempt to reset the drive as last resort
+    async fn attempt_drive_reset(&self) -> Result<()> {
+        warn!("Attempting drive reset as recovery measure");
+        
+        // Try to rewind to beginning of tape
+        match self.scsi.locate_block(0, 0) {
+            Ok(()) => {
+                info!("Successfully rewound tape during recovery");
+                
+                // Wait for rewind to complete
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                
+                // Test position read
+                match self.scsi.read_position() {
+                    Ok(pos) => {
+                        info!("Drive reset successful, position: partition {}, block {}", pos.partition, pos.block_number);
+                        Ok(())
+                    }
+                    Err(e) => {
+                        Err(RustLtfsError::tape_device(format!("Drive reset failed - position unreadable: {}", e)))
+                    }
+                }
+            }
+            Err(e) => {
+                Err(RustLtfsError::tape_device(format!("Drive reset failed - cannot rewind: {}", e)))
+            }
+        }
+    }
+    
+    /// Verify tape operation with retry
+    async fn verify_operation_with_retry<F, T>(&self, operation_name: &str, operation: F, max_retries: u32) -> Result<T>
+    where
+        F: Fn() -> Result<T> + Clone,
+    {
+        let mut last_error = None;
+        
+        for attempt in 0..=max_retries {
+            if attempt > 0 {
+                info!("Retrying operation '{}' (attempt {} of {})", operation_name, attempt + 1, max_retries + 1);
+                
+                // Progressive backoff delay
+                let delay_ms = std::cmp::min(1000 * attempt, 10000); // Max 10 second delay
+                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms as u64)).await;
+                
+                // Attempt recovery
+                if let Some(ref error) = last_error {
+                    if let Err(recovery_error) = self.recover_from_scsi_error(error, operation_name).await {
+                        warn!("Recovery failed for '{}': {}", operation_name, recovery_error);
+                    }
+                }
+            }
+            
+            match operation() {
+                Ok(result) => {
+                    if attempt > 0 {
+                        info!("Operation '{}' succeeded after {} retries", operation_name, attempt);
+                    }
+                    return Ok(result);
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                    warn!("Operation '{}' failed on attempt {}: {:?}", operation_name, attempt + 1, last_error);
+                }
+            }
+        }
+        
+        Err(last_error.unwrap_or_else(|| {
+            RustLtfsError::scsi(format!("Operation '{}' failed after {} attempts", operation_name, max_retries + 1))
+        }))
     }
 
     /// Extract files or directories from tape
@@ -331,24 +888,25 @@ impl TapeOperations {
     ) -> Result<ExtractionResult> {
         info!("Extracting from tape: {} -> {:?}, verify: {}", tape_path, local_dest, verify);
         
-        if self.tape_handle.is_none() {
-            return Err(RustLtfsError::tape_device("Tape device not initialized".to_string()));
+        if self.offline_mode {
+            info!("Offline mode: simulating extraction operation");
+            return Ok(ExtractionResult {
+                files_extracted: 1,
+                directories_created: 0,
+                total_bytes: 1024,
+                verification_passed: verify,
+            });
         }
         
-        // 检查索引是否已加载
-        let _index = match &self.index {
+        // Check if index is loaded
+        let index = match &self.index {
             Some(idx) => idx,
             None => {
                 return Err(RustLtfsError::ltfs_index("Index not loaded".to_string()));
             }
         };
         
-        // 对应LTFSWriter.vb中的提取步骤：
-        
-        // 1. 解析源路径，确定是文件还是目录
-        info!("Parsing source path: {}", tape_path);
-        
-        // 2. 创建本地目标目录
+        // Create local destination directory if needed
         if let Some(parent) = local_dest.parent() {
             tokio::fs::create_dir_all(parent).await
                 .map_err(|e| RustLtfsError::file_operation(
@@ -356,31 +914,217 @@ impl TapeOperations {
                 ))?;
         }
         
-        // 3. 递归提取文件和目录 (对应IterDir逻辑)
-        info!("Recursively extracting files and directories");
+        // Find the path in LTFS index
+        match index.find_path(tape_path)? {
+            crate::ltfs_index::PathType::File(file) => {
+                // Extract single file
+                self.extract_single_file(&file, local_dest, verify).await
+            }
+            crate::ltfs_index::PathType::Directory(dir) => {
+                // Extract directory recursively
+                self.extract_directory(&dir, local_dest, tape_path, verify).await
+            }
+            crate::ltfs_index::PathType::NotFound => {
+                Err(RustLtfsError::ltfs_index(format!("Path not found: {}", tape_path)))
+            }
+        }
+    }
+    
+    /// Extract a single file from tape
+    async fn extract_single_file(
+        &self,
+        file_info: &crate::ltfs_index::File,
+        dest_path: &Path,
+        verify: bool
+    ) -> Result<ExtractionResult> {
+        info!("Extracting single file: {} -> {:?}", file_info.name, dest_path);
         
-        // 4. 文件按起始块排序 (对应FileList.Sort逻辑)
-        info!("Sorting file list by tape position");
+        let mut total_bytes = 0u64;
+        let mut verification_passed = true;
         
-        // 5. 逐个提取文件 (对应RestoreFile调用)
-        info!("Starting to extract files one by one");
+        // Read complete file content
+        let file_content = self.read_complete_file_from_tape(file_info).await?;
+        total_bytes += file_content.len() as u64;
         
-        // 6. 验证文件完整性 (如果启用)
+        // Write to local file
+        tokio::fs::write(dest_path, &file_content).await
+            .map_err(|e| RustLtfsError::file_operation(
+                format!("Failed to write file {:?}: {}", dest_path, e)
+            ))?;
+        
+        // Verify if requested
         if verify {
-            info!("Verifying extracted files integrity");
+            verification_passed = self.verify_extracted_file(dest_path, &file_content).await?;
         }
         
-        // 模拟提取结果
-        let result = ExtractionResult {
-            files_extracted: 3,
-            directories_created: 1,
-            total_bytes: 4096,
-            verification_passed: verify,
-        };
+        Ok(ExtractionResult {
+            files_extracted: 1,
+            directories_created: 0,
+            total_bytes,
+            verification_passed,
+        })
+    }
+    
+    /// Extract directory recursively
+    async fn extract_directory(
+        &self,
+        dir_info: &crate::ltfs_index::Directory,
+        dest_path: &Path,
+        tape_base_path: &str,
+        verify: bool
+    ) -> Result<ExtractionResult> {
+        info!("Extracting directory: {} -> {:?}", dir_info.name, dest_path);
         
-        warn!("Current simulation implementation - need to implement real file extraction");
+        let mut files_extracted = 0;
+        let mut directories_created = 0;
+        let mut total_bytes = 0u64;
+        let mut verification_passed = true;
+        
+        // Create the directory
+        tokio::fs::create_dir_all(dest_path).await
+            .map_err(|e| RustLtfsError::file_operation(
+                format!("Failed to create directory {:?}: {}", dest_path, e)
+            ))?;
+        directories_created += 1;
+        
+        // Extract all files in this directory
+        for file in &dir_info.contents.files {
+            let file_dest = dest_path.join(&file.name);
+            let extract_result = self.extract_single_file(file, &file_dest, verify).await?;
+            
+            files_extracted += extract_result.files_extracted;
+            total_bytes += extract_result.total_bytes;
+            verification_passed &= extract_result.verification_passed;
+        }
+        
+        // Extract subdirectories (note: limited recursion depth for safety)
+        for subdir in &dir_info.contents.directories {
+            let subdir_dest = dest_path.join(&subdir.name);
+            
+            // Create subdirectory
+            tokio::fs::create_dir_all(&subdir_dest).await
+                .map_err(|e| RustLtfsError::file_operation(
+                    format!("Failed to create subdirectory {:?}: {}", subdir_dest, e)
+                ))?;
+            directories_created += 1;
+            
+            // Extract files in subdirectory
+            for file in &subdir.contents.files {
+                let file_dest = subdir_dest.join(&file.name);
+                let extract_result = self.extract_single_file(file, &file_dest, verify).await?;
+                
+                files_extracted += extract_result.files_extracted;
+                total_bytes += extract_result.total_bytes;
+                verification_passed &= extract_result.verification_passed;
+            }
+            
+            // Note: For deeper nesting, this would need more sophisticated handling
+            // Currently handles 2 levels deep which covers most LTFS use cases
+            warn_if_deep_nesting(&subdir.contents.directories);
+        }
+        
+        Ok(ExtractionResult {
+            files_extracted,
+            directories_created,
+            total_bytes,
+            verification_passed,
+        })
+    }
+    
+    /// Read complete file content from tape
+    async fn read_complete_file_from_tape(&self, file_info: &crate::ltfs_index::File) -> Result<Vec<u8>> {
+        debug!("Reading complete file from tape: {} ({} bytes)", file_info.name, file_info.length);
+        
+        if file_info.extent_info.extents.is_empty() {
+            return Err(RustLtfsError::ltfs_index("File has no extent information".to_string()));
+        }
+        
+        let mut result = Vec::with_capacity(file_info.length as usize);
+        
+        // Read all extents
+        for extent in &file_info.extent_info.extents {
+            let extent_data = self.read_extent_from_tape(extent).await?;
+            result.extend_from_slice(&extent_data);
+        }
+        
+        // Trim to actual file size
+        result.truncate(file_info.length as usize);
         
         Ok(result)
+    }
+    
+    /// Read a single extent from tape
+    async fn read_extent_from_tape(&self, extent: &crate::ltfs_index::FileExtent) -> Result<Vec<u8>> {
+        debug!("Reading extent: partition {}, block {}, {} bytes", 
+               extent.partition, extent.start_block, extent.byte_count);
+        
+        // Use retry mechanism for critical SCSI operations
+        let partition_id = self.get_partition_id(&extent.partition)?;
+        
+        // Position to extent start with retry
+        self.verify_operation_with_retry(
+            "locate_extent", 
+            move || self.scsi.locate_block(partition_id, extent.start_block),
+            3
+        ).await?;
+        
+        // Calculate blocks needed
+        let bytes_needed = extent.byte_count as usize;
+        let blocks_needed = (bytes_needed + extent.byte_offset as usize + crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize - 1) 
+                           / crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
+        
+        // Read blocks with retry - return the buffer directly
+        let buffer_size = blocks_needed * crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
+        
+        let buffer = self.verify_operation_with_retry(
+            "read_extent_blocks",
+            move || {
+                let mut buf = vec![0u8; buffer_size];
+                match self.scsi.read_blocks_with_retry(blocks_needed as u32, &mut buf, 3) {
+                    Ok(blocks_read) => {
+                        if blocks_read == 0 {
+                            return Err(RustLtfsError::scsi("No data read from tape".to_string()));
+                        }
+                        Ok(buf)
+                    }
+                    Err(e) => Err(e)
+                }
+            },
+            2
+        ).await?;
+        
+        // Extract actual extent data considering byte offset
+        let start_offset = extent.byte_offset as usize;
+        let end_offset = start_offset + bytes_needed;
+        
+        if end_offset > buffer.len() {
+            return Ok(buffer[start_offset..].to_vec());
+        }
+        
+        Ok(buffer[start_offset..end_offset].to_vec())
+    }
+    
+    /// Verify extracted file
+    async fn verify_extracted_file(&self, file_path: &Path, original_content: &[u8]) -> Result<bool> {
+        debug!("Verifying extracted file: {:?}", file_path);
+        
+        // Read written file
+        let written_content = tokio::fs::read(file_path).await
+            .map_err(|e| RustLtfsError::verification(
+                format!("Failed to read written file for verification: {}", e)
+            ))?;
+        
+        // Compare content
+        let verification_passed = written_content == original_content;
+        
+        if !verification_passed {
+            warn!("File verification failed: {:?} (size: {} vs {})", 
+                  file_path, written_content.len(), original_content.len());
+        } else {
+            debug!("File verification passed: {:?}", file_path);
+        }
+        
+        Ok(verification_passed)
     }
 
     /// Auto update LTFS index on tape

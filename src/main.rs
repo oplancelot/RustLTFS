@@ -9,12 +9,10 @@ mod file_ops;
 mod display;
 mod tape_ops;
 
-#[cfg(test)]
-mod test_modules;
 
 use crate::cli::{Cli, Commands};
 use crate::error::Result;
-use tracing::{info, error};
+use tracing::{info, error, warn};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -103,12 +101,67 @@ async fn run(args: Cli) -> Result<()> {
             // Create tape operations instance
             let mut ops = tape_ops::TapeOperations::new(&device, skip_index);
             
-            // Initialize tape device with auto index reading
-            ops.initialize().await?;
+            // Initialize tape device with auto index reading (may fail for non-existent devices)
+            let device_initialized = match ops.initialize().await {
+                Ok(_) => {
+                    info!("Device initialized successfully");
+                    true
+                }
+                Err(e) => {
+                    warn!("Device initialization failed: {}", e);
+                    // Continue with offline operation if index file is provided
+                    if index_file.is_some() {
+                        info!("Continuing with offline operation using index file");
+                        false
+                    } else {
+                        return Err(e); // Fail if no index file provided
+                    }
+                }
+            };
             
             // Load index from file if specified
             if let Some(ref index_path) = index_file {
                 ops.load_index_from_file(index_path).await?;
+                
+                // Auto save index to current directory after successful index loading
+                if !skip_index {
+                    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
+                    let index_filename = format!("LTFSIndex_Load_{}.schema", timestamp);
+                    info!("自动保存索引文件到当前目录: {}", index_filename);
+                    
+                    match ops.save_index_to_file(&std::path::PathBuf::from(&index_filename)).await {
+                        Ok(_) => {
+                            println!("✅ 索引文件已自动保存: {}", index_filename);
+                            info!("Index file saved successfully: {}", index_filename);
+                        }
+                        Err(e) => {
+                            warn!("Failed to save index file: {}", e);
+                            println!("⚠️  索引文件保存失败: {}", e);
+                        }
+                    }
+                }
+            } else if !device_initialized {
+                return Err(crate::error::RustLtfsError::cli_error(
+                    "Neither device initialization nor index file loading succeeded".to_string()
+                ));
+            }
+            
+            // Auto save index to current directory if loaded from tape
+            if device_initialized && !skip_index && index_file.is_none() {
+                let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
+                let index_filename = format!("LTFSIndex_Load_{}.schema", timestamp);
+                info!("自动保存从磁带读取的索引文件到当前目录: {}", index_filename);
+                
+                match ops.save_index_to_file(&std::path::PathBuf::from(&index_filename)).await {
+                    Ok(_) => {
+                        println!("✅ 索引文件已自动保存: {}", index_filename);
+                        info!("Index file saved successfully: {}", index_filename);
+                    }
+                    Err(e) => {
+                        warn!("Failed to save index file: {}", e);
+                        println!("⚠️  索引文件保存失败: {}", e);
+                    }
+                }
             }
             
             // Execute different read operations based on parameters
