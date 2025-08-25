@@ -7,9 +7,10 @@ mod ltfs;
 mod ltfs_index;
 mod file_ops;
 mod display;
+mod tape_ops;
 
 #[cfg(test)]
-mod tests;
+mod test_modules;
 
 use crate::cli::{Cli, Commands};
 use crate::error::Result;
@@ -38,16 +39,185 @@ async fn main() -> Result<()> {
 
 async fn run(args: Cli) -> Result<()> {
     match args.command {
-        Commands::Copy { 
-            source, 
+        Commands::Write { 
+            source,
             device, 
-            destination, 
-            force, 
-            verify, 
-            progress 
+            destination,
+            skip_index,
+            index_file, 
+            force,
+            verify,
+            progress
         } => {
-            info!("Starting copy operation: {:?} -> {}:{:?}", source, device, destination);
-            file_ops::copy_to_tape(source, device, destination, force, verify, progress).await
+            info!("Starting write operation: {:?} -> {}:{:?}", source, device, destination);
+            
+            // Create tape operations instance
+            let mut ops = tape_ops::TapeOperations::new(&device, skip_index);
+            
+            // Initialize tape device
+            ops.initialize().await?;
+            
+            // Load index from file if specified
+            if let Some(ref index_path) = index_file {
+                ops.load_index_from_file(index_path).await?;
+            }
+            
+            // Execute write operation
+            if source.is_dir() {
+                ops.write_directory_to_tape(&source, &destination.to_string_lossy()).await?;
+            } else {
+                ops.write_file_to_tape(&source, &destination.to_string_lossy()).await?;
+            }
+            
+            info!("Write operation completed");
+            
+            // Auto update LTFS index
+            info!("Auto updating LTFS index...");
+            ops.update_index_on_tape().await?;
+            info!("Index update completed");
+            
+            // Save index to local file
+            if !skip_index {
+                let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
+                let index_filename = format!("LTFSIndex_Load_{}.schema", timestamp);
+                info!("Saving index to local file: {}", index_filename);
+                ops.save_index_to_file(&std::path::PathBuf::from(&index_filename)).await?;
+                info!("Index file saved successfully: {}", index_filename);
+            }
+            
+            Ok(())
+        }
+        
+        Commands::Read { 
+            device,
+            source,
+            destination,
+            skip_index,
+            index_file,
+            verify,
+            lines,
+            detailed 
+        } => {
+            info!("Starting read operation: {} -> {:?}", device, source);
+            
+            // Create tape operations instance
+            let mut ops = tape_ops::TapeOperations::new(&device, skip_index);
+            
+            // Initialize tape device with auto index reading
+            ops.initialize().await?;
+            
+            // Load index from file if specified
+            if let Some(ref index_path) = index_file {
+                ops.load_index_from_file(index_path).await?;
+            }
+            
+            // Execute different read operations based on parameters
+            match (source, destination) {
+                (None, None) => {
+                    // List root directory content
+                    info!("Listing tape root directory content");
+                    if let Some(stats) = ops.get_index_statistics() {
+                        println!("\n📊 Tape Index Information:");
+                        println!("  • Volume UUID: {}", stats.volume_uuid);
+                        println!("  • Generation Number: {}", stats.generation_number);
+                        println!("  • Update Time: {}", stats.update_time);
+                        println!("  • Total Files: {}", stats.total_files);
+                    }
+                }
+                (Some(src_path), None) => {
+                    // Display file or directory content
+                    info!("Displaying tape content: {:?}", src_path);
+                    
+                    // Parse tape path and display content
+                    if let Some(content) = ops.list_path_content(&src_path.to_string_lossy()).await? {
+                        match content {
+                            tape_ops::PathContent::Directory(entries) => {
+                                println!("\n📁 Directory Content: {}", src_path.display());
+                                for entry in entries {
+                                    let type_icon = if entry.is_directory { "📁" } else { "📄" };
+                                    let size_info = if entry.is_directory {
+                                        format!("({} items)", entry.file_count.unwrap_or(0))
+                                    } else {
+                                        format!("({} bytes)", entry.size.unwrap_or(0))
+                                    };
+                                    println!("  {} {} {}", type_icon, entry.name, size_info);
+                                    
+                                    if detailed {
+                                        println!("    Created: {}", entry.created_time.as_deref().unwrap_or("Unknown"));
+                                        println!("    Modified: {}", entry.modified_time.as_deref().unwrap_or("Unknown"));
+                                        if let Some(uid) = entry.file_uid {
+                                            println!("    File UID: {}", uid);
+                                        }
+                                    }
+                                }
+                            }
+                            tape_ops::PathContent::File(file_info) => {
+                                println!("\n📄 File Information: {}", src_path.display());
+                                println!("  Size: {} bytes", file_info.size);
+                                println!("  Created: {}", file_info.created_time.as_deref().unwrap_or("Unknown"));
+                                println!("  Modified: {}", file_info.modified_time.as_deref().unwrap_or("Unknown"));
+                                println!("  File UID: {}", file_info.file_uid);
+                                
+                                // Display file content preview
+                                if file_info.size <= 1024 * 1024 && lines > 0 { // Preview files under 1MB only
+                                    println!("\n📖 File Content Preview (first {} lines):", lines);
+                                    if let Ok(preview) = ops.preview_file_content(file_info.file_uid, lines).await {
+                                        println!("{}", preview);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        println!("❌ Path does not exist or is not accessible: {}", src_path.display());
+                    }
+                }
+                (Some(src_path), Some(dest_path)) => {
+                    // Extract files to local
+                    info!("Extracting files to local: {:?} -> {:?}", src_path, dest_path);
+                    
+                    // Parse source path, support file and directory extraction
+                    let extract_result = ops.extract_from_tape(
+                        &src_path.to_string_lossy(),
+                        &dest_path,
+                        verify
+                    ).await?;
+                    
+                    println!("✅ Extraction Completed:");
+                    println!("  Files Extracted: {}", extract_result.files_extracted);
+                    println!("  Directories Created: {}", extract_result.directories_created);
+                    println!("  Total Bytes: {} bytes", extract_result.total_bytes);
+                    
+                    if verify {
+                        println!("  Verification Status: {}", if extract_result.verification_passed {
+                            "✅ Passed"
+                        } else {
+                            "❌ Failed"
+                        });
+                    }
+                }
+                (None, Some(_)) => {
+                    return Err(crate::error::RustLtfsError::cli_error(
+                        "Source path must be specified to extract files".to_string()
+                    ));
+                }
+            }
+            
+            Ok(())
+        }
+        
+        Commands::ViewIndex { 
+            index_file, 
+            detailed, 
+            export_format, 
+            output 
+        } => {
+            info!("Viewing LTFS index file: {:?}", index_file);
+            tape_ops::IndexViewer::handle_view_index_command(
+                &index_file,
+                detailed,
+                export_format,
+                output.as_deref(),
+            ).await
         }
         
         Commands::List { detailed } => {
@@ -58,51 +228,6 @@ async fn run(args: Cli) -> Result<()> {
         Commands::Info { device } => {
             info!("Getting device information: {}", device);
             tape::get_device_info(device).await
-        }
-        
-        Commands::Read { 
-            device, 
-            source, 
-            destination, 
-            verify,
-            lines
-        } => {
-            info!("Smart reading from tape: {}:{:?}", device, source);
-            
-            // Create LTFS direct access instance
-            let mut ltfs = ltfs::create_ltfs_access(device).await?;
-            
-            // Check path type to determine operation mode
-            match ltfs.check_path_type(&source.to_string_lossy())? {
-                ltfs_index::PathType::Directory(_) => {
-                    // Directory listing mode (ignore destination parameter)
-                    info!("Listing directory contents: {}", source.display());
-                    let entries = ltfs.list_directory(&source.to_string_lossy())?;
-                    display::display_directory_listing(entries);
-                },
-                ltfs_index::PathType::File(file) => {
-                    match destination {
-                        None => {
-                            // Display file content mode
-                            info!("Displaying file content: {}", file.name);
-                            display::display_file_content(&ltfs, &file, lines).await?;
-                        },
-                        Some(dest_path) => {
-                            // Copy file to local mode
-                            info!("Copying file to local: {} -> {:?}", file.name, dest_path);
-                            ltfs.read_file_to_local(&file, &dest_path, verify).await?;
-                            println!("File copied successfully: {} -> {}", file.name, dest_path.display());
-                        }
-                    }
-                },
-                ltfs_index::PathType::NotFound => {
-                    return Err(crate::error::RustLtfsError::file_operation(
-                        format!("Path not found on tape: {}", source.display())
-                    ));
-                }
-            }
-            
-            Ok(())
         }
         
         Commands::Status { device } => {

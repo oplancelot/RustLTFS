@@ -12,6 +12,7 @@ pub mod ltfs;
 pub mod ltfs_index;
 pub mod file_ops;
 pub mod display;
+pub mod tape_ops;
 
 // Re-export key types for easier use
 pub use error::{Result, RustLtfsError};
@@ -24,3 +25,6 @@ mod tests;
 
 #[cfg(test)]
 mod xml_test;
+
+#[cfg(test)]
+mod ltfs_index_real_test;
