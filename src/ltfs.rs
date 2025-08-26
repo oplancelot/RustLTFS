@@ -998,7 +998,7 @@ impl LtfsDirectAccess {
         
         // Step 3: Read index with progressive expansion
         // Start with a reasonable buffer size and expand if needed
-        let mut xml_content = String::new();
+        let xml_content;
         let mut blocks_to_read = 10u32; // Start with 10 blocks
         let max_blocks = 200u32; // Maximum 200 blocks for safety (12.8MB)
         
