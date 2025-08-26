@@ -123,6 +123,14 @@ pub struct ExtractionResult {
     pub verification_passed: bool,
 }
 
+/// Tape medium information including barcode
+#[derive(Debug, Clone)]
+pub struct TapeMediumInfo {
+    pub barcode: String,
+    pub medium_type: String,
+    pub medium_serial: String,
+}
+
 /// Tape space information
 #[derive(Debug, Clone)]
 pub struct TapeSpaceInfo {
@@ -571,76 +579,65 @@ impl TapeOperations {
         Err(RustLtfsError::tape_device("Unable to recover tape or find valid LTFS index".to_string()))
     }
 
-    /// Read LTFS index from tape (对应LTFSCopyGUI的读取索引ToolStripMenuItem_Click)
+    /// Read LTFS index from tape (精准对应LTFSCopyGUI的读取索引ToolStripMenuItem_Click)
     pub async fn read_index_from_tape(&mut self) -> Result<()> {
-        info!("Starting to read LTFS index from tape ...");
+        info!("Starting LTFS index reading process (LTFSCopyGUI sequence)...");
         
         if self.offline_mode {
             info!("Offline mode: using dummy index for simulation");
             return Ok(());
         }
         
-        // 首先检测LTFS格式化状态，但对于空白检测要更谨慎
-        let format_status = self.detect_ltfs_format_status().await?;
+        // 简言之，获取索引的核心流程是：定位到索引分区 -> 读取 LTFS 标签 -> 读取完整的索引文件并解析
+        info!("=== LTFS Index Reading Process (LTFSCopyGUI Exact Sequence) ===");
         
-        match format_status {
-            LtfsFormatStatus::LtfsFormatted(_) => {
-                info!("Tape is LTFS formatted, proceeding with index reading");
-            }
-            LtfsFormatStatus::BlankTape => {
-                warn!("Initial format detection suggests blank tape, but attempting direct read anyway");
-                info!("Note: LTFSCopyGUI may use different detection methods");
-            }
-            LtfsFormatStatus::PositioningFailed => {
-                return Err(RustLtfsError::tape_device(
-                    "Failed to position tape for index reading".to_string()
-                ));
-            }
-            LtfsFormatStatus::HardwareError => {
-                return Err(RustLtfsError::scsi(
-                    "Hardware error detected during format detection".to_string()
-                ));
-            }
-            LtfsFormatStatus::NonLtfsFormat => {
-                warn!("Tape appears to have non-LTFS format, attempting direct read anyway");
-            }
-            LtfsFormatStatus::CorruptedIndex => {
-                warn!("Corrupted index detected, attempting direct read anyway");
-            }
-            LtfsFormatStatus::Unknown => {
-                warn!("Unknown format status, attempting direct index read");
-            }
+        // Step 1: 定位到索引分区 (partition a) - 对应TapeUtils.Locate
+        info!("Step 1: Locating to index partition (partition a, block 0)");
+        let index_partition = 0; // partition a
+        self.scsi.locate_block(index_partition, 0)?;
+        debug!("Successfully located to partition {}, block 0", index_partition);
+        
+        // Step 2: 读取LTFS标签并验证 - 对应TapeUtils.ReadBlock
+        info!("Step 2: Reading and validating LTFS label (VOL1 check)");
+        
+        let mut label_buffer = vec![0u8; crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize];
+        self.scsi.read_blocks(1, &mut label_buffer)?;
+        
+        // 使用严格的三条件验证VOL1标签
+        if !self.parse_vol1_label(&label_buffer)? {
+            return Err(RustLtfsError::ltfs_index(
+                "Invalid VOL1 label - does not match LTFS format requirements".to_string()
+            ));
+        }
+        info!("✅ VOL1 label validation passed");
+        
+        // Step 3: 读取完整的索引文件 - 对应TapeUtils.ReadToFileMark
+        info!("Step 3: Reading complete LTFS index file using ReadToFileMark method");
+        
+        // 使用ReadToFileMark方法读取整个索引文件
+        let xml_content = self.read_index_xml_from_tape_with_file_mark()?;
+        
+        // 验证索引XML的完整性
+        if xml_content.trim().is_empty() {
+            return Err(RustLtfsError::ltfs_index("LTFS index XML is empty".to_string()));
         }
         
-        // LTFS index reading steps using real SCSI operations (following LTFSCopyGUI method):
+        if !xml_content.contains("<ltfsindex") || !xml_content.contains("</ltfsindex>") {
+            return Err(RustLtfsError::ltfs_index("Invalid LTFS index XML format".to_string()));
+        }
         
-        // 1. Locate to index partition (partition a) - 对应TapeUtils.Locate调用
-        info!("Locating to index partition (partition a)");
+        info!("✅ Successfully read LTFS index file ({} bytes)", xml_content.len());
         
-        // 直接定位到索引分区的起始位置 (对应LTFSCopyGUI的方法)
-        // TapeUtils.Locate(driveHandle, 0, IndexPartition, TapeUtils.LocateDestType.Block)
-        let index_partition = 0; // IndexPartition = 0 (partition a)
-        self.scsi.locate_block(index_partition, 0)?;
-        
-        debug!("Located to index partition {}, block 0", index_partition);
-        
-        // 2. Read index XML data using file mark method (对应TapeUtils.ReadToFileMark)
-        info!("Reading index XML data using file mark method");
-        
-        let xml_content = self.read_index_with_multiple_strategies()?;
-        
-        // 3. Parse LTFS index
-        info!("Parsing LTFS index");
-        
+        // Step 4: 解析索引到schema对象
+        info!("Step 4: Parsing LTFS index to schema object");
         let index = LtfsIndex::from_xml_streaming(&xml_content)?;
         
-        // 4. Update internal state
-        info!("Index reading completed, updating internal state");
-        
+        // Step 5: 更新内部状态
+        info!("Step 5: Updating internal state");
         self.index = Some(index.clone());
         self.schema = Some(index);
         
-        info!("LTFS index successfully loaded from tape");
+        info!("=== LTFS Index Reading Process Completed Successfully ===");
         
         Ok(())
     }
@@ -1392,44 +1389,186 @@ impl TapeOperations {
         self.parse_ltfs_volume_label(&buffer)
     }
     
-    /// 解析LTFS卷标签获取分区标签信息
-    fn parse_ltfs_volume_label(&self, buffer: &[u8]) -> Result<LtfsPartitionLabel> {
-        // LTFS卷标签是一个复杂的二进制结构
-        // 这里实现简化版本，重点获取blocksize
+    /// Strictly validate VOL1 label according to VB.NET logic
+    fn parse_vol1_label(&self, buffer: &[u8]) -> Result<bool> {
+        info!("Strictly validating VOL1 label (VB.NET logic)...");
         
-        // 查找LTFS签名 "LTFS"
-        let ltfs_signature = b"LTFS";
-        if let Some(pos) = buffer.windows(4).position(|w| w == ltfs_signature) {
-            info!("Found LTFS signature at offset {}", pos);
+        // Condition 1: Length check - must be 80 bytes
+        if buffer.len() != 80 {
+            warn!("VOL1 label length error: expected 80 bytes, actual {} bytes", buffer.len());
+            return Ok(false);
+        }
+        
+        // Condition 2: Prefix check - must start with "VOL1"
+        let vol1_prefix = b"VOL1";
+        if !buffer.starts_with(vol1_prefix) {
+            warn!("VOL1 label prefix error: does not start with 'VOL1'");
+            return Ok(false);
+        }
+        
+        // Condition 3: Content check - bytes 24-27 must be "LTFS"
+        if buffer.len() < 28 {
+            warn!("Buffer length insufficient for LTFS identifier check");
+            return Ok(false);
+        }
+        
+        let ltfs_bytes = &buffer[24..28];
+        let expected_ltfs = b"LTFS";
+        
+        if ltfs_bytes != expected_ltfs {
+            warn!("LTFS identifier error: expected 'LTFS' at position 24-27, actual: {:?}", 
+                  String::from_utf8_lossy(ltfs_bytes));
+            return Ok(false);
+        }
+        
+        info!("✅ VOL1 label validation passed: 80 bytes, VOL1 prefix, LTFS identifier correct");
+        Ok(true)
+    }
+
+    /// 解析LTFS卷标签获取分区标签信息（使用严格的VOL1验证）
+    fn parse_ltfs_volume_label(&self, buffer: &[u8]) -> Result<LtfsPartitionLabel> {
+        // 首先进行严格的VOL1标签验证
+        if self.parse_vol1_label(buffer)? {
+            info!("找到有效的VOL1标签");
             
-            // 尝试从标签中提取信息
-            // 注意：这是简化实现，真正的LTFS标签解析更复杂
             let mut plabel = LtfsPartitionLabel::default();
             
-            // 尝试在标签附近查找blocksize信息
-            // 常见的blocksize值：65536 (64KB), 524288 (512KB), 1048576 (1MB)
-            let common_blocksizes = [524288u32, 1048576u32, 262144u32, 131072u32, 65536u32];
+            // 从VOL1标签中提取额外信息（基于标准VOL1格式）
+            // VOL1标签格式：
+            // 位置0-3: "VOL1"
+            // 位置4-9: 卷序列号
+            // 位置10-79: 其他信息
+            // 位置24-27: "LTFS"标识（已验证）
             
-            // 在LTFS签名后的数据中查找可能的blocksize
-            let search_data = &buffer[pos..std::cmp::min(pos + 512, buffer.len())];
-            for &blocksize in &common_blocksizes {
-                let blocksize_bytes = blocksize.to_le_bytes();
-                if search_data.windows(4).any(|w| w == blocksize_bytes) {
-                    info!("Found potential blocksize: {}", blocksize);
-                    plabel.blocksize = blocksize;
-                    break;
+            // 尝试从标签中提取blocksize信息（位置40-43或类似位置）
+            if buffer.len() >= 44 {
+                let blocksize_bytes = &buffer[40..44];
+                if let Ok(blocksize_str) = std::str::from_utf8(blocksize_bytes) {
+                    if let Ok(blocksize) = blocksize_str.trim().parse::<u32>() {
+                        if [65536, 524288, 1048576, 262144, 131072].contains(&blocksize) {
+                            info!("从VOL1标签提取到blocksize: {}", blocksize);
+                            plabel.blocksize = blocksize;
+                        }
+                    }
                 }
             }
             
-            // 尝试提取UUID（如果可能）
-            // 这里简化处理，在实际实现中需要按照LTFS规范解析
-            
             Ok(plabel)
         } else {
-            warn!("No LTFS signature found in volume label");
-            // 如果没有找到LTFS签名，使用启发式方法
+            warn!("VOL1标签验证失败");
+            // VOL1验证失败时，使用启发式方法作为后备
             self.detect_blocksize_heuristic(buffer)
         }
+    }
+
+    /// 读取磁带条形码（MAM卷序列号）
+    /// 基于LTFSCopyGUI的GetMAMAttributeBytes函数实现
+    pub fn read_barcode(&self) -> Result<String> {
+        info!("读取磁带条形码（MAM卷序列号）...");
+        
+        if self.offline_mode {
+            return Ok("OFFLINE_MODE_BARCODE".to_string());
+        }
+        
+        // MAM属性页面代码（基于LTFSCopyGUI实现）
+        // 0x0408 = 卷序列号（Volume Serial Number）
+        let page_code_h: u8 = 0x04;
+        let page_code_l: u8 = 0x08;
+        let partition_number: u8 = 0; // 通常从分区0读取
+        
+        // 首先获取数据长度
+        let mut cdb = vec![
+            0x8C, // SCSI命令：READ ATTRIBUTE
+            0x00, // 保留
+            0x00, // 保留
+            0x00, // 保留
+            0x00, // 保留
+            0x00, // 保留
+            0x00, // 保留
+            partition_number,
+            page_code_h,
+            page_code_l,
+            0x00, // 分配长度（高字节）
+            0x00, // 分配长度（中字节）
+            0x00, // 分配长度（低字节）
+            0x09, // 分配长度（最低字节） - 9字节头部
+            0x00, // 控制字节
+            0x00  // 保留
+        ];
+        
+        let mut header_buffer = vec![0u8; 9]; // 9字节头部
+        
+        match self.scsi.send_scsi_command(&cdb, &mut header_buffer, 1) { // 1 = 数据输入
+            Ok(_) => {
+                // 解析返回的头部获取实际数据长度
+                if header_buffer.len() >= 9 {
+                    let data_len = ((header_buffer[7] as u16) << 8) | (header_buffer[8] as u16);
+                    
+                    if data_len > 0 {
+                        info!("MAM卷序列号数据长度: {}", data_len);
+                        
+                        // 分配足够的缓冲区读取实际数据
+                        let total_length = (data_len + 9) as usize;
+                        let mut data_buffer = vec![0u8; total_length];
+                        
+                        // 更新CDB中的分配长度
+                        let length_bytes = (data_len + 9).to_be_bytes();
+                        cdb[10] = length_bytes[0];
+                        cdb[11] = length_bytes[1];
+                        cdb[12] = length_bytes[2];
+                        cdb[13] = length_bytes[3];
+                        
+                        match self.scsi.send_scsi_command(&cdb, &mut data_buffer, 1) {
+                            Ok(_) => {
+                                // 跳过9字节头部，获取实际数据
+                                let actual_data = &data_buffer[9..];
+                                
+                                // 转换为字符串（UTF-8编码）
+                                let barcode = String::from_utf8_lossy(actual_data)
+                                    .trim_end_matches(char::from(0))
+                                    .to_string();
+                                
+                                info!("成功读取条形码: {}", barcode);
+                                Ok(barcode)
+                            }
+                            Err(e) => {
+                                warn!("读取MAM数据失败: {}", e);
+                                Err(RustLtfsError::scsi(format!("Failed to read MAM data: {}", e)))
+                            }
+                        }
+                    } else {
+                        warn!("MAM卷序列号数据长度为0");
+                        Err(RustLtfsError::tape_device("MAM volume serial number not available".to_string()))
+                    }
+                } else {
+                    warn!("MAM头部数据不完整");
+                    Err(RustLtfsError::tape_device("Incomplete MAM header".to_string()))
+                }
+            }
+            Err(e) => {
+                warn!("获取MAM数据长度失败: {}", e);
+                Err(RustLtfsError::scsi(format!("Failed to get MAM data length: {}", e)))
+            }
+        }
+    }
+
+    /// 获取磁带介质信息（包括条形码）
+    pub fn get_tape_medium_info(&self) -> Result<TapeMediumInfo> {
+        info!("获取磁带介质信息...");
+        
+        let barcode = match self.read_barcode() {
+            Ok(code) => code,
+            Err(e) => {
+                warn!("无法读取条形码: {}", e);
+                "UNKNOWN".to_string()
+            }
+        };
+        
+        Ok(TapeMediumInfo {
+            barcode,
+            medium_type: "LTO".to_string(), // 可以根据需要扩展
+            medium_serial: barcode.clone(), // 通常条形码就是卷序列号
+        })
     }
     
     /// 启发式检测blocksize
