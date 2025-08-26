@@ -3,7 +3,6 @@ use crate::ltfs_index::LtfsIndex;
 use crate::scsi::{ScsiInterface, MediaType};
 use tracing::{info, warn, debug};
 use std::path::Path;
-use uuid::Uuid;
 
 /// LTFS格式化状态枚举（基于LTFSCopyGUI的检测策略）
 #[derive(Debug, Clone, PartialEq)]
@@ -721,7 +720,7 @@ impl TapeOperations {
         info!("Trying fixed blocksize: {} bytes", blocksize);
         
         // 临时修改分区标签以使用指定的blocksize
-        let temp_plabel = LtfsPartitionLabel {
+        let _temp_plabel = LtfsPartitionLabel {
             blocksize,
             ..LtfsPartitionLabel::default()
         };
@@ -1117,7 +1116,7 @@ impl TapeOperations {
     fn read_index_xml_from_tape(&self) -> Result<String> {
         debug!("Reading LTFS index XML data from tape");
         
-        let mut xml_content = String::new();
+        let mut xml_content;
         let mut blocks_to_read = 10u32; // Start with 10 blocks
         let max_blocks = 200u32; // Maximum 200 blocks for safety (12.8MB)
         
@@ -1511,12 +1510,12 @@ impl TapeOperations {
                         let total_length = (data_len + 9) as usize;
                         let mut data_buffer = vec![0u8; total_length];
                         
-                        // 更新CDB中的分配长度
-                        let length_bytes = (data_len + 9).to_be_bytes();
-                        cdb[10] = length_bytes[0];
-                        cdb[11] = length_bytes[1];
-                        cdb[12] = length_bytes[2];
-                        cdb[13] = length_bytes[3];
+                        // 更新CDB中的分配长度 (16位长度字段，大端格式)
+                        let total_len = data_len + 9;
+                        cdb[10] = ((total_len >> 8) & 0xFF) as u8;
+                        cdb[11] = (total_len & 0xFF) as u8;
+                        cdb[12] = 0;
+                        cdb[13] = 0;
                         
                         match self.scsi.send_scsi_command(&cdb, &mut data_buffer, 1) {
                             Ok(_) => {
@@ -1564,10 +1563,12 @@ impl TapeOperations {
             }
         };
         
+        let medium_serial = barcode.clone();
+        
         Ok(TapeMediumInfo {
             barcode,
             medium_type: "LTO".to_string(), // 可以根据需要扩展
-            medium_serial: barcode.clone(), // 通常条形码就是卷序列号
+            medium_serial, // 通常条形码就是卷序列号
         })
     }
     
@@ -2211,7 +2212,7 @@ impl TapeOperations {
         &self,
         dir_info: &crate::ltfs_index::Directory,
         dest_path: &Path,
-        tape_base_path: &str,
+        _tape_base_path: &str,
         verify: bool
     ) -> Result<ExtractionResult> {
         info!("Extracting directory: {} -> {:?}", dir_info.name, dest_path);

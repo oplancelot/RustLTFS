@@ -16,7 +16,6 @@ pub mod tape_ops;
 
 // Re-export key types for easier use
 pub use error::{Result, RustLtfsError};
-<<<<<<< HEAD
 pub use ltfs::{LtfsDirectAccess, TapeCapacity, create_ltfs_access};
 pub use scsi::{
     ScsiInterface, MediaType, TapePosition, MamAttribute, SpaceType,
@@ -28,17 +27,3 @@ pub use ltfs_index::{LtfsIndex, PathType, DirectoryEntry, File, FileExtent};
 
 #[cfg(test)]
 mod locate_test;
-=======
-pub use ltfs::{create_ltfs_access, LtfsDirectAccess, TapeCapacity};
-pub use ltfs_index::{DirectoryEntry, File, FileExtent, LtfsIndex, PathType};
-pub use scsi::{MamAttribute, MediaType, ScsiInterface, SpaceType, TapePosition};
-
-// #[cfg(test)]
-// mod tests;
-
-// #[cfg(test)]
-// mod xml_test;
-
-// #[cfg(test)]
-// mod ltfs_index_real_test;
->>>>>>> e8bb472 (✨ 精准实现LTFSCopyGUI索引读取机制并优化代码结构)

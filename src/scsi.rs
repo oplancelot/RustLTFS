@@ -1,6 +1,5 @@
 use crate::error::Result;
 use tracing::{debug, warn, info};
-use std::ffi::CString;
 
 #[cfg(windows)]
 use winapi::{
@@ -258,7 +257,7 @@ impl ScsiInterface {
     fn scsi_io_control(
         &self,
         cdb: &[u8],
-        mut data_buffer: Option<&mut [u8]>,
+        data_buffer: Option<&mut [u8]>,
         data_in: u8,
         timeout: u32,
         sense_buffer: Option<&mut [u8; SENSE_INFO_LEN]>,
@@ -438,6 +437,17 @@ impl ScsiInterface {
         }
     }
     
+    /// Send SCSI command with simplified interface (for compatibility with tape_ops.rs)
+    pub fn send_scsi_command(&self, cdb: &[u8], data_buffer: &mut [u8], data_direction: u8) -> Result<bool> {
+        let data_in = match data_direction {
+            0 => SCSI_IOCTL_DATA_OUT,
+            1 => SCSI_IOCTL_DATA_IN,
+            _ => SCSI_IOCTL_DATA_UNSPECIFIED,
+        };
+        
+        self.scsi_io_control(cdb, Some(data_buffer), data_in, 300, None)
+    }
+
     /// Tape ejection (based on TapeEject function logic in C code)
     pub fn eject_tape(&self) -> Result<bool> {
         debug!("Ejecting tape");
