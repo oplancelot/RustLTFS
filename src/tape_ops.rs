@@ -615,6 +615,13 @@ impl TapeOperations {
         
         // Step 2.5 (Alternative): 当VOL1验证失败时，尝试多分区策略
         info!("Step 2.5 (Alternative): Attempting multi-partition strategies for non-standard tape");
+        
+        // 特殊处理空白磁带：不需要进行大量搜索
+        if label_buffer.iter().take(1024).all(|&b| b == 0) {
+            info!("📭 Detected blank tape - skipping extensive search");
+            return Err(RustLtfsError::ltfs_index("Blank tape detected - no LTFS index found".to_string()));
+        }
+        
         let partition_strategy = self.detect_partition_strategy().await.unwrap_or(PartitionStrategy::SinglePartitionFallback);
         
         match partition_strategy {
@@ -997,8 +1004,7 @@ impl TapeOperations {
         let cleaned_xml = xml_content.replace('\0', "").trim().to_string();
         
         if cleaned_xml.is_empty() {
-            warn!("No LTFS index data found after reading {} blocks", blocks_read);
-            warn!("Possible causes: incorrect position, different block structure, corrupted index, blocksize mismatch ({})", block_size);
+            debug!("No LTFS index data found after reading {} blocks (blocksize: {})", blocks_read, block_size);
             return Err(RustLtfsError::ltfs_index("Index XML is empty".to_string()));
         } else {
             info!("ReadToFileMark extracted {} bytes of index data", cleaned_xml.len());
@@ -2744,7 +2750,7 @@ impl TapeOperations {
         let common_index_locations = vec![5, 6, 10, 20, 100]; // 常见的索引块位置
         
         for &block in &common_index_locations {
-            info!("Trying index location at block {} (single-partition strategy)", block);
+            debug!("Trying index location at block {} (single-partition strategy)", block);
             
             match self.scsi.locate_block(0, block) {
                 Ok(()) => {
@@ -2755,19 +2761,20 @@ impl TapeOperations {
                                 return Ok(());
                             }
                         }
-                        Err(e) => {
-                            debug!("No valid index at block {}: {}", block, e);
+                        Err(_e) => {
+                            // 使用debug级别而不是warn，减少日志噪音
+                            debug!("No valid index at block {}", block);
                         }
                     }
                 }
-                Err(e) => {
-                    debug!("Cannot position to block {}: {}", block, e);
+                Err(_e) => {
+                    debug!("Cannot position to block {}", block);
                 }
             }
         }
         
-        // 步骤2: 如果常见位置没找到，搜索数据区域
-        info!("Common index locations failed, searching data area for index copies");
+        // 步骤2: 有限的数据区域搜索（不是扩展搜索）
+        info!("Common index locations failed, performing limited data area search");
         self.search_data_area_for_index().await
     }
     
@@ -2807,20 +2814,16 @@ impl TapeOperations {
     
     /// 搜索数据区域中的索引副本
     async fn search_data_area_for_index(&mut self) -> Result<()> {
-        info!("Searching data area for index copies (extensive search)");
+        info!("Searching data area for index copies (optimized search)");
         
-        // 扩展搜索范围：除了常见位置外，还搜索更大的块号范围
-        let extended_search_locations = vec![
-            // 靠前的位置
-            50, 100, 150, 200, 250, 300, 400, 500,
-            // 中等位置  
-            1000, 1500, 2000, 3000, 4000, 5000,
-            // 较远位置
-            10000, 15000, 20000, 25000, 30000
+        // 缩减搜索范围：如果磁带是空白的，不需要大范围搜索
+        let limited_search_locations = vec![
+            // 只搜索最可能的位置
+            50, 100, 500, 1000, 2000
         ];
         
-        for &block in &extended_search_locations {
-            info!("Extended search: trying block {}", block);
+        for &block in &limited_search_locations {
+            debug!("Extended search: trying block {}", block);
             
             // 在单分区磁带上，所有数据都在partition 0
             match self.scsi.locate_block(0, block) {
@@ -2842,13 +2845,13 @@ impl TapeOperations {
                 }
             }
             
-            // 避免过度搜索导致超时
-            if block > 10000 {
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            // 更短的延迟
+            if block > 1000 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             }
         }
         
-        Err(RustLtfsError::ltfs_index("No valid index found in extensive data area search".to_string()))
+        Err(RustLtfsError::ltfs_index("No valid index found in data area search".to_string()))
     }
     
     /// 验证并处理索引内容
