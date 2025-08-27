@@ -222,9 +222,11 @@ impl TapeOperations {
                         
                         // 检查是否为"设备准备就绪"的状态
                         if sense_info.contains("No additional sense information") || 
+                           sense_info.contains("ready") ||  // 改为小写匹配
                            sense_info.contains("Ready") ||
-                           sense_info.contains("Good") {
-                            info!("✅ Device is ready (TestUnitReady with 'ready' sense)");
+                           sense_info.contains("Good") ||
+                           sense_info == "Device ready" {   // 精确匹配SCSI返回的"Device ready"
+                            info!("✅ Device is ready (TestUnitReady with ready sense: {})", sense_info);
                             return Ok(());
                         }
                         
