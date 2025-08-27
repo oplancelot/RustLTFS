@@ -449,6 +449,65 @@ impl ScsiInterface {
         self.scsi_io_control(cdb, Some(data_buffer), data_in, 300, None)
     }
 
+    /// Test Unit Ready command - check if device is ready
+    pub fn test_unit_ready(&self) -> Result<Vec<u8>> {
+        debug!("Executing Test Unit Ready command");
+        
+        #[cfg(windows)]
+        {
+            let mut cdb = [0u8; 6];
+            cdb[0] = scsi_commands::TEST_UNIT_READY;
+            // Other bytes remain 0 for standard Test Unit Ready
+            
+            let mut sense_buffer = [0u8; SENSE_INFO_LEN];
+            
+            let result = self.scsi_io_control(
+                &cdb,
+                None,
+                SCSI_IOCTL_DATA_UNSPECIFIED,
+                30, // 30 second timeout for Test Unit Ready
+                Some(&mut sense_buffer),
+            )?;
+            
+            if result {
+                debug!("Test Unit Ready completed successfully");
+                Ok(sense_buffer.to_vec())
+            } else {
+                debug!("Test Unit Ready failed, returning sense data");
+                Ok(sense_buffer.to_vec())
+            }
+        }
+        
+        #[cfg(not(windows))]
+        {
+            Err(crate::error::RustLtfsError::unsupported("Non-Windows platform"))
+        }
+    }
+
+    /// Parse sense data for Test Unit Ready (similar to LTFSCopyGUI's ParseSenseData)
+    pub fn parse_sense_data(&self, sense_data: &[u8]) -> String {
+        if sense_data.len() < 3 {
+            return "Invalid sense data (too short)".to_string();
+        }
+        
+        let sense_key = sense_data[2] & 0x0F;
+        let asc = if sense_data.len() > 12 { sense_data[12] } else { 0 };
+        let ascq = if sense_data.len() > 13 { sense_data[13] } else { 0 };
+        
+        debug!("Sense data - Key: 0x{:02X}, ASC: 0x{:02X}, ASCQ: 0x{:02X}", sense_key, asc, ascq);
+        
+        match (sense_key, asc, ascq) {
+            (0x00, _, _) => "Device ready".to_string(),
+            (0x02, 0x3A, 0x00) => "No tape loaded".to_string(),
+            (0x02, 0x04, 0x00) => "Drive not ready".to_string(),
+            (0x02, 0x3B, 0x0D) => "Medium not present".to_string(),
+            (0x04, 0x00, 0x00) => "Drive not ready - becoming ready".to_string(),
+            (0x06, 0x28, 0x00) => "Unit attention - not ready to ready transition".to_string(),
+            _ => format!("Device not ready - Sense Key: 0x{:02X}, ASC/ASCQ: 0x{:02X}/0x{:02X}", 
+                        sense_key, asc, ascq)
+        }
+    }
+
     /// Tape ejection (based on TapeEject function logic in C code)
     pub fn eject_tape(&self) -> Result<bool> {
         debug!("Ejecting tape");

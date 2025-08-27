@@ -43,6 +43,17 @@ impl LtfsFormatStatus {
     }
 }
 
+/// Partition reading strategy (对应LTFSCopyGUI的ExtraPartitionCount处理策略)
+#[derive(Debug, Clone, PartialEq)]
+enum PartitionStrategy {
+    /// 标准多分区磁带：索引在partition A，数据在partition B
+    StandardMultiPartition,
+    /// 单分区磁带回退策略：需要从数据分区读取索引副本
+    SinglePartitionFallback,
+    /// 从数据分区读取索引：当索引位置指向partition B时
+    IndexFromDataPartition,
+}
+
 /// Index location information
 #[derive(Debug, Clone)]
 struct IndexLocation {
@@ -187,6 +198,72 @@ impl TapeOperations {
         }
     }
 
+    /// Wait for device ready using TestUnitReady retry logic (对应LTFSCopyGUI的TestUnitReady重试逻辑)
+    pub async fn wait_for_device_ready(&self) -> Result<()> {
+        info!("Starting TestUnitReady retry logic (LTFSCopyGUI compatible)");
+        
+        let max_retries = 5; // 对应LTFSCopyGUI的5次重试
+        let retry_delay_ms = 200; // 对应LTFSCopyGUI的200ms延迟
+        
+        for retry_count in (1..=max_retries).rev() {
+            debug!("TestUnitReady attempt {} (remaining: {})", max_retries - retry_count + 1, retry_count);
+            
+            // 执行SCSI Test Unit Ready命令
+            match self.scsi.test_unit_ready() {
+                Ok(sense_data) => {
+                    if sense_data.is_empty() {
+                        // 无sense数据表示设备就绪
+                        info!("✅ Device is ready (TestUnitReady successful, no sense data)");
+                        return Ok(());
+                    } else {
+                        // 有sense数据，需要分析
+                        let sense_info = self.scsi.parse_sense_data(&sense_data);
+                        debug!("TestUnitReady returned sense data: {}", sense_info);
+                        
+                        // 检查是否为"设备准备就绪"的状态
+                        if sense_info.contains("No additional sense information") || 
+                           sense_info.contains("Ready") ||
+                           sense_info.contains("Good") {
+                            info!("✅ Device is ready (TestUnitReady with 'ready' sense)");
+                            return Ok(());
+                        }
+                        
+                        // 检查是否为可重试的错误
+                        if sense_info.contains("Not ready") || 
+                           sense_info.contains("Unit attention") ||
+                           sense_info.contains("Medium may have changed") {
+                            if retry_count > 1 {
+                                info!("⏳ Device not ready ({}), retrying in {}ms (attempts remaining: {})", 
+                                     sense_info, retry_delay_ms, retry_count - 1);
+                                tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay_ms)).await;
+                                continue;
+                            } else {
+                                warn!("❌ Device not ready after {} attempts: {}", max_retries, sense_info);
+                                return Err(RustLtfsError::scsi(format!("Device not ready after {} retries: {}", max_retries, sense_info)));
+                            }
+                        } else {
+                            // 非可重试错误，立即返回
+                            return Err(RustLtfsError::scsi(format!("TestUnitReady failed: {}", sense_info)));
+                        }
+                    }
+                }
+                Err(e) => {
+                    if retry_count > 1 {
+                        warn!("🔄 TestUnitReady SCSI command failed: {}, retrying in {}ms (attempts remaining: {})", 
+                             e, retry_delay_ms, retry_count - 1);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay_ms)).await;
+                        continue;
+                    } else {
+                        return Err(RustLtfsError::scsi(format!("TestUnitReady failed after {} retries: {}", max_retries, e)));
+                    }
+                }
+            }
+        }
+        
+        // 如果到达这里说明所有重试都失败了
+        Err(RustLtfsError::scsi(format!("Device not ready after {} attempts with {}ms delays", max_retries, retry_delay_ms)))
+    }
+
     /// Initialize tape operations
     pub async fn initialize(&mut self) -> Result<()> {
         info!("Initializing tape device: {}", self.device_path);
@@ -200,6 +277,18 @@ impl TapeOperations {
         match self.scsi.open_device(&self.device_path) {
             Ok(()) => {
                 info!("Tape device opened successfully");
+                
+                // Test Unit Ready retry logic - 对应LTFSCopyGUI的TestUnitReady重试
+                info!("Checking device readiness with TestUnitReady retry logic...");
+                match self.wait_for_device_ready().await {
+                    Ok(()) => {
+                        info!("Device is ready for operations");
+                    }
+                    Err(e) => {
+                        warn!("Device readiness check failed: {}", e);
+                        return Err(RustLtfsError::tape_device(format!("Device not ready: {}", e)));
+                    }
+                }
                 
                 // Check device status and media type
                 match self.scsi.check_media_status() {
@@ -488,6 +577,24 @@ impl TapeOperations {
             ));
         }
         info!("✅ VOL1 label validation passed");
+        
+        // Step 2.5: 检测多分区配置并应用LTFSCopyGUI的分区策略
+        info!("Step 2.5: Detecting multi-partition configuration (LTFSCopyGUI strategy)");
+        let partition_strategy = self.detect_partition_strategy().await?;
+        
+        match partition_strategy {
+            PartitionStrategy::StandardMultiPartition => {
+                info!("✅ Standard multi-partition tape detected, reading index from partition A");
+            }
+            PartitionStrategy::SinglePartitionFallback => {
+                warn!("⚠️ Single-partition tape detected, falling back to data partition index reading");
+                return self.read_index_from_single_partition_tape().await;
+            }
+            PartitionStrategy::IndexFromDataPartition => {
+                info!("📍 Index location indicates data partition, reading from partition B");
+                return self.read_index_from_data_partition_strategy().await;
+            }
+        }
         
         // Step 3: 读取完整的索引文件 - 对应TapeUtils.ReadToFileMark
         info!("Step 3: Reading complete LTFS index file using ReadToFileMark method");
@@ -2499,6 +2606,237 @@ impl TapeOperations {
         info!("Index file saved successfully: {:?}", file_path);
         
         Ok(())
+    }
+
+    /// 检测分区策略 (对应LTFSCopyGUI的ExtraPartitionCount检测逻辑)
+    async fn detect_partition_strategy(&self) -> Result<PartitionStrategy> {
+        info!("Detecting partition strategy using LTFSCopyGUI ExtraPartitionCount logic");
+        
+        // 步骤1: 检查磁带是否支持多分区
+        match self.check_multi_partition_support().await {
+            Ok(has_multi_partition) => {
+                if !has_multi_partition {
+                    info!("Single-partition tape detected (ExtraPartitionCount = 0)");
+                    return Ok(PartitionStrategy::SinglePartitionFallback);
+                }
+            }
+            Err(e) => {
+                warn!("Failed to check multi-partition support: {}, assuming multi-partition", e);
+            }
+        }
+        
+        // 步骤2: 检查索引位置指示符
+        match self.check_index_location_from_volume_label().await {
+            Ok(location) => {
+                if location.partition.to_lowercase() == "b" {
+                    info!("Volume label indicates index in data partition (partition B)");
+                    return Ok(PartitionStrategy::IndexFromDataPartition);
+                }
+            }
+            Err(e) => {
+                debug!("Could not determine index location from volume label: {}", e);
+            }
+        }
+        
+        // 步骤3: 默认使用标准多分区策略
+        info!("Using standard multi-partition strategy (index: partition A, data: partition B)");
+        Ok(PartitionStrategy::StandardMultiPartition)
+    }
+    
+    /// 检查磁带多分区支持 (对应LTFSCopyGUI的ExtraPartitionCount检测)
+    async fn check_multi_partition_support(&self) -> Result<bool> {
+        debug!("Checking multi-partition support (ExtraPartitionCount detection)");
+        
+        // 使用SCSI命令检查分区数量
+        // 在LTFSCopyGUI中，这通过读取磁带特征或MODE SENSE命令来实现
+        // 对应VB代码中的 ExtraPartitionCount 检测
+        
+        // 尝试定位到partition B来测试多分区支持
+        match self.scsi.locate_block(1, 0) {
+            Ok(()) => {
+                debug!("Successfully positioned to partition B - multi-partition supported");
+                
+                // 尝试从partition B读取一些数据来验证
+                let mut test_buffer = vec![0u8; 1024];
+                match self.scsi.read_blocks(1, &mut test_buffer) {
+                    Ok(_) => {
+                        info!("✅ Multi-partition support confirmed (can access partition B)");
+                        
+                        // 返回partition A以继续正常流程
+                        if let Err(e) = self.scsi.locate_block(0, 0) {
+                            warn!("Warning: Failed to return to partition A: {}", e);
+                        }
+                        
+                        Ok(true)
+                    }
+                    Err(e) => {
+                        debug!("Cannot read from partition B: {} - single partition assumed", e);
+                        Ok(false)
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("Cannot position to partition B: {} - single partition tape", e);
+                Ok(false)
+            }
+        }
+    }
+    
+    /// 检查volume label中的索引位置 (对应LTFSCopyGUI的索引位置检测)
+    async fn check_index_location_from_volume_label(&self) -> Result<IndexLocation> {
+        debug!("Checking index location from volume label");
+        
+        // 确保在partition A的开始位置
+        self.scsi.locate_block(0, 0)?;
+        
+        let mut buffer = vec![0u8; crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize];
+        self.scsi.read_blocks(1, &mut buffer)?;
+        
+        // 解析volume label中的索引位置信息
+        self.parse_index_locations_from_volume_label(&buffer)
+    }
+    
+    /// 单分区磁带索引读取策略 (对应LTFSCopyGUI的单分区处理逻辑)
+    async fn read_index_from_single_partition_tape(&mut self) -> Result<()> {
+        info!("Reading index from single-partition tape (LTFSCopyGUI fallback strategy)");
+        
+        // 在单分区磁带上，数据和索引都存储在同一分区
+        // 需要搜索数据分区中的索引副本
+        
+        // 步骤1: 尝试从常见的索引位置读取
+        let common_index_locations = vec![5, 6, 10, 20, 100]; // 常见的索引块位置
+        
+        for &block in &common_index_locations {
+            info!("Trying index location at block {} (single-partition strategy)", block);
+            
+            match self.scsi.locate_block(0, block) {
+                Ok(()) => {
+                    match self.try_read_index_at_current_position_advanced().await {
+                        Ok(xml_content) => {
+                            if self.validate_and_process_index(&xml_content).await? {
+                                info!("✅ Successfully read index from single-partition tape at block {}", block);
+                                return Ok(());
+                            }
+                        }
+                        Err(e) => {
+                            debug!("No valid index at block {}: {}", block, e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!("Cannot position to block {}: {}", block, e);
+                }
+            }
+        }
+        
+        // 步骤2: 如果常见位置没找到，搜索数据区域
+        info!("Common index locations failed, searching data area for index copies");
+        self.search_data_area_for_index().await
+    }
+    
+    /// 数据分区索引读取策略 (对应LTFSCopyGUI的数据分区索引逻辑)
+    async fn read_index_from_data_partition_strategy(&mut self) -> Result<()> {
+        info!("Reading index from data partition strategy (LTFSCopyGUI data partition logic)");
+        
+        // 当volume label指示索引在partition B时使用此策略
+        match self.read_latest_index_from_data_partition() {
+            Ok(xml_content) => {
+                if self.validate_and_process_index(&xml_content).await? {
+                    info!("✅ Successfully read index from data partition");
+                    Ok(())
+                } else {
+                    Err(RustLtfsError::ltfs_index("Index from data partition validation failed".to_string()))
+                }
+            }
+            Err(e) => {
+                warn!("Data partition index reading failed: {}, trying fallback", e);
+                self.read_index_from_single_partition_tape().await
+            }
+        }
+    }
+    
+    /// 高级当前位置索引读取 (增强版本，支持更好的错误处理)
+    async fn try_read_index_at_current_position_advanced(&self) -> Result<String> {
+        let block_size = self.partition_label
+            .as_ref()
+            .map(|plabel| plabel.blocksize as usize)
+            .unwrap_or(crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize);
+            
+        info!("Advanced index reading at current position with blocksize {}", block_size);
+        
+        // 使用ReadToFileMark方法，与标准流程保持一致
+        self.read_to_file_mark_with_temp_file(block_size)
+    }
+    
+    /// 搜索数据区域中的索引副本
+    async fn search_data_area_for_index(&mut self) -> Result<()> {
+        info!("Searching data area for index copies (extensive search)");
+        
+        // 扩展搜索范围：除了常见位置外，还搜索更大的块号范围
+        let extended_search_locations = vec![
+            // 靠前的位置
+            50, 100, 150, 200, 250, 300, 400, 500,
+            // 中等位置  
+            1000, 1500, 2000, 3000, 4000, 5000,
+            // 较远位置
+            10000, 15000, 20000, 25000, 30000
+        ];
+        
+        for &block in &extended_search_locations {
+            info!("Extended search: trying block {}", block);
+            
+            // 在单分区磁带上，所有数据都在partition 0
+            match self.scsi.locate_block(0, block) {
+                Ok(()) => {
+                    match self.try_read_index_at_current_position_advanced().await {
+                        Ok(xml_content) => {
+                            if self.validate_and_process_index(&xml_content).await? {
+                                info!("✅ Found valid index in data area at block {}", block);
+                                return Ok(());
+                            }
+                        }
+                        Err(e) => {
+                            debug!("No valid index at data block {}: {}", block, e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!("Cannot position to data block {}: {}", block, e);
+                }
+            }
+            
+            // 避免过度搜索导致超时
+            if block > 10000 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        }
+        
+        Err(RustLtfsError::ltfs_index("No valid index found in extensive data area search".to_string()))
+    }
+    
+    /// 验证并处理索引内容
+    async fn validate_and_process_index(&mut self, xml_content: &str) -> Result<bool> {
+        if xml_content.trim().is_empty() {
+            return Ok(false);
+        }
+        
+        if !xml_content.contains("<ltfsindex") || !xml_content.contains("</ltfsindex>") {
+            return Ok(false);
+        }
+        
+        // 尝试解析索引
+        match LtfsIndex::from_xml_streaming(xml_content) {
+            Ok(index) => {
+                info!("✅ Index validation successful, updating internal state");
+                self.index = Some(index.clone());
+                self.schema = Some(index);
+                Ok(true)
+            }
+            Err(e) => {
+                debug!("Index parsing failed: {}", e);
+                Ok(false)
+            }
+        }
     }
 }
 
