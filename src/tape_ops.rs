@@ -3012,27 +3012,53 @@ impl TapeOperations {
         }
     }
     
-    /// 估算标准分区大小
+    /// 估算标准分区大小 (基于LTFSCopyGUI的mkltfs P0Size/P1Size逻辑)
     async fn estimate_standard_partition_sizes(&self) -> (u64, u64) {
-        // 基于LTO标准的典型分区配置
-        // LTO磁带通常使用2-5%作为索引分区，其余作为数据分区
         let total_capacity = self.estimate_tape_capacity();
+        
+        // 基于LTFSCopyGUI Resources.Designer.vb中的分区计算逻辑
+        // P0Size: 分区0大小，默认为1GB，但实际应用中常设置为更大值
+        // P1Size: 分区1大小，默认为65535（表示取剩余空间）
         
         match self.scsi.check_media_status() {
             Ok(MediaType::Lto7Rw) | Ok(MediaType::Lto7Worm) | Ok(MediaType::Lto7Ro) => {
-                // LTO-7: 6TB总容量，约100GB索引分区，5.9TB数据分区
-                // 基于你提供的数据：p0=99.78GB, p1=5388.34GB
-                (107_374_182_400_u64, 5_780_000_000_000_u64) // ~100GB, ~5.4TB
+                // LTO-7: 基于实际观察到的分区配置
+                // p0=99.78GB, p1=5388.34GB，说明索引分区约占1.8%
+                let index_partition_gb = 100; // 约100GB索引分区
+                let p0_size = (index_partition_gb * 1_000_000_000) as u64;
+                let p1_size = total_capacity.saturating_sub(p0_size);
+                
+                debug!("LTO-7 partition estimation: p0={}GB, p1={}GB", 
+                       p0_size / 1_000_000_000, p1_size / 1_000_000_000);
+                
+                (p0_size, p1_size)
             }
             Ok(MediaType::Lto8Rw) | Ok(MediaType::Lto8Worm) | Ok(MediaType::Lto8Ro) => {
-                // LTO-8: 12TB总容量，约200GB索引分区，11.8TB数据分区
-                (214_748_364_800_u64, 11_785_251_635_200_u64) // 200GB, ~11TB
+                // LTO-8: 按照相似比例估算
+                let index_partition_gb = 200; // 约200GB索引分区（约1.7%）
+                let p0_size = (index_partition_gb * 1_000_000_000) as u64;
+                let p1_size = total_capacity.saturating_sub(p0_size);
+                
+                debug!("LTO-8 partition estimation: p0={}GB, p1={}GB",
+                       p0_size / 1_000_000_000, p1_size / 1_000_000_000);
+                
+                (p0_size, p1_size)
             }
             _ => {
-                // 默认使用基于实际观察的比例：约1.8%索引分区，98.2%数据分区
-                let index_size = total_capacity * 18 / 1000; // 1.8%
-                let data_size = total_capacity - index_size;
-                (index_size, data_size)
+                // 通用逻辑：索引分区约占1.8-2%，参考实际LTFSCopyGUI行为
+                // 不是简单的固定1GB，而是基于磁带容量的比例
+                let index_ratio = 0.018; // 1.8%，基于实际观察
+                let min_index_size = 1_000_000_000u64; // 最小1GB
+                let max_index_size = 500_000_000_000u64; // 最大500GB
+                
+                let calculated_index_size = (total_capacity as f64 * index_ratio) as u64;
+                let p0_size = calculated_index_size.clamp(min_index_size, max_index_size);
+                let p1_size = total_capacity.saturating_sub(p0_size);
+                
+                debug!("Generic partition estimation: p0={}GB, p1={}GB ({}% index ratio)",
+                       p0_size / 1_000_000_000, p1_size / 1_000_000_000, index_ratio * 100.0);
+                
+                (p0_size, p1_size)
             }
         }
     }
