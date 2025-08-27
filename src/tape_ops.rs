@@ -616,13 +616,16 @@ impl TapeOperations {
         // Step 2.5 (Alternative): 当VOL1验证失败时，尝试多分区策略
         info!("Step 2.5 (Alternative): Attempting multi-partition strategies for non-standard tape");
         
-        // 特殊处理空白磁带：不需要进行大量搜索
-        if label_buffer.iter().take(1024).all(|&b| b == 0) {
-            info!("📭 Detected blank tape - skipping extensive search");
+        // 检查是否为真正的空白磁带（前几KB都是零）
+        let is_completely_blank = label_buffer.iter().take(4096).all(|&b| b == 0);
+        if is_completely_blank {
+            info!("📭 Detected completely blank tape - skipping extensive search");
             return Err(RustLtfsError::ltfs_index("Blank tape detected - no LTFS index found".to_string()));
+        } else {
+            info!("🔍 Non-VOL1 tape detected but contains data - attempting multi-partition strategies");
         }
         
-        let partition_strategy = self.detect_partition_strategy().await.unwrap_or(PartitionStrategy::SinglePartitionFallback);
+        let partition_strategy = self.detect_partition_strategy().await.unwrap_or(PartitionStrategy::StandardMultiPartition);
         
         match partition_strategy {
             PartitionStrategy::SinglePartitionFallback => {
@@ -2694,32 +2697,41 @@ impl TapeOperations {
         // 在LTFSCopyGUI中，这通过读取磁带特征或MODE SENSE命令来实现
         // 对应VB代码中的 ExtraPartitionCount 检测
         
-        // 尝试定位到partition B来测试多分区支持
+        // 首先保存当前位置
+        info!("Testing multi-partition support by attempting to access partition 1");
+        
+        // 尝试定位到partition 1来测试多分区支持
         match self.scsi.locate_block(1, 0) {
             Ok(()) => {
-                debug!("Successfully positioned to partition B - multi-partition supported");
+                debug!("Successfully positioned to partition 1 - multi-partition supported");
                 
-                // 尝试从partition B读取一些数据来验证
+                // 尝试从partition 1读取一些数据来验证
                 let mut test_buffer = vec![0u8; 1024];
                 match self.scsi.read_blocks(1, &mut test_buffer) {
                     Ok(_) => {
-                        info!("✅ Multi-partition support confirmed (can access partition B)");
+                        info!("✅ Multi-partition support confirmed (can access partition 1)");
                         
-                        // 返回partition A以继续正常流程
+                        // 返回partition 0以继续正常流程
                         if let Err(e) = self.scsi.locate_block(0, 0) {
-                            warn!("Warning: Failed to return to partition A: {}", e);
+                            warn!("Warning: Failed to return to partition 0: {}", e);
                         }
                         
                         Ok(true)
                     }
                     Err(e) => {
-                        debug!("Cannot read from partition B: {} - single partition assumed", e);
+                        debug!("Cannot read from partition 1: {} - single partition assumed", e);
+                        
+                        // 确保返回到partition 0
+                        if let Err(e) = self.scsi.locate_block(0, 0) {
+                            warn!("Warning: Failed to return to partition 0 after failed read: {}", e);
+                        }
+                        
                         Ok(false)
                     }
                 }
             }
             Err(e) => {
-                debug!("Cannot position to partition B: {} - single partition tape", e);
+                debug!("Cannot position to partition 1: {} - single partition tape", e);
                 Ok(false)
             }
         }
