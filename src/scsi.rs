@@ -1400,6 +1400,161 @@ impl ScsiInterface {
     pub fn get_drive_type(&self) -> DriveType {
         self.drive_type
     }
+
+    /// MODE SENSE command to read partition table (对应LTFSCopyGUI的分区检测)
+    pub fn mode_sense_partition_info(&self) -> Result<Vec<u8>> {
+        debug!("Executing MODE SENSE command for partition information");
+        
+        #[cfg(windows)]
+        {
+            let mut cdb = [0u8; 10];
+            cdb[0] = SCSIOP_MODE_SENSE10;
+            cdb[1] = 0x00; // Reserved
+            cdb[2] = TC_MP_MEDIUM_CONFIGURATION | TC_MP_PC_CURRENT; // Page Code + PC
+            cdb[3] = 0x00; // Subpage Code
+            cdb[7] = 0x01; // Allocation Length (high byte)
+            cdb[8] = 0x00; // Allocation Length (low byte) - 256 bytes
+            
+            let mut data_buffer = vec![0u8; 256];
+            let mut sense_buffer = [0u8; SENSE_INFO_LEN];
+            
+            let result = self.scsi_io_control(
+                &cdb,
+                Some(&mut data_buffer),
+                SCSI_IOCTL_DATA_IN,
+                30, // 30 second timeout
+                Some(&mut sense_buffer),
+            )?;
+            
+            if result {
+                debug!("MODE SENSE completed successfully, {} bytes returned", data_buffer.len());
+                Ok(data_buffer)
+            } else {
+                let sense_info = self.parse_sense_data(&sense_buffer);
+                Err(crate::error::RustLtfsError::scsi(format!("MODE SENSE failed: {}", sense_info)))
+            }
+        }
+        
+        #[cfg(not(windows))]
+        {
+            Err(crate::error::RustLtfsError::unsupported("Non-Windows platform"))
+        }
+    }
+
+    /// READ POSITION command to get raw position data
+    pub fn read_position_raw(&self) -> Result<Vec<u8>> {
+        debug!("Executing READ POSITION command");
+        
+        #[cfg(windows)]
+        {
+            let mut cdb = [0u8; 10];
+            cdb[0] = SCSIOP_READ_POSITION;
+            cdb[1] = 0x06; // Service Action: Long form
+            cdb[8] = 0x20; // Allocation Length: 32 bytes
+            
+            let mut data_buffer = vec![0u8; 32];
+            let mut sense_buffer = [0u8; SENSE_INFO_LEN];
+            
+            let result = self.scsi_io_control(
+                &cdb,
+                Some(&mut data_buffer),
+                SCSI_IOCTL_DATA_IN,
+                30, // 30 second timeout
+                Some(&mut sense_buffer),
+            )?;
+            
+            if result {
+                debug!("READ POSITION completed successfully");
+                Ok(data_buffer)
+            } else {
+                let sense_info = self.parse_sense_data(&sense_buffer);
+                Err(crate::error::RustLtfsError::scsi(format!("READ POSITION failed: {}", sense_info)))
+            }
+        }
+        
+        #[cfg(not(windows))]
+        {
+            Err(crate::error::RustLtfsError::unsupported("Non-Windows platform"))
+        }
+    }
+
+    /// 解析MODE SENSE返回的分区信息
+    pub fn parse_partition_info(&self, mode_sense_data: &[u8]) -> Result<(u64, u64)> {
+        if mode_sense_data.len() < 8 {
+            return Err(crate::error::RustLtfsError::scsi("MODE SENSE data too short".to_string()));
+        }
+        
+        // 解析MODE SENSE返回的数据结构
+        // 这需要根据SCSI标准和LTO设备规范来解析
+        
+        // Mode Parameter Header (8 bytes)
+        let mode_data_length = u16::from_be_bytes([mode_sense_data[0], mode_sense_data[1]]);
+        debug!("Mode data length: {}", mode_data_length);
+        
+        if mode_data_length < 8 || mode_sense_data.len() < (mode_data_length as usize + 2) {
+            return Err(crate::error::RustLtfsError::scsi("Invalid MODE SENSE response".to_string()));
+        }
+        
+        // 查找Medium Configuration Mode Page (0x1D)
+        let mut offset = 8; // Skip mode parameter header
+        while offset < mode_sense_data.len() - 1 {
+            let page_code = mode_sense_data[offset] & 0x3F;
+            let page_length = mode_sense_data[offset + 1] as usize;
+            
+            if page_code == TC_MP_MEDIUM_CONFIGURATION {
+                debug!("Found Medium Configuration Mode Page at offset {}", offset);
+                
+                if offset + page_length + 2 <= mode_sense_data.len() {
+                    return self.parse_medium_configuration_page(&mode_sense_data[offset..offset + page_length + 2]);
+                } else {
+                    return Err(crate::error::RustLtfsError::scsi("Medium Configuration Page truncated".to_string()));
+                }
+            }
+            
+            offset += page_length + 2;
+        }
+        
+        Err(crate::error::RustLtfsError::scsi("Medium Configuration Mode Page not found".to_string()))
+    }
+    
+    /// 解析Medium Configuration Mode Page获取分区大小
+    fn parse_medium_configuration_page(&self, page_data: &[u8]) -> Result<(u64, u64)> {
+        if page_data.len() < 16 {
+            return Err(crate::error::RustLtfsError::scsi("Medium Configuration Page too short".to_string()));
+        }
+        
+        // Medium Configuration Page格式 (根据SCSI标准)
+        // Byte 2-3: Active Partition
+        // Byte 4: Medium Format Recognition
+        // Byte 8-15: Partition Size (Partition 0)
+        // Byte 16-23: Partition Size (Partition 1)
+        
+        let active_partition = u16::from_be_bytes([page_data[2], page_data[3]]);
+        debug!("Active partition: {}", active_partition);
+        
+        if page_data.len() >= 24 {
+            // 读取分区0大小 (8字节，大端序)
+            let partition_0_size = u64::from_be_bytes([
+                page_data[8], page_data[9], page_data[10], page_data[11],
+                page_data[12], page_data[13], page_data[14], page_data[15]
+            ]);
+            
+            // 读取分区1大小 (8字节，大端序)
+            let partition_1_size = u64::from_be_bytes([
+                page_data[16], page_data[17], page_data[18], page_data[19],
+                page_data[20], page_data[21], page_data[22], page_data[23]
+            ]);
+            
+            info!("Parsed partition sizes: p0={}MB, p1={}MB", 
+                 partition_0_size / 1_048_576, partition_1_size / 1_048_576);
+            
+            Ok((partition_0_size, partition_1_size))
+        } else {
+            // 如果数据不够，返回估算值
+            debug!("Insufficient data for partition sizes, using estimation");
+            Err(crate::error::RustLtfsError::scsi("Insufficient data for partition size parsing".to_string()))
+        }
+    }
 }
 
 /// Convenience function: Directly check media status of specified device
