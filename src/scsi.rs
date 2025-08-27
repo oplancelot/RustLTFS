@@ -1,5 +1,5 @@
-use crate::error::Result;
-use std::ffi::CString;
+use crate::error::{Result, RustLtfsError};
+
 use tracing::{debug, warn, info};
 
 #[cfg(windows)]
@@ -91,6 +91,9 @@ pub enum MediaType {
     Lto8Rw,      // 0x005E
     Lto8Worm,    // 0x015E
     Lto8Ro,      // 0x025E
+    Lto9Rw,      // 0x0060
+    Lto9Worm,    // 0x0160
+    Lto9Ro,      // 0x0260
     LtoM8Rw,     // 0x005D
     LtoM8Worm,   // 0x015D
     LtoM8Ro,     // 0x025D
@@ -119,6 +122,9 @@ impl MediaType {
             0x005E => MediaType::Lto8Rw,
             0x015E => MediaType::Lto8Worm,
             0x025E => MediaType::Lto8Ro,
+            0x0060 => MediaType::Lto9Rw,
+            0x0160 => MediaType::Lto9Worm,
+            0x0260 => MediaType::Lto9Ro,
             0x005D => MediaType::LtoM8Rw,
             0x015D => MediaType::LtoM8Worm,
             0x025D => MediaType::LtoM8Ro,
@@ -148,6 +154,9 @@ impl MediaType {
             MediaType::Lto8Rw => "LTO8 RW",
             MediaType::Lto8Worm => "LTO8 WORM",
             MediaType::Lto8Ro => "LTO8 RO",
+            MediaType::Lto9Rw => "LTO9 RW",
+            MediaType::Lto9Worm => "LTO9 WORM",
+            MediaType::Lto9Ro => "LTO9 RO",
             MediaType::LtoM8Rw => "LTOM8 RW",
             MediaType::LtoM8Worm => "LTOM8 WORM",
             MediaType::LtoM8Ro => "LTOM8 RO",
@@ -258,7 +267,7 @@ impl ScsiInterface {
     fn scsi_io_control(
         &self,
         cdb: &[u8],
-        mut data_buffer: Option<&mut [u8]>,
+        data_buffer: Option<&mut [u8]>,
         data_in: u8,
         timeout: u32,
         sense_buffer: Option<&mut [u8; SENSE_INFO_LEN]>,
@@ -1719,4 +1728,178 @@ pub mod block_sizes {
 pub fn bytes_to_string(bytes: &[u8]) -> String {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     String::from_utf8_lossy(&bytes[..end]).trim().to_string()
+}
+
+impl ScsiInterface {
+    /// Set tape capacity using SCSI Space command (对应LTFSCopyGUI的Set Capacity)
+    pub fn set_capacity(&self, capacity: u16) -> Result<()> {
+        debug!("Setting tape capacity to: {}", capacity);
+        
+        // SCSI Space command for capacity: 0B 00 00 (capacity >> 8) (capacity & 0xFF) 00
+        let cdb = vec![
+            0x0B, 0x00, 0x00, 
+            ((capacity >> 8) & 0xFF) as u8,
+            (capacity & 0xFF) as u8,
+            0x00
+        ];
+        let mut buffer = vec![];
+        
+        match self.send_scsi_command(&cdb, &mut buffer, 0) {
+            Ok(_) => {
+                info!("✅ Tape capacity set to: {}", capacity);
+                Ok(())
+            }
+            Err(e) => {
+                warn!("❌ Failed to set capacity: {}", e);
+                Err(RustLtfsError::scsi(format!("Failed to set capacity: {}", e)))
+            }
+        }
+    }
+
+    /// Format/Initialize tape using SCSI Format command (对应LTFSCopyGUI的Initialize操作)
+    pub fn format_tape(&self, immediate_mode: bool) -> Result<()> {
+        debug!("Formatting/initializing tape, immediate mode: {}", immediate_mode);
+        
+        // SCSI Format Unit command: 04 (immediate_flag) 00 00 00 00
+        let immediate_flag = if immediate_mode { 0x02 } else { 0x00 };
+        let cdb = vec![0x04, immediate_flag, 0x00, 0x00, 0x00, 0x00];
+        let mut buffer = vec![];
+        
+        match self.send_scsi_command(&cdb, &mut buffer, 0) {
+            Ok(_) => {
+                info!("✅ Tape format/initialization started");
+                Ok(())
+            }
+            Err(e) => {
+                warn!("❌ Tape format failed: {}", e);
+                Err(RustLtfsError::scsi(format!("Failed to format tape: {}", e)))
+            }
+        }
+    }
+
+    /// Partition tape using FORMAT command (对应LTFSCopyGUI的分区创建)
+    pub fn partition_tape(&self, partition_type: u8) -> Result<()> {
+        debug!("Creating tape partitions with type: {}", partition_type);
+        
+        // SCSI Format Unit command for partitioning: 04 00 (partition_type) 00 00 00
+        // partition_type: 1 = standard partitioning, 2 = T10K partitioning
+        let cdb = vec![0x04, 0x00, partition_type, 0x00, 0x00, 0x00];
+        let mut buffer = vec![];
+        
+        match self.send_scsi_command(&cdb, &mut buffer, 0) {
+            Ok(_) => {
+                info!("✅ Tape partitioning completed with type: {}", partition_type);
+                Ok(())
+            }
+            Err(e) => {
+                warn!("❌ Tape partitioning failed: {}", e);
+                Err(RustLtfsError::scsi(format!("Failed to partition tape: {}", e)))
+            }
+        }
+    }
+
+    /// Set MAM (Media Auxiliary Memory) attribute (对应LTFSCopyGUI的SetMAMAttribute)
+    pub fn set_mam_attribute(&self, attribute_id: u16, data: &[u8], format: MamAttributeFormat) -> Result<()> {
+        debug!("Setting MAM attribute 0x{:04X} with {} bytes", attribute_id, data.len());
+        
+        let data_len = data.len();
+        let total_len = data_len + 5; // 5 bytes header + data
+        
+        // SCSI Write Attribute command: 8C 00 00 00 00 00 00 00 (id_high) (id_low) (len_high) (len_low) (len_3) (len_4) 00 00
+        let cdb = vec![
+            0x8C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ((attribute_id >> 8) & 0xFF) as u8,
+            (attribute_id & 0xFF) as u8,
+            0x00, 0x00,
+            ((total_len >> 8) & 0xFF) as u8,
+            (total_len & 0xFF) as u8,
+            0x00, 0x00
+        ];
+        
+        // Prepare data buffer with attribute header
+        let mut write_data = Vec::with_capacity(total_len);
+        write_data.extend_from_slice(&[
+            ((attribute_id >> 8) & 0xFF) as u8,  // Attribute ID high
+            (attribute_id & 0xFF) as u8,         // Attribute ID low
+            format as u8,                        // Format
+            ((data_len >> 8) & 0xFF) as u8,      // Length high
+            (data_len & 0xFF) as u8,             // Length low
+        ]);
+        write_data.extend_from_slice(data);
+        
+        match self.send_scsi_command(&cdb, &mut write_data, 0) {
+            Ok(_) => {
+                debug!("✅ MAM attribute 0x{:04X} set successfully", attribute_id);
+                Ok(())
+            }
+            Err(e) => {
+                warn!("❌ Failed to set MAM attribute 0x{:04X}: {}", attribute_id, e);
+                Err(RustLtfsError::scsi(format!("Failed to set MAM attribute 0x{:04X}: {}", attribute_id, e)))
+            }
+        }
+    }
+
+    /// Set barcode using MAM attribute (对应LTFSCopyGUI的SetBarcode)
+    pub fn set_barcode(&self, barcode: &str) -> Result<()> {
+        debug!("Setting barcode: {}", barcode);
+        
+        // Barcode is stored in MAM attribute 0x806, padded to 32 bytes
+        let mut barcode_data = vec![0u8; 32];
+        let barcode_bytes = barcode.as_bytes();
+        let copy_len = std::cmp::min(barcode_bytes.len(), 32);
+        barcode_data[..copy_len].copy_from_slice(&barcode_bytes[..copy_len]);
+        
+        self.set_mam_attribute(0x806, &barcode_data, MamAttributeFormat::Text)
+    }
+
+    /// MODE SELECT command for partition configuration (对应LTFSCopyGUI的MODE SELECT 11h)
+    pub fn mode_select_partition(&self, max_extra_partitions: u8, extra_partition_count: u8, 
+                                mode_data: &[u8], p0_size: u16, p1_size: u16) -> Result<()> {
+        debug!("Setting partition configuration: max_extra={}, extra_count={}, p0_size={}, p1_size={}", 
+               max_extra_partitions, extra_partition_count, p0_size, p1_size);
+        
+        // SCSI MODE SELECT command: 15 10 00 00 10 00
+        let cdb = vec![0x15, 0x10, 0x00, 0x00, 0x10, 0x00];
+        
+        // Prepare data for MODE SELECT (16 bytes total)
+        let mut select_data = vec![
+            0x00, 0x00, 0x10, 0x00,  // Mode data header
+            0x11, 0x0A,              // Page code 0x11, page length 0x0A
+            max_extra_partitions,    // Maximum allowed extra partitions
+            extra_partition_count,   // Current extra partition count
+        ];
+        
+        // Add original mode data bytes 4-7
+        if mode_data.len() >= 8 {
+            select_data.extend_from_slice(&mode_data[4..8]);
+        } else {
+            select_data.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        }
+        
+        // Add partition sizes (big-endian)
+        select_data.push(((p0_size >> 8) & 0xFF) as u8);
+        select_data.push((p0_size & 0xFF) as u8);
+        select_data.push(((p1_size >> 8) & 0xFF) as u8);
+        select_data.push((p1_size & 0xFF) as u8);
+        
+        match self.send_scsi_command(&cdb, &mut select_data, 0) {
+            Ok(_) => {
+                info!("✅ Partition configuration set successfully");
+                Ok(())
+            }
+            Err(e) => {
+                warn!("❌ Failed to set partition configuration: {}", e);
+                Err(RustLtfsError::scsi(format!("Failed to set partition configuration: {}", e)))
+            }
+        }
+    }
+}
+
+/// MAM attribute format types (对应LTFSCopyGUI的AttributeFormat)
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(u8)]
+pub enum MamAttributeFormat {
+    Binary = 0x00,
+    Ascii = 0x01,
+    Text = 0x02,
 }

@@ -43,6 +43,9 @@ pub enum RustLtfsError {
     #[error("LTFS index error: {0}")]
     LtfsIndex(String),
     
+    #[error("Parameter validation error: {0}")]
+    ParameterValidation(String),
+    
     #[error("Generic error: {0}")]
     Generic(#[from] anyhow::Error),
 }
@@ -94,6 +97,10 @@ impl RustLtfsError {
     
     pub fn ltfs_index<T: Into<String>>(msg: T) -> Self {
         Self::LtfsIndex(msg.into())
+    }
+    
+    pub fn parameter_validation<T: Into<String>>(msg: T) -> Self {
+        Self::ParameterValidation(msg.into())
     }
 }
 
