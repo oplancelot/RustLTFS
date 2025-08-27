@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::scsi::{MediaType, check_tape_media};
-use tracing::{info, debug, error, warn};
+use tracing::{info, debug, error};
 
 /// Tape device information structure
 #[derive(Debug, Clone)]
@@ -40,6 +40,9 @@ pub enum TapeStatus {
     LtoM8Rw,
     LtoM8Worm,
     LtoM8Ro,
+    Lto9Rw,
+    Lto9Worm,
+    Lto9Ro,
     Unknown(String),
     Error(String),
 }
@@ -69,6 +72,9 @@ impl From<MediaType> for TapeStatus {
             MediaType::LtoM8Rw => TapeStatus::LtoM8Rw,
             MediaType::LtoM8Worm => TapeStatus::LtoM8Worm,
             MediaType::LtoM8Ro => TapeStatus::LtoM8Ro,
+            MediaType::Lto9Rw => TapeStatus::Lto9Rw,
+            MediaType::Lto9Worm => TapeStatus::Lto9Worm,
+            MediaType::Lto9Ro => TapeStatus::Lto9Ro,
             MediaType::Unknown(code) => TapeStatus::Unknown(format!("0x{:04X}", code)),
         }
     }

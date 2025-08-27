@@ -183,6 +183,55 @@ pub enum Commands {
         #[arg(short = 'd', long = "detailed")]
         detailed: bool,
     },
+
+    /// Format tape with LTFS file system (对应LTFSCopyGUI的mkltfs功能)
+    /// 
+    /// 使用LTFS文件系统格式化磁带，创建分区和设置MAM属性
+    Mkltfs {
+        /// Tape device path (e.g. \\.\TAPE0)
+        #[arg(short = 't', long = "tape", value_name = "DEVICE")]
+        device: String,
+
+        /// Tape barcode (max 20 ASCII characters)
+        #[arg(short = 'b', long = "barcode", value_name = "BARCODE")]
+        barcode: Option<String>,
+
+        /// Volume label
+        #[arg(short = 'l', long = "label", value_name = "LABEL")]
+        volume_label: Option<String>,
+
+        /// Create partitions (0=single, 1=dual partition)
+        #[arg(short = 'p', long = "partition", value_name = "COUNT", default_value = "1")]
+        partition_count: u8,
+
+        /// Block size in bytes (512-2097152)
+        #[arg(long = "block-size", value_name = "SIZE", default_value = "524288")]
+        block_size: u32,
+
+        /// Tape capacity (0-65535, 65535=max)
+        #[arg(short = 'c', long = "capacity", value_name = "CAPACITY", default_value = "65535")]
+        capacity: u16,
+
+        /// P0 partition size in GB (1-65535, 65535=remaining space)
+        #[arg(long = "p0-size", value_name = "SIZE", default_value = "1")]
+        p0_size: u16,
+
+        /// P1 partition size in GB (1-65535, 65535=remaining space)
+        #[arg(long = "p1-size", value_name = "SIZE", default_value = "65535")]
+        p1_size: u16,
+
+        /// Run in immediate mode (async)
+        #[arg(long = "immediate")]
+        immediate: bool,
+
+        /// Skip confirmation prompt
+        #[arg(long = "force")]
+        force: bool,
+
+        /// Show progress information
+        #[arg(long = "progress")]
+        progress: bool,
+    },
 }
 
 impl Cli {

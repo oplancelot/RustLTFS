@@ -152,12 +152,12 @@ async fn run(args: Cli) -> Result<()> {
                     
                     match ops.save_index_to_file(&std::path::PathBuf::from(&index_filename)).await {
                         Ok(_) => {
-                            println!("✅ 索引文件已自动保存: {}", index_filename);
+                            println!("✅ Index file automatically saved: {}", index_filename);
                             info!("Index file saved successfully: {}", index_filename);
                         }
                         Err(e) => {
                             warn!("Failed to save index file: {}", e);
-                            println!("⚠️  索引文件保存失败: {}", e);
+                            println!("⚠️  Index file save failed: {}", e);
                         }
                     }
                 }
@@ -175,12 +175,12 @@ async fn run(args: Cli) -> Result<()> {
                 
                 match ops.save_index_to_file(&std::path::PathBuf::from(&index_filename)).await {
                     Ok(_) => {
-                        println!("✅ 索引文件已自动保存: {}", index_filename);
+                        println!("✅ Index file automatically saved: {}", index_filename);
                         info!("Index file saved successfully: {}", index_filename);
                     }
                     Err(e) => {
                         warn!("Failed to save index file: {}", e);
-                        println!("⚠️  索引文件保存失败: {}", e);
+                        println!("⚠️  Index file save failed: {}", e);
                     }
                 }
             }
@@ -323,6 +323,111 @@ async fn run(args: Cli) -> Result<()> {
             
             // Get space information
             ops.get_tape_space_info(detailed).await
+        }
+
+        Commands::Mkltfs { 
+            device, barcode, volume_label, partition_count, block_size, 
+            capacity, p0_size, p1_size, immediate, force, progress 
+        } => {
+            info!("Starting MKLTFS operation on device: {}", device);
+            
+            // Create MKLTFS parameters
+            let mut params = tape_ops::MkltfsParams::default();
+            
+            if let Some(ref bc) = barcode {
+                params.set_barcode(bc);
+            }
+            
+            if let Some(ref label) = volume_label {
+                params.volume_label = label.clone();
+            }
+            
+            params.extra_partition_count = partition_count;
+            params.block_length = block_size;
+            params.capacity = capacity;
+            params.p0_size = p0_size;
+            params.p1_size = p1_size;
+            params.immediate_mode = immediate;
+            
+            // Display configuration information
+            info!("MKLTFS Configuration:");
+            info!("  Device: {}", device);
+            if let Some(ref bc) = barcode {
+                info!("  Barcode: {}", bc);
+            }
+            if let Some(ref label) = volume_label {
+                info!("  Volume Label: {}", label);
+            }
+            info!("  Partition Count: {}", partition_count);
+            info!("  Block Size: {} bytes", block_size);
+            info!("  P0 Size: {}GB", p0_size);
+            info!("  P1 Size: {}GB", p1_size);
+            
+            // Safety confirmation (unless using --force)
+            if !force {
+                println!("⚠️  WARNING: This operation will completely format the tape and ALL existing data will be lost!");
+                println!("📋 MKLTFS Configuration:");
+                println!("   Device: {}", device);
+                if let Some(ref bc) = barcode {
+                    println!("   Barcode: {}", bc);
+                }
+                if let Some(ref label) = volume_label {
+                    println!("   Volume Label: {}", label);
+                }
+                println!("   Partition Config: {} ({})", 
+                    partition_count, 
+                    if partition_count > 0 { "Dual Partition" } else { "Single Partition" }
+                );
+                println!("   P0 Partition: {}GB", p0_size);
+                println!("   P1 Partition: {}GB", p1_size);
+                println!();
+                println!("❓ Confirm to continue? (Type 'yes' to confirm)");
+                
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                
+                if input.trim().to_lowercase() != "yes" {
+                    info!("User cancelled MKLTFS operation");
+                    println!("⛔ Operation cancelled");
+                    return Ok(());
+                }
+            }
+            
+            // Create tape operations instance
+            let mut ops = tape_ops::TapeOperations::new(&device, false);
+            
+            // Set progress callback (if enabled)
+            let progress_callback: Option<tape_ops::MkltfsProgressCallback> = if progress {
+                Some(std::sync::Arc::new(|msg: &str| {
+                    println!("📈 {}", msg);
+                }))
+            } else {
+                None
+            };
+            
+            let finish_callback: Option<tape_ops::MkltfsFinishCallback> = Some(std::sync::Arc::new(|msg: &str| {
+                println!("✅ {}", msg);
+            }));
+            
+            let error_callback: Option<tape_ops::MkltfsErrorCallback> = Some(std::sync::Arc::new(|msg: &str| {
+                eprintln!("❌ {}", msg);
+            }));
+            
+            // Execute MKLTFS operation
+            match ops.mkltfs(params, progress_callback, finish_callback, error_callback).await {
+                Ok(true) => {
+                    println!("🎉 MKLTFS operation completed successfully! Tape has been formatted as LTFS");
+                    Ok(())
+                }
+                Ok(false) => {
+                    warn!("MKLTFS operation was not completed (possibly offline mode)");
+                    Ok(())
+                }
+                Err(e) => {
+                    error!("MKLTFS operation failed: {}", e);
+                    Err(e)
+                }
+            }
         }
     }
 }
