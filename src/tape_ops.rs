@@ -639,21 +639,25 @@ impl TapeOperations {
             PartitionStrategy::StandardMultiPartition => {
                 info!("🔄 Trying standard multi-partition strategy without VOL1 validation");
                 
+                // 确保我们在正确的索引分区（partition 0 / p0）
+                info!("Positioning to index partition (p0) for standard multi-partition reading");
+                self.scsi.locate_block(0, 0)?;
+                
                 // 尝试直接读取索引，跳过VOL1验证
                 match self.read_index_xml_from_tape_with_file_mark() {
                     Ok(xml_content) => {
                         if self.validate_and_process_index(&xml_content).await? {
-                            info!("✅ Successfully read index without VOL1 validation");
+                            info!("✅ Successfully read index from p0 (index partition) without VOL1 validation");
                             return Ok(());
                         }
                     }
                     Err(e) => {
-                        debug!("Direct index reading failed: {}", e);
+                        debug!("Direct index reading from p0 failed: {}", e);
                     }
                 }
                 
-                // 如果直接读取失败，尝试单分区策略
-                info!("🔄 Falling back to single-partition strategy");
+                // 如果直接读取失败，尝试单分区策略作为回退
+                info!("🔄 Standard multi-partition failed, falling back to single-partition strategy");
                 self.read_index_from_single_partition_tape().await
             }
         }
