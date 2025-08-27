@@ -1,4 +1,5 @@
 use crate::error::Result;
+use std::ffi::CString;
 use tracing::{debug, warn, info};
 
 #[cfg(windows)]
@@ -257,7 +258,7 @@ impl ScsiInterface {
     fn scsi_io_control(
         &self,
         cdb: &[u8],
-        data_buffer: Option<&mut [u8]>,
+        mut data_buffer: Option<&mut [u8]>,
         data_in: u8,
         timeout: u32,
         sense_buffer: Option<&mut [u8; SENSE_INFO_LEN]>,
@@ -374,7 +375,7 @@ impl ScsiInterface {
             
             cdb[0] = SCSIOP_MODE_SENSE10; // Operation Code
             cdb[2] = TC_MP_MEDIUM_CONFIGURATION; // Page Code
-            cdb[2] |= (TC_MP_PC_CURRENT << 6); // PC field
+            cdb[2] |= TC_MP_PC_CURRENT << 6; // PC field
             cdb[7] = (data_buffer.len() >> 8) as u8; // Allocation Length MSB
             cdb[8] = (data_buffer.len() & 0xFF) as u8; // Allocation Length LSB
             
@@ -396,7 +397,7 @@ impl ScsiInterface {
             
             // Check if it's not WORM type, based on C code comments
             if (media_type & 0x100) == 0 {
-                media_type |= ((data_buffer[3] as u16 & 0x80) << 2);
+                media_type |= (data_buffer[3] as u16 & 0x80) << 2;
             }
             
             debug!("Detected media type code: 0x{:04X}", media_type);
@@ -1123,7 +1124,7 @@ impl ScsiInterface {
     
     /// SLR3 drive specific locate implementation
     #[cfg(windows)]
-    fn locate_slr3(&self, block_address: u64, partition: u8, dest_type: LocateDestType, sense_buffer: &mut [u8; SENSE_INFO_LEN]) -> Result<u16> {
+    fn locate_slr3(&self, block_address: u64, _partition: u8, dest_type: LocateDestType, sense_buffer: &mut [u8; SENSE_INFO_LEN]) -> Result<u16> {
         match dest_type {
             LocateDestType::Block => {
                 let mut cdb = [0u8; 10];
@@ -1170,7 +1171,7 @@ impl ScsiInterface {
     
     /// SLR1 drive specific locate implementation
     #[cfg(windows)]
-    fn locate_slr1(&self, block_address: u64, partition: u8, dest_type: LocateDestType, sense_buffer: &mut [u8; SENSE_INFO_LEN]) -> Result<u16> {
+    fn locate_slr1(&self, block_address: u64, _partition: u8, dest_type: LocateDestType, sense_buffer: &mut [u8; SENSE_INFO_LEN]) -> Result<u16> {
         match dest_type {
             LocateDestType::Block => {
                 let mut cdb = [0u8; 6];
