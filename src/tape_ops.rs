@@ -1292,35 +1292,40 @@ impl TapeOperations {
     fn parse_vol1_label(&self, buffer: &[u8]) -> Result<bool> {
         info!("Strictly validating VOL1 label (VB.NET logic)...");
         
-        // Condition 1: Length check - must be 80 bytes
-        if buffer.len() != 80 {
-            warn!("VOL1 label length error: expected 80 bytes, actual {} bytes", buffer.len());
+        // Condition 1: Buffer length check - must be at least 80 bytes to contain VOL1 label
+        if buffer.len() < 80 {
+            warn!("VOL1 label validation error: buffer too short ({} bytes), need at least 80 bytes", buffer.len());
             return Ok(false);
         }
         
+        // Extract the first 80 bytes for VOL1 label validation
+        let vol1_label = &buffer[0..80];
+        
         // Condition 2: Prefix check - must start with "VOL1"
         let vol1_prefix = b"VOL1";
-        if !buffer.starts_with(vol1_prefix) {
+        if !vol1_label.starts_with(vol1_prefix) {
             warn!("VOL1 label prefix error: does not start with 'VOL1'");
+            debug!("First 10 bytes: {:?}", &vol1_label[0..std::cmp::min(10, vol1_label.len())]);
             return Ok(false);
         }
         
         // Condition 3: Content check - bytes 24-27 must be "LTFS"
-        if buffer.len() < 28 {
-            warn!("Buffer length insufficient for LTFS identifier check");
+        if vol1_label.len() < 28 {
+            warn!("VOL1 label too short for LTFS identifier check");
             return Ok(false);
         }
         
-        let ltfs_bytes = &buffer[24..28];
+        let ltfs_bytes = &vol1_label[24..28];
         let expected_ltfs = b"LTFS";
         
         if ltfs_bytes != expected_ltfs {
             warn!("LTFS identifier error: expected 'LTFS' at position 24-27, actual: {:?}", 
                   String::from_utf8_lossy(ltfs_bytes));
+            debug!("VOL1 label content (first 40 bytes): {:?}", &vol1_label[0..40]);
             return Ok(false);
         }
         
-        info!("✅ VOL1 label validation passed: 80 bytes, VOL1 prefix, LTFS identifier correct");
+        info!("✅ VOL1 label validation passed: 80-byte label found in {}-byte buffer, VOL1 prefix and LTFS identifier correct", buffer.len());
         Ok(true)
     }
 
