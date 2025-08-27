@@ -2748,45 +2748,59 @@ impl TapeOperations {
     }
     
     /// 检查磁带多分区支持 (对应LTFSCopyGUI的ExtraPartitionCount检测)
+    /// 使用SCSI MODE SENSE命令来准确检测分区结构，而不是依赖数据读取测试
     async fn check_multi_partition_support(&self) -> Result<bool> {
-        debug!("Checking multi-partition support (ExtraPartitionCount detection)");
+        debug!("Checking multi-partition support using SCSI MODE SENSE (ExtraPartitionCount detection)");
         
-        // 使用SCSI命令检查分区数量
-        // 在LTFSCopyGUI中，这通过读取磁带特征或MODE SENSE命令来实现
-        // 对应VB代码中的 ExtraPartitionCount 检测
-        
-        // 首先保存当前位置
-        info!("Testing multi-partition support by attempting to access partition 1");
+        // 使用我们实现的SCSI MODE SENSE命令来准确检测分区
+        // 这比尝试读取数据更可靠，因为分区可能存在但为空
+        match self.scsi.mode_sense_partition_info() {
+            Ok(mode_data) => {
+                debug!("MODE SENSE successful, parsing partition information");
+                
+                match self.scsi.parse_partition_info(&mode_data) {
+                    Ok((p0_size, p1_size)) => {
+                        let has_multi_partition = p1_size > 0;
+                        if has_multi_partition {
+                            info!("✅ Multi-partition detected via MODE SENSE: p0={}GB, p1={}GB", 
+                                 p0_size / 1_000_000_000, p1_size / 1_000_000_000);
+                        } else {
+                            info!("📋 Single partition detected via MODE SENSE: total={}GB", 
+                                 p0_size / 1_000_000_000);
+                        }
+                        Ok(has_multi_partition)
+                    }
+                    Err(e) => {
+                        debug!("MODE SENSE data parsing failed: {}, falling back to position test", e);
+                        self.fallback_partition_detection().await
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("MODE SENSE command failed: {}, falling back to position test", e);
+                self.fallback_partition_detection().await
+            }
+        }
+    }
+    
+    /// 备用分区检测方法 - 当MODE SENSE不可用时使用定位测试
+    async fn fallback_partition_detection(&self) -> Result<bool> {
+        info!("Using fallback method: testing partition access");
         
         // 尝试定位到partition 1来测试多分区支持
         match self.scsi.locate_block(1, 0) {
             Ok(()) => {
                 debug!("Successfully positioned to partition 1 - multi-partition supported");
                 
-                // 尝试从partition 1读取一些数据来验证
-                let mut test_buffer = vec![0u8; 1024];
-                match self.scsi.read_blocks(1, &mut test_buffer) {
-                    Ok(_) => {
-                        info!("✅ Multi-partition support confirmed (can access partition 1)");
-                        
-                        // 返回partition 0以继续正常流程
-                        if let Err(e) = self.scsi.locate_block(0, 0) {
-                            warn!("Warning: Failed to return to partition 0: {}", e);
-                        }
-                        
-                        Ok(true)
-                    }
-                    Err(e) => {
-                        debug!("Cannot read from partition 1: {} - single partition assumed", e);
-                        
-                        // 确保返回到partition 0
-                        if let Err(e) = self.scsi.locate_block(0, 0) {
-                            warn!("Warning: Failed to return to partition 0 after failed read: {}", e);
-                        }
-                        
-                        Ok(false)
-                    }
+                // 不依赖数据读取，仅测试定位能力
+                info!("✅ Multi-partition support confirmed (can position to partition 1)");
+                
+                // 返回partition 0以继续正常流程
+                if let Err(e) = self.scsi.locate_block(0, 0) {
+                    warn!("Warning: Failed to return to partition 0: {}", e);
                 }
+                
+                Ok(true)
             }
             Err(e) => {
                 debug!("Cannot position to partition 1: {} - single partition tape", e);
