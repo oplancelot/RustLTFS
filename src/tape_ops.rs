@@ -573,60 +573,80 @@ impl TapeOperations {
         self.scsi.read_blocks(1, &mut label_buffer)?;
         
         // 使用严格的三条件验证VOL1标签
-        if !self.parse_vol1_label(&label_buffer)? {
-            return Err(RustLtfsError::ltfs_index(
-                "Invalid VOL1 label - does not match LTFS format requirements".to_string()
-            ));
-        }
-        info!("✅ VOL1 label validation passed");
+        let vol1_valid = self.parse_vol1_label(&label_buffer)?;
         
-        // Step 2.5: 检测多分区配置并应用LTFSCopyGUI的分区策略
-        info!("Step 2.5: Detecting multi-partition configuration (LTFSCopyGUI strategy)");
-        let partition_strategy = self.detect_partition_strategy().await?;
+        if vol1_valid {
+            info!("✅ VOL1 label validation passed");
+            
+            // Step 2.5: 检测多分区配置并应用LTFSCopyGUI的分区策略  
+            info!("Step 2.5: Detecting multi-partition configuration (LTFSCopyGUI strategy)");
+            let partition_strategy = self.detect_partition_strategy().await?;
+            
+            match partition_strategy {
+                PartitionStrategy::StandardMultiPartition => {
+                    info!("✅ Standard multi-partition tape detected, reading index from partition A");
+                }
+                PartitionStrategy::SinglePartitionFallback => {
+                    warn!("⚠️ Single-partition tape detected, falling back to data partition index reading");
+                    return self.read_index_from_single_partition_tape().await;
+                }
+                PartitionStrategy::IndexFromDataPartition => {
+                    info!("📍 Index location indicates data partition, reading from partition B");
+                    return self.read_index_from_data_partition_strategy().await;
+                }
+            }
+            
+            // Step 3: 读取完整的索引文件 - 对应TapeUtils.ReadToFileMark
+            info!("Step 3: Reading complete LTFS index file using ReadToFileMark method");
+            
+            // 使用ReadToFileMark方法读取整个索引文件
+            let xml_content = self.read_index_xml_from_tape_with_file_mark()?;
+            
+            // 验证并处理索引
+            if self.validate_and_process_index(&xml_content).await? {
+                info!("=== LTFS Index Reading Process Completed Successfully ===");
+                return Ok(());
+            } else {
+                warn!("Standard index reading failed, trying alternative strategies");
+            }
+        } else {
+            warn!("⚠️ VOL1 label validation failed, trying alternative tape reading strategies");
+        }
+        
+        // Step 2.5 (Alternative): 当VOL1验证失败时，尝试多分区策略
+        info!("Step 2.5 (Alternative): Attempting multi-partition strategies for non-standard tape");
+        let partition_strategy = self.detect_partition_strategy().await.unwrap_or(PartitionStrategy::SinglePartitionFallback);
         
         match partition_strategy {
-            PartitionStrategy::StandardMultiPartition => {
-                info!("✅ Standard multi-partition tape detected, reading index from partition A");
-            }
             PartitionStrategy::SinglePartitionFallback => {
-                warn!("⚠️ Single-partition tape detected, falling back to data partition index reading");
-                return self.read_index_from_single_partition_tape().await;
+                info!("🔄 Trying single-partition fallback strategy");
+                self.read_index_from_single_partition_tape().await
             }
             PartitionStrategy::IndexFromDataPartition => {
-                info!("📍 Index location indicates data partition, reading from partition B");
-                return self.read_index_from_data_partition_strategy().await;
+                info!("🔄 Trying data partition index strategy");
+                self.read_index_from_data_partition_strategy().await
+            }
+            PartitionStrategy::StandardMultiPartition => {
+                info!("🔄 Trying standard multi-partition strategy without VOL1 validation");
+                
+                // 尝试直接读取索引，跳过VOL1验证
+                match self.read_index_xml_from_tape_with_file_mark() {
+                    Ok(xml_content) => {
+                        if self.validate_and_process_index(&xml_content).await? {
+                            info!("✅ Successfully read index without VOL1 validation");
+                            return Ok(());
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Direct index reading failed: {}", e);
+                    }
+                }
+                
+                // 如果直接读取失败，尝试单分区策略
+                info!("🔄 Falling back to single-partition strategy");
+                self.read_index_from_single_partition_tape().await
             }
         }
-        
-        // Step 3: 读取完整的索引文件 - 对应TapeUtils.ReadToFileMark
-        info!("Step 3: Reading complete LTFS index file using ReadToFileMark method");
-        
-        // 使用ReadToFileMark方法读取整个索引文件
-        let xml_content = self.read_index_xml_from_tape_with_file_mark()?;
-        
-        // 验证索引XML的完整性
-        if xml_content.trim().is_empty() {
-            return Err(RustLtfsError::ltfs_index("LTFS index XML is empty".to_string()));
-        }
-        
-        if !xml_content.contains("<ltfsindex") || !xml_content.contains("</ltfsindex>") {
-            return Err(RustLtfsError::ltfs_index("Invalid LTFS index XML format".to_string()));
-        }
-        
-        info!("✅ Successfully read LTFS index file ({} bytes)", xml_content.len());
-        
-        // Step 4: 解析索引到schema对象
-        info!("Step 4: Parsing LTFS index to schema object");
-        let index = LtfsIndex::from_xml_streaming(&xml_content)?;
-        
-        // Step 5: 更新内部状态
-        info!("Step 5: Updating internal state");
-        self.index = Some(index.clone());
-        self.schema = Some(index);
-        
-        info!("=== LTFS Index Reading Process Completed Successfully ===");
-        
-        Ok(())
     }
     
 
@@ -1306,6 +1326,16 @@ impl TapeOperations {
         if !vol1_label.starts_with(vol1_prefix) {
             warn!("VOL1 label prefix error: does not start with 'VOL1'");
             debug!("First 10 bytes: {:?}", &vol1_label[0..std::cmp::min(10, vol1_label.len())]);
+            
+            // Check if tape is blank (all zeros)
+            let non_zero_count = vol1_label.iter().filter(|&&b| b != 0).count();
+            if non_zero_count == 0 {
+                info!("📭 Detected blank tape (all zeros in VOL1 area)");
+            } else {
+                info!("🔍 Non-LTFS tape detected. First 40 bytes as hex: {:02X?}", &vol1_label[0..40]);
+                info!("🔍 First 40 bytes as text: {:?}", String::from_utf8_lossy(&vol1_label[0..40]));
+            }
+            
             return Ok(false);
         }
         
