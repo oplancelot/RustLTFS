@@ -232,6 +232,57 @@ pub enum Commands {
         #[arg(long = "progress")]
         progress: bool,
     },
+
+    /// Read LTFS index from tape (对应LTFSCopyGUI的读取索引功能)
+    /// 
+    /// 从LTFS磁带的索引分区读取最新的LTFS索引文件并保存到本地
+    ReadIndex {
+        /// Tape device path (e.g. \\.\TAPE0)
+        #[arg(short = 't', long = "tape", value_name = "DEVICE")]
+        device: String,
+
+        /// Output file path for the index
+        #[arg(short = 'o', long = "output", value_name = "OUTPUT")]
+        output: Option<PathBuf>,
+
+        /// Show detailed information during operation
+        #[arg(short = 'd', long = "detailed")]
+        detailed: bool,
+    },
+
+    /// Read LTFS index from data partition (对应LTFSCopyGUI的读取数据区索引功能)
+    /// 
+    /// 从数据分区末尾读取最新写入的LTFS索引副本，用于数据恢复
+    ReadDataIndex {
+        /// Tape device path (e.g. \\.\TAPE0)
+        #[arg(short = 't', long = "tape", value_name = "DEVICE")]
+        device: String,
+
+        /// Output file path for the index
+        #[arg(short = 'o', long = "output", value_name = "OUTPUT")]
+        output: Option<PathBuf>,
+
+        /// Show detailed information during operation
+        #[arg(short = 'd', long = "detailed")]
+        detailed: bool,
+    },
+
+    /// Update LTFS index on tape (对应LTFSCopyGUI的更新数据区索引功能)
+    /// 
+    /// 手动触发LTFS索引更新，将当前索引写入数据分区末尾
+    UpdateIndex {
+        /// Tape device path (e.g. \\.\TAPE0)
+        #[arg(short = 't', long = "tape", value_name = "DEVICE")]
+        device: String,
+
+        /// Force update even if no changes detected
+        #[arg(short = 'f', long = "force")]
+        force: bool,
+
+        /// Show detailed information during operation
+        #[arg(short = 'd', long = "detailed")]
+        detailed: bool,
+    },
 }
 
 impl Cli {

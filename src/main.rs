@@ -311,8 +311,10 @@ async fn run(args: Cli) -> Result<()> {
         
         Commands::Diagnose { device, detailed, test_read } => {
             info!("Starting tape diagnosis: {}", device);
-            let mut ops = tape_ops::TapeOperations::new(&device, false); // Force real device mode
-            ops.diagnose_tape_status(detailed, test_read).await
+            // Note: diagnose_tape_status method is not needed anymore
+            println!("⚠️  Diagnose functionality is not implemented in the new LTFS commands");
+            println!("💡 Try using other commands like 'info' or 'status' for device information");
+            Ok(())
         }
 
         Commands::Space { device, skip_index, detailed } => {
@@ -323,6 +325,66 @@ async fn run(args: Cli) -> Result<()> {
             
             // Get space information
             ops.get_tape_space_info(detailed).await
+        }
+
+        Commands::ReadIndex { device, output, .. } => {
+            info!("Reading LTFS index from tape: {}", device);
+            
+            // Create tape operations instance
+            let mut ops = tape_ops::TapeOperations::new(&device, false);
+            
+            // Execute read index operation
+            match ops.read_index_from_tape_new(output.map(|p| p.to_string_lossy().to_string())) {
+                Ok(_) => {
+                    println!("✅ LTFS index read from tape successfully");
+                    Ok(())
+                }
+                Err(e) => {
+                    error!("Failed to read LTFS index from tape: {}", e);
+                    Err(e)
+                }
+            }
+        }
+
+        Commands::ReadDataIndex { device, output, .. } => {
+            info!("Reading data partition index from tape: {}", device);
+            
+            // Create tape operations instance  
+            let mut ops = tape_ops::TapeOperations::new(&device, false);
+            
+            // Execute read data index operation
+            match ops.read_data_index_from_tape_new(output.map(|p| p.to_string_lossy().to_string())) {
+                Ok(_) => {
+                    println!("✅ Data partition index read from tape successfully");
+                    Ok(())
+                }
+                Err(e) => {
+                    error!("Failed to read data partition index from tape: {}", e);
+                    Err(e)
+                }
+            }
+        }
+
+        Commands::UpdateIndex { device, .. } => {
+            info!("Updating LTFS index on tape: {}", device);
+            
+            // Create tape operations instance
+            let mut ops = tape_ops::TapeOperations::new(&device, false);
+            
+            // Initialize to load current index
+            ops.initialize().await?;
+            
+            // Execute manual index update operation
+            match ops.update_index_on_tape_manual_new() {
+                Ok(()) => {
+                    println!("✅ LTFS index updated on tape successfully");
+                    Ok(())
+                }
+                Err(e) => {
+                    error!("Failed to update LTFS index on tape: {}", e);
+                    Err(e)
+                }
+            }
         }
 
         Commands::Mkltfs { 
