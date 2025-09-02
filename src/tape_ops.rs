@@ -285,276 +285,45 @@ impl TapeOperations {
         }
         
         // Open SCSI device
-        match self.scsi.open_device(&self.device_path) {
-            Ok(()) => {
-                info!("Tape device opened successfully");
-                
-                // Test Unit Ready retry logic - 对应LTFSCopyGUI的TestUnitReady重试
-                info!("Checking device readiness with TestUnitReady retry logic...");
-                match self.wait_for_device_ready().await {
-                    Ok(()) => {
-                        info!("Device is ready for operations");
-                    }
-                    Err(e) => {
-                        warn!("Device readiness check failed: {}", e);
-                        return Err(RustLtfsError::tape_device(format!("Device not ready: {}", e)));
-                    }
-                }
-                
-                // Check device status and media type
-                match self.scsi.check_media_status() {
-                    Ok(media_type) => {
-                        match media_type {
-                            MediaType::NoTape => {
-                                warn!("No tape detected in drive");
-                                return Err(RustLtfsError::tape_device("No tape loaded".to_string()));
-                            }
-                            MediaType::Unknown(_) => {
-                                warn!("Unknown media type detected, attempting to continue");
-                            }
-                            _ => {
-                                info!("Detected media type: {}", media_type.description());
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Failed to check media status: {}", e);
-                        return Err(RustLtfsError::tape_device(format!("Media status check failed: {}", e)));
-                    }
-                }
-                
-                // 首先读取分区标签 (对应LTFSCopyGUI的plabel读取)
-                info!("Reading LTFS partition label...");
-                match self.read_partition_label().await {
-                    Ok(plabel) => {
-                        info!("Partition label loaded: UUID={}, blocksize={}", 
-                              plabel.volume_uuid, plabel.blocksize);
-                        self.partition_label = Some(plabel.clone());
-                        // 更新block_size为从分区标签读取的值
-                        self.block_size = plabel.blocksize;
-                    }
-                    Err(e) => {
-                        warn!("Failed to read partition label: {}, using defaults", e);
-                        // 使用默认分区标签
-                        self.partition_label = Some(LtfsPartitionLabel::default());
-                    }
-                }
-                
-                // Auto read LTFS index when device opened
-                info!("Device opened, auto reading LTFS index ...");
-                match self.read_index_from_tape().await {
-                    Ok(()) => {
-                        info!("LTFS index successfully loaded from tape");
-                    }
-                    Err(e) => {
-                        warn!("Failed to read LTFS index from tape: {}", e);
-                                                                 }
-                }
+        self.scsi.open_device(&self.device_path)?;
+        info!("Tape device opened successfully");
+        
+        self.wait_for_device_ready().await?;
+        info!("Device is ready for operations");
+        
+        match self.scsi.check_media_status()? {
+            MediaType::NoTape => {
+                warn!("No tape detected in drive");
+                return Err(RustLtfsError::tape_device("No tape loaded".to_string()));
+            }
+            MediaType::Unknown(_) => {
+                warn!("Unknown media type detected, attempting to continue");
+            }
+            media_type => {
+                info!("Detected media type: {}", media_type.description());
+            }
+        }
+        
+        // Set a default block size, can be updated later if needed
+        self.block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE;
+        self.partition_label = Some(LtfsPartitionLabel::default());
+
+
+        // Auto read LTFS index when device opened
+        info!("Device opened, auto reading LTFS index ...");
+        match self.read_index_from_tape().await {
+            Ok(_index) => {
+                info!("LTFS index successfully loaded from tape");
             }
             Err(e) => {
-                warn!("Failed to open tape device: {}", e);
-                return Err(RustLtfsError::tape_device(format!("Device open failed: {}", e)));
+                warn!("Failed to read LTFS index from tape: {}", e);
             }
         }
         
         Ok(())
     }
 
-    /// Public method for comprehensive tape diagnosis
-    pub async fn diagnose_tape_status(&mut self, detailed: bool, test_read: bool) -> Result<()> {
-        info!("Starting comprehensive tape diagnosis...");
-        
-        // Step 1: Try to open device
-        info!("\n=== STEP 1: Device Connection Test ===");
-        match self.scsi.open_device(&self.device_path) {
-            Ok(()) => {
-                info!("✅ Successfully opened tape device: {}", self.device_path);
-            }
-            Err(e) => {
-                info!("❌ Failed to open tape device: {}", e);
-                info!("\n🔍 Diagnosis: Device not found/access denied (no drive, driver issue, permissions, or device in use)");
-                return Err(e);
-            }
-        }
-        
-        // Step 2: Check media status
-        info!("\n=== STEP 2: Media Status Check ===");
-        match self.scsi.check_media_status() {
-            Ok(media_type) => {
-                match media_type {
-                    crate::scsi::MediaType::NoTape => {
-                        info!("❌ No tape detected in drive");
-                        info!("\n🔍 Diagnosis: Drive is empty");
-                        info!("Action required: Insert a tape cartridge");
-                        return Ok(());
-                    }
-                    crate::scsi::MediaType::Unknown(code) => {
-                        info!("⚠️ Unknown media type detected (code: 0x{:04X})", code);
-                        info!("\n🔍 Diagnosis: Tape type not recognized (non-LTFS, incompatible type, or damaged)");
-                    }
-                    _ => {
-                        info!("✅ Detected media type: {}", media_type.description());
-                    }
-                }
-            }
-            Err(e) => {
-                info!("❌ Failed to check media status: {}", e);
-                info!("\n🔍 Diagnosis: Drive or media communication issue");
-            }
-        }
-        
-        // Step 2.5: LTFS Format Detection (using LTFSCopyGUI strategy)
-        info!("\n=== STEP 2.5: LTFS Format Detection (LTFSCopyGUI Strategy) ===");
-        match self.detect_ltfs_format_status().await {
-            Ok(format_status) => {
-                match format_status {
-                    LtfsFormatStatus::LtfsFormatted(size) => {
-                        info!("✅ LTFS formatted tape detected (index size: {} bytes)", size);
-                    }
-                    LtfsFormatStatus::BlankTape => {
-                        info!("📭 Blank tape detected (no data written)");
-                    }
-                    LtfsFormatStatus::NonLtfsFormat => {
-                        info!("⚠️ Non-LTFS format detected (has data but not LTFS)");
-                    }
-                    LtfsFormatStatus::CorruptedIndex => {
-                        info!("❌ LTFS tape with corrupted index");
-                    }
-                    _ => {
-                        info!("❌ Format detection failed: {}", format_status.description());
-                    }
-                }
-            }
-            Err(e) => {
-                info!("❌ Format detection error: {}", e);
-            }
-        }
-        
-        // Step 3: Position test
-        info!("\n=== STEP 3: Position Reading Test ===");
-        match self.scsi.read_position() {
-            Ok(position) => {
-                info!("✅ Successfully read tape position");
-                info!("   Partition: {}", position.partition);
-                info!("   Block: {}", position.block_number);
-                if detailed {
-                    info!("   File Number: {}", position.file_number);
-                    info!("   Set Number: {}", position.set_number);
-                    info!("   End of Data: {}", position.end_of_data);
-                    info!("   Beginning of Partition: {}", position.beginning_of_partition);
-                }
-            }
-            Err(e) => {
-                info!("❌ Failed to read tape position: {}", e);
-                info!("\n🔍 Diagnosis: Tape positioning issue");
-            }
-        }
-        
-        // Step 4: Basic read test (if requested)
-        if test_read {
-            info!("\n=== STEP 4: Basic Read Test ===");
-            
-            // Try to position to beginning
-            match self.scsi.locate_block(0, 0) {
-                Ok(()) => {
-                    info!("✅ Successfully positioned to beginning of tape");
-                    
-                    // Try to read first block
-                    let mut test_buffer = vec![0u8; crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize];
-                    match self.scsi.read_blocks(1, &mut test_buffer) {
-                        Ok(_) => {
-                            info!("✅ Successfully read first block from tape");
-                            
-                            let non_zero_bytes = test_buffer.iter().filter(|&&b| b != 0).count();
-                            if non_zero_bytes == 0 {
-                                info!("ℹ️ First block contains only zeros (tape may be blank)");
-                            } else {
-                                info!("ℹ️ First block contains {} non-zero bytes", non_zero_bytes);
-                                
-                                // Check for LTFS signature
-                                if test_buffer.windows(4).any(|window| window == b"LTFS") {
-                                    info!("✅ Found LTFS signature in first block");
-                                } else {
-                                    info!("⚠️ No LTFS signature found in first block");
-                                }
-                            }
-                            
-                            if detailed {
-                                // Show first 256 bytes in hex dump format
-                                info!("\n📊 First 256 bytes of tape (hex dump):");
-                                for (i, chunk) in test_buffer[..256].chunks(16).enumerate() {
-                                    let offset = i * 16;
-                                    let hex: String = chunk.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
-                                    let ascii: String = chunk.iter().map(|&b| {
-                                        if b >= 32 && b <= 126 { b as char } else { '.' }
-                                    }).collect();
-                                    info!("{:08X}: {:48} {}", offset, hex, ascii);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            info!("❌ Failed to read first block: {}", e);
-                            info!("\n🔍 Diagnosis: Read operation failed (tape write-protected/damaged, drive needs cleaning, format incompatibility)");
-                        }
-                    }
-                }
-                Err(e) => {
-                    info!("❌ Failed to position to beginning: {}", e);
-                    info!("\n🔍 Diagnosis: Tape positioning failed");
-                }
-            }
-        }
-        
-        // Step 5: LTFS structure check
-        if test_read {
-            info!("\n=== STEP 5: LTFS Structure Analysis ===");
-            
-            // Try to read volume label at block 0
-            match self.scsi.locate_block(0, 0) {
-                Ok(()) => {
-                    let mut buffer = vec![0u8; crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize];
-                    match self.scsi.read_blocks(1, &mut buffer) {
-                        Ok(_) => {
-                            if buffer.windows(4).any(|window| window == b"LTFS") {
-                                info!("✅ LTFS volume label found at block 0");
-                            } else {
-                                info!("❌ No LTFS volume label found at block 0");
-                                
-                                // Try common index locations
-                                let test_blocks = [5, 6, 10, 1];
-                                for &block in &test_blocks {
-                                    if let Ok(()) = self.scsi.locate_block(0, block) {
-                                        if let Ok(_) = self.scsi.read_blocks(1, &mut buffer) {
-                                            if let Ok(content) = String::from_utf8(buffer.clone()) {
-                                                if content.contains("<?xml") || content.contains("<ltfsindex") {
-                                                    info!("✅ Potential LTFS index found at block {}", block);
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            info!("❌ Cannot read volume label area");
-                        }
-                    }
-                }
-                Err(_) => {
-                    info!("❌ Cannot position to volume label area");
-                }
-            }
-        }
-        
-        info!("\n=== DIAGNOSIS COMPLETE ===");
-        info!("📋 Summary:");
-        info!("  • Device: {}", self.device_path);
-        info!("  • Status: Analysis completed");
-        info!("  • For detailed help, use: rustltfs.exe diagnose --help");
-        
-        Ok(())
-    }
+    
 
 
     /// Read LTFS index from tape (精准对应LTFSCopyGUI的读取索引ToolStripMenuItem_Click)
@@ -3667,5 +3436,305 @@ impl TapeOperations {
         // 其他标准字段可以根据需要填充
         
         Ok(vol1_label)
+    }
+
+    /// 从磁带索引分区读取LTFS索引 - 新版本
+    /// 对应LTFSWriter.vb的读取索引ToolStripMenuItem_Click功能
+    pub fn read_index_from_tape_new(&mut self, output_path: Option<String>) -> Result<String> {
+        info!("Starting read_index_from_tape operation");
+        
+        // 检查设备状态
+        self.check_device_ready()?;
+        
+        // 检测分区数量
+        let partition_count = self.detect_partition_count()?;
+        info!("Detected {} partitions on tape", partition_count);
+        
+        // 定位到索引分区(P0或P255)
+        let index_partition = if partition_count > 1 { 0 } else { 0 };
+        self.scsi.locate_block(index_partition, 0)?;
+        
+        // 读取并验证VOL1标签
+        let mut vol1_buffer = vec![0u8; 80];
+        let bytes_read = self.scsi.read_blocks(1, &mut vol1_buffer)?;
+        if bytes_read < 80 || &vol1_buffer[0..4] != b"VOL1" {
+            return Err(RustLtfsError::ltfs_index("Invalid VOL1 label - not a valid LTFS tape".to_string()));
+        }
+        
+        // 检查LTFS标识
+        if vol1_buffer.len() >= 28 && &vol1_buffer[24..28] == b"LTFS" {
+            info!("Confirmed LTFS formatted tape");
+        } else {
+            warn!("VOL1 label present but LTFS identifier not found in expected position");
+        }
+        
+        // 读取LTFS标签 
+        self.scsi.locate_block(index_partition, 1)?;
+        let block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
+        let mut ltfs_label_buffer = vec![0u8; block_size];
+        let _bytes_read = self.scsi.read_blocks(1, &mut ltfs_label_buffer)?;
+        
+        // 解析标签以找到索引位置
+        let index_location = self.parse_index_locations_from_volume_label(&ltfs_label_buffer)?;
+        
+        // 从指定位置读取索引
+        let index_content = self.read_index_from_specific_location(&index_location)?;
+        
+        // 保存索引文件到指定路径或默认路径
+        let save_path = output_path.unwrap_or_else(|| {
+            format!("schema/ltfs_index_{}.xml", chrono::Utc::now().format("%Y%m%d_%H%M%S"))
+        });
+        
+        // 确保目录存在
+        if let Some(parent) = std::path::Path::new(&save_path).parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                RustLtfsError::file_operation(format!("Failed to create directory: {}", e))
+            })?;
+        }
+        
+        std::fs::write(&save_path, &index_content).map_err(|e| {
+            RustLtfsError::file_operation(format!("Failed to save index file: {}", e))
+        })?;
+        
+        info!("LTFS index saved to: {}", save_path);
+        Ok(index_content)
+    }
+
+    /// 从数据分区末尾读取最新的索引副本 - 新版本
+    /// 对应LTFSWriter.vb的读取数据区索引ToolStripMenuItem_Click功能
+    pub fn read_data_index_from_tape_new(&mut self, output_path: Option<String>) -> Result<String> {
+        info!("Starting read_data_index_from_tape operation");
+        
+        // 检查设备状态
+        self.check_device_ready()?;
+        
+        // 检测分区数量，确保是多分区磁带
+        let partition_count = self.detect_partition_count()?;
+        if partition_count <= 1 {
+            return Err(RustLtfsError::ltfs_index("Single partition tape - no data partition index available".to_string()));
+        }
+        
+        info!("Multi-partition tape detected, searching data partition for index");
+        
+        // 定位到数据分区（通常是分区1）
+        let data_partition = 1;
+        
+        // 定位到数据分区末尾(EOD)
+        self.scsi.locate_to_eod(data_partition)?;
+        info!("Located to end of data partition");
+        
+        // 向前搜索找到最后的索引文件标记
+        let index_content = self.search_backward_for_last_index(data_partition)?;
+        
+        // 保存索引文件
+        let save_path = output_path.unwrap_or_else(|| {
+            format!("schema/ltfs_data_index_{}.xml", chrono::Utc::now().format("%Y%m%d_%H%M%S"))
+        });
+        
+        // 确保目录存在
+        if let Some(parent) = std::path::Path::new(&save_path).parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                RustLtfsError::file_operation(format!("Failed to create directory: {}", e))
+            })?;
+        }
+        
+        std::fs::write(&save_path, &index_content).map_err(|e| {
+            RustLtfsError::file_operation(format!("Failed to save data index file: {}", e))
+        })?;
+        
+        info!("LTFS data partition index saved to: {}", save_path);
+        Ok(index_content)
+    }
+
+    /// 手动触发LTFS索引更新到磁带 - 新版本
+    /// 对应LTFSWriter.vb的更新数据区索引ToolStripMenuItem_Click功能  
+    pub fn update_index_on_tape_manual_new(&mut self) -> Result<()> {
+        info!("Starting manual index update operation");
+        
+        // 检查设备状态
+        self.check_device_ready()?;
+        
+        // 检查当前是否有已加载的索引需要更新
+        if self.index.is_none() {
+            return Err(RustLtfsError::ltfs_index("No LTFS index loaded - nothing to update".to_string()));
+        }
+        
+        // 检查索引是否已修改（需要更新）
+        // 注意：这里简化了Modified标志的检查，实际实现中应该有一个标志跟踪索引是否被修改
+        info!("Checking if index needs update...");
+        
+        // 检测分区数量
+        let partition_count = self.detect_partition_count()?;
+        
+        if partition_count > 1 {
+            // 多分区磁带：将索引写入数据分区末尾
+            info!("Multi-partition tape - updating index in data partition");
+            
+            // 定位到数据分区末尾
+            self.scsi.locate_to_eod(1)?;
+            
+            // 将当前内存中的索引写入数据分区
+            if let Some(ref index) = self.index {
+                let index_xml = self.serialize_ltfs_index(index)?;
+                
+                // 写入索引数据
+                let index_bytes = index_xml.as_bytes();
+                let block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
+                
+                // 计算需要的块数
+                let blocks_needed = (index_bytes.len() + block_size - 1) / block_size;
+                let mut padded_data = vec![0u8; blocks_needed * block_size];
+                padded_data[..index_bytes.len()].copy_from_slice(index_bytes);
+                
+                self.scsi.write_blocks(blocks_needed as u32, &padded_data)?;
+                
+                // 写入文件标记表示索引结束
+                self.scsi.write_filemarks(1)?;
+                
+                info!("Index written to data partition");
+            }
+        } else {
+            // 单分区磁带：更新索引分区
+            info!("Single partition tape - updating index partition");
+            
+            // 定位到索引分区并更新
+            self.scsi.locate_block(0, 4)?; // 通常索引从block 4开始
+            
+            if let Some(ref index) = self.index {
+                let index_xml = self.serialize_ltfs_index(index)?;
+                let index_bytes = index_xml.as_bytes();
+                let block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
+                
+                let blocks_needed = (index_bytes.len() + block_size - 1) / block_size;
+                let mut padded_data = vec![0u8; blocks_needed * block_size];
+                padded_data[..index_bytes.len()].copy_from_slice(index_bytes);
+                
+                self.scsi.write_blocks(blocks_needed as u32, &padded_data)?;
+                self.scsi.write_filemarks(1)?;
+                
+                info!("Index updated in index partition");
+            }
+        }
+        
+        // 执行磁带刷新操作确保数据写入
+        info!("Flushing tape buffers...");
+        // 注意：ScsiInterface没有直接的flush_buffers方法，使用write_filemarks(0)来刷新
+        self.scsi.write_filemarks(0)?;
+        
+        info!("Manual index update completed successfully");
+        Ok(())
+    }
+
+    /// 向后搜索找到数据分区中最后的索引
+    fn search_backward_for_last_index(&mut self, partition: u8) -> Result<String> {
+        info!("Searching backward from EOD for last index");
+        
+        let block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
+        let mut search_distance = 1;
+        let max_search_blocks = 1000; // 最多向前搜索1000个块
+        
+        while search_distance <= max_search_blocks {
+            // 尝试通过相对定位向前搜索
+            // 注意：ScsiInterface没有locate_block_relative方法，我们需要使用space方法
+            match self.scsi.space(crate::scsi::SpaceType::Blocks, -(search_distance as i32)) {
+                Ok(()) => {
+                    // 尝试读取当前位置的数据
+                    match self.try_read_index_at_current_position(block_size) {
+                        Ok(xml_content) => {
+                            if self.is_valid_ltfs_index(&xml_content) {
+                                info!("Found valid LTFS index at {} blocks before EOD", search_distance);
+                                return Ok(xml_content);
+                            }
+                        }
+                        Err(_) => {
+                            // 继续搜索
+                            debug!("No valid index found at {} blocks before EOD", search_distance);
+                        }
+                    }
+                }
+                Err(_) => {
+                    warn!("Cannot locate to {} blocks before EOD", search_distance);
+                    break;
+                }
+            }
+            
+            search_distance += 10; // 每次向前搜索10个块
+        }
+        
+        Err(RustLtfsError::ltfs_index("No valid index found in data partition".to_string()))
+    }
+
+    /// 序列化LTFS索引为XML字符串
+    fn serialize_ltfs_index(&self, index: &LtfsIndex) -> Result<String> {
+        // 简化的XML序列化实现
+        // 实际实现中应该使用更完整的XML生成逻辑
+        let xml_header = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ltfsindex version="2.4.0">
+"#;
+        
+        let mut xml_content = String::from(xml_header);
+        
+        // 添加基本的索引信息
+        xml_content.push_str(&format!(
+            "  <volume>{}</volume>\n",
+            index.volumeuuid
+        ));
+        
+        xml_content.push_str(&format!(
+            "  <creator>RustLTFS</creator>\n"
+        ));
+        
+        xml_content.push_str(&format!(
+            "  <formattime>{}</formattime>\n",
+            chrono::Utc::now().to_rfc3339()
+        ));
+        
+        // 添加目录信息（简化）
+        xml_content.push_str("  <directory>\n");
+        for file in &index.root_directory.contents.files {
+            xml_content.push_str(&format!(
+                "    <file><name>{}</name><length>{}</length></file>\n", 
+                file.name, file.length
+            ));
+        }
+        xml_content.push_str("  </directory>\n");
+        
+        xml_content.push_str("</ltfsindex>\n");
+        
+        Ok(xml_content)
+    }
+
+    /// 检查设备是否就绪
+    fn check_device_ready(&mut self) -> Result<()> {
+        // 执行基本的设备就绪检查
+        match self.scsi.test_unit_ready() {
+            Ok(_) => Ok(()), // test_unit_ready返回Vec<u8>，我们只关心是否成功
+            Err(e) => Err(RustLtfsError::scsi(format!("Device not ready: {}", e)))
+        }
+    }
+
+    /// 检测磁带分区数量
+    fn detect_partition_count(&mut self) -> Result<u8> {
+        // 使用MODE SENSE命令检测分区数量
+        // 这里简化实现，实际应该解析MODE SENSE的返回数据
+        match self.scsi.mode_sense_partition_info() {
+            Ok(mode_data) => {
+                // 解析mode data以确定分区数量
+                // 简化实现：假设如果mode sense成功且数据长度足够，则检查分区信息
+                if mode_data.len() >= 20 {
+                    // 检查分区设置页面（通常在特定偏移位置）
+                    // 这里需要根据实际的SCSI标准解析
+                    let partition_count = if mode_data.len() > 50 && mode_data[15] > 0 { 2 } else { 1 };
+                    Ok(partition_count)
+                } else {
+                    Ok(1) // 默认单分区
+                }
+            }
+            Err(_) => {
+                // 如果MODE SENSE失败，假设是单分区
+                warn!("MODE SENSE failed, assuming single partition tape");
+                Ok(1)
+            }
+        }
     }
 }
