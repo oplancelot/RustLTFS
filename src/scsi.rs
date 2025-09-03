@@ -591,11 +591,9 @@ impl ScsiInterface {
     pub fn read_blocks(&self, block_count: u32, buffer: &mut [u8]) -> Result<u32> {
         debug!("Reading {} blocks from tape", block_count);
         
-        if buffer.len() < (block_count * block_sizes::LTO_BLOCK_SIZE) as usize {
-            return Err(crate::error::RustLtfsError::scsi(
-                "Buffer too small for requested block count"
-            ));
-        }
+        // 移除硬编码的LTO_BLOCK_SIZE检查，改为动态缓冲区处理
+        // 对应LTFSCopyGUI的自适应缓冲区逻辑，不预先检查缓冲区大小
+        // 让SCSI驱动返回实际读取的字节数或错误信息
         
         // For large block counts, break into smaller chunks to avoid SCSI timeout
         const MAX_BLOCKS_PER_READ: u32 = 256; // 16MB chunks (256 * 64KB)
@@ -638,10 +636,12 @@ impl ScsiInterface {
             // Control
             cdb[9] = 0x00;
             
-            let data_length = (block_count * block_sizes::LTO_BLOCK_SIZE) as usize;
+            // 使用实际提供的缓冲区大小，而不是假定的块大小
+            // 对应LTFSCopyGUI的动态缓冲区处理逻辑
+            let data_length = buffer.len();
             
-            // Adjust timeout based on block count
-            let timeout = std::cmp::max(300, (block_count / 10) * 60); // Min 5min, scale with size
+            // Adjust timeout based on buffer size
+            let timeout = std::cmp::max(300, (data_length / (64 * 1024)) * 60); // Min 5min, scale with size
             
             let result = self.scsi_io_control(
                 &cdb,
