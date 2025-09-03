@@ -3713,27 +3713,51 @@ impl TapeOperations {
         }
     }
 
-    /// 检测磁带分区数量
+    /// 检测磁带分区数量 (对应LTFSCopyGUI的ExtraPartitionCount检测逻辑)
     fn detect_partition_count(&mut self) -> Result<u8> {
-        // 使用MODE SENSE命令检测分区数量
-        // 这里简化实现，实际应该解析MODE SENSE的返回数据
-        match self.scsi.mode_sense_partition_info() {
+        info!("Detecting partition count using LTFSCopyGUI-compatible MODE SENSE logic");
+        
+        // 使用MODE SENSE命令查询页面0x11 (对应LTFSCopyGUI的实现)
+        // LTFSCopyGUI代码: Dim PModeData As Byte() = TapeUtils.ModeSense(driveHandle, &H11)
+        match self.scsi.mode_sense_partition_page_0x11() {
             Ok(mode_data) => {
-                // 解析mode data以确定分区数量
-                // 简化实现：假设如果mode sense成功且数据长度足够，则检查分区信息
-                if mode_data.len() >= 20 {
-                    // 检查分区设置页面（通常在特定偏移位置）
-                    // 这里需要根据实际的SCSI标准解析
-                    let partition_count = if mode_data.len() > 50 && mode_data[15] > 0 { 2 } else { 1 };
+                debug!("MODE SENSE page 0x11 data length: {} bytes", mode_data.len());
+                
+                // 对应LTFSCopyGUI: If PModeData.Length >= 4 Then ExtraPartitionCount = PModeData(3)
+                if mode_data.len() >= 4 {
+                    let extra_partition_count = mode_data[3];
+                    let total_partitions = extra_partition_count + 1; // ExtraPartitionCount + 主分区
+                    
+                    info!("✅ MODE SENSE successful: ExtraPartitionCount={}, Total partitions={}", 
+                         extra_partition_count, total_partitions);
+                    
+                    // 限制分区数量（对应LTFSCopyGUI的逻辑）
+                    let partition_count = if total_partitions > 2 { 2 } else { total_partitions };
+                    
                     Ok(partition_count)
                 } else {
-                    Ok(1) // 默认单分区
+                    warn!("MODE SENSE data too short, assuming single partition");
+                    Ok(1)
                 }
             }
-            Err(_) => {
-                // 如果MODE SENSE失败，假设是单分区
-                warn!("MODE SENSE failed, assuming single partition tape");
-                Ok(1)
+            Err(e) => {
+                warn!("MODE SENSE page 0x11 failed: {}, trying fallback detection", e);
+                
+                // 备用方法：尝试定位到分区1来检测多分区支持
+                match self.scsi.locate_block(1, 0) {
+                    Ok(_) => {
+                        info!("✅ Fallback detection: Can access partition 1, multi-partition supported");
+                        // 返回分区0继续正常流程
+                        if let Err(e) = self.scsi.locate_block(0, 0) {
+                            warn!("Warning: Failed to return to partition 0: {}", e);
+                        }
+                        Ok(2) // 支持多分区
+                    }
+                    Err(_) => {
+                        info!("📋 Fallback detection: Cannot access partition 1, single partition tape");
+                        Ok(1) // 单分区
+                    }
+                }
             }
         }
     }
