@@ -3459,18 +3459,44 @@ impl TapeOperations {
         let index_partition = if partition_count > 1 { 0 } else { 0 };
         self.scsi.locate_block(index_partition, 0)?;
         
-        // 读取并验证VOL1标签
-        let mut vol1_buffer = vec![0u8; 80];
-        let bytes_read = self.scsi.read_blocks(1, &mut vol1_buffer)?;
-        if bytes_read < 80 || &vol1_buffer[0..4] != b"VOL1" {
+        // 读取并验证VOL1标签（使用LTFSCopyGUI兼容的缓冲区大小）
+        // 对应LTFSCopyGUI: ReadBlock(driveHandle, senseData)
+        let default_buffer_size = 524288; // 对应LTFSCopyGUI的&H80000默认缓冲区大小
+        let mut vol1_buffer = vec![0u8; default_buffer_size];
+        
+        info!("Reading VOL1 label with buffer size: {} bytes", default_buffer_size);
+        let bytes_read = match self.scsi.read_blocks(1, &mut vol1_buffer) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                warn!("Initial VOL1 read failed: {}, trying with smaller buffer", e);
+                // 备用方案：尝试使用80字节的小缓冲区（标准VOL1大小）
+                let mut small_buffer = vec![0u8; 80];
+                match self.scsi.read_blocks(1, &mut small_buffer) {
+                    Ok(bytes) => {
+                        vol1_buffer = small_buffer;
+                        bytes
+                    }
+                    Err(e2) => return Err(RustLtfsError::scsi(format!("Failed to read VOL1 label: {}", e2)))
+                }
+            }
+        };
+        
+        // 验证VOL1标签格式（最少需要80字节）
+        if vol1_buffer.len() < 80 {
+            return Err(RustLtfsError::ltfs_index("VOL1 buffer too small".to_string()));
+        }
+        
+        // 检查VOL1标签
+        let vol1_str = String::from_utf8_lossy(&vol1_buffer[0..80]);
+        if !vol1_str.starts_with("VOL1") {
             return Err(RustLtfsError::ltfs_index("Invalid VOL1 label - not a valid LTFS tape".to_string()));
         }
         
-        // 检查LTFS标识
+        // 检查LTFS标识（位置24-27）
         if vol1_buffer.len() >= 28 && &vol1_buffer[24..28] == b"LTFS" {
-            info!("Confirmed LTFS formatted tape");
+            info!("✅ Confirmed LTFS formatted tape with valid VOL1 label");
         } else {
-            warn!("VOL1 label present but LTFS identifier not found in expected position");
+            warn!("⚠️ VOL1 label present but LTFS identifier not found in expected position");
         }
         
         // 读取LTFS标签 
