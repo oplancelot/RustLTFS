@@ -3443,6 +3443,11 @@ impl TapeOperations {
     pub fn read_index_from_tape_new(&mut self, output_path: Option<String>) -> Result<String> {
         info!("Starting read_index_from_tape operation");
         
+        // 首先打开设备连接
+        info!("Opening device: {}", self.device_path);
+        self.scsi.open_device(&self.device_path)?;
+        info!("Device opened successfully");
+        
         // 检查设备状态
         self.check_device_ready()?;
         
