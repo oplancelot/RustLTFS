@@ -641,8 +641,7 @@ impl ScsiInterface {
             let data_length = buffer.len();
             
             // Adjust timeout based on buffer size
-            // let timeout = std::cmp::max(300, (data_length / (64 * 1024)) * 60); // Min 5min, scale with size
-             let timeout = std::cmp::max(300u32, ((data_length / (64 * 1024)) * 60) as u32);
+            let timeout = std::cmp::max(300u32, ((data_length / (64 * 1024)) * 60) as u32); // Min 5min, scale with size
             let result = self.scsi_io_control(
                 &cdb,
                 Some(&mut buffer[..data_length]),

@@ -389,20 +389,34 @@ impl TapeOperations {
             }
         } else {
             warn!("⚠️ VOL1 label validation failed, trying alternative tape reading strategies");
+            
+            // 显示磁带内容诊断信息（与同步版本保持一致）
+            let display_len = std::cmp::min(40, label_buffer.len());
+            info!("🔍 Tape content analysis (first {} bytes):", display_len);
+            info!("   Hex: {:02X?}", &label_buffer[0..display_len]);
+            info!("   Text: {:?}", String::from_utf8_lossy(&label_buffer[0..display_len]));
         }
         
-        // Step 2.5 (Alternative): 当VOL1验证失败时，尝试多分区策略
-        info!("Step 2.5 (Alternative): Attempting multi-partition strategies for non-standard tape");
+        // Step 2.5 (Alternative): 当VOL1验证失败时，使用完整的LTFSCopyGUI回退策略
+        info!("Step 2.5 (Alternative): Applying complete LTFSCopyGUI fallback strategies");
         
-        // 检查是否为真正的空白磁带（前几KB都是零）
-        let is_completely_blank = label_buffer.iter().take(4096).all(|&b| b == 0);
-        if is_completely_blank {
-            info!("📭 Detected completely blank tape - skipping extensive search");
-            return Err(RustLtfsError::ltfs_index("Blank tape detected - no LTFS index found".to_string()));
-        } else {
-            info!("🔍 Non-VOL1 tape detected but contains data - attempting multi-partition strategies");
+        // 调用完整的回退策略（使用同步版本中的完整实现）
+        match self.try_alternative_index_reading_strategies_async().await {
+            Ok(xml_content) => {
+                // 处理和验证索引
+                if self.validate_and_process_index(&xml_content).await? {
+                    info!("✅ Alternative strategies succeeded - index loaded successfully");
+                    return Ok(());
+                } else {
+                    warn!("Index validation failed after successful reading");
+                }
+            }
+            Err(e) => {
+                debug!("All alternative strategies failed: {}", e);
+            }
         }
         
+        // 原有的多分区策略作为最后的回退
         let partition_strategy = self.detect_partition_strategy().await.unwrap_or(PartitionStrategy::StandardMultiPartition);
         
         match partition_strategy {
@@ -587,7 +601,7 @@ impl TapeOperations {
                         .map(|plabel| plabel.blocksize as usize)
                         .unwrap_or(crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize);
                     
-                    match self.try_read_index_at_current_position(block_size) {
+                    match self.try_read_index_at_current_position_sync() {
                         Ok(xml_content) => {
                             if self.is_valid_ltfs_index(&xml_content) {
                                 info!("Found valid LTFS index at data partition block {}", block);
@@ -3483,21 +3497,36 @@ impl TapeOperations {
         
         // 验证VOL1标签格式（最少需要80字节）
         if vol1_buffer.len() < 80 {
-            return Err(RustLtfsError::ltfs_index("VOL1 buffer too small".to_string()));
+            warn!("VOL1 buffer too small ({} bytes), trying alternative strategies", vol1_buffer.len());
+            return self.try_alternative_index_reading_strategies(output_path);
         }
         
-        // 检查VOL1标签
+        // 检查是否为空白磁带（前4KB都是零） - 对应LTFSCopyGUI的空白磁带检测
+        let check_size = std::cmp::min(4096, vol1_buffer.len());
+        let is_completely_blank = vol1_buffer.iter().take(check_size).all(|&b| b == 0);
+        if is_completely_blank {
+            info!("📭 Detected blank tape (all zeros in first {}KB)", check_size / 1024);
+            return Err(RustLtfsError::ltfs_index("Blank tape detected - no LTFS index found".to_string()));
+        }
+        
+        // 检查VOL1标签和LTFS标识
         let vol1_str = String::from_utf8_lossy(&vol1_buffer[0..80]);
-        if !vol1_str.starts_with("VOL1") {
-            return Err(RustLtfsError::ltfs_index("Invalid VOL1 label - not a valid LTFS tape".to_string()));
+        let vol1_valid = vol1_str.starts_with("VOL1");
+        let ltfs_valid = vol1_buffer.len() >= 28 && &vol1_buffer[24..28] == b"LTFS";
+        
+        if !vol1_valid || !ltfs_valid {
+            warn!("⚠️ VOL1 validation failed (VOL1: {}, LTFS: {}), trying alternative strategies", vol1_valid, ltfs_valid);
+            
+            // 显示磁带内容诊断信息
+            let display_len = std::cmp::min(40, vol1_buffer.len());
+            info!("🔍 Tape content analysis (first {} bytes):", display_len);
+            info!("   Hex: {:02X?}", &vol1_buffer[0..display_len]);
+            info!("   Text: {:?}", String::from_utf8_lossy(&vol1_buffer[0..display_len]));
+            
+            return self.try_alternative_index_reading_strategies(output_path);
         }
         
-        // 检查LTFS标识（位置24-27）
-        if vol1_buffer.len() >= 28 && &vol1_buffer[24..28] == b"LTFS" {
-            info!("✅ Confirmed LTFS formatted tape with valid VOL1 label");
-        } else {
-            warn!("⚠️ VOL1 label present but LTFS identifier not found in expected position");
-        }
+        info!("✅ Confirmed LTFS formatted tape with valid VOL1 label");
         
         // 读取LTFS标签 
         self.scsi.locate_block(index_partition, 1)?;
@@ -3670,7 +3699,7 @@ impl TapeOperations {
             match self.scsi.space(crate::scsi::SpaceType::Blocks, -(search_distance as i32)) {
                 Ok(()) => {
                     // 尝试读取当前位置的数据
-                    match self.try_read_index_at_current_position(block_size) {
+                    match self.try_read_index_at_current_position_sync() {
                         Ok(xml_content) => {
                             if self.is_valid_ltfs_index(&xml_content) {
                                 info!("Found valid LTFS index at {} blocks before EOD", search_distance);
@@ -3791,5 +3820,435 @@ impl TapeOperations {
                 }
             }
         }
+    }
+
+    /// 替代索引读取策略 - 当VOL1验证失败时使用 (对应LTFSCopyGUI的完整回退逻辑)
+    fn try_alternative_index_reading_strategies(&mut self, output_path: Option<String>) -> Result<String> {
+        info!("🔄 Starting alternative index reading strategies (LTFSCopyGUI compatible)");
+        
+        // 策略1: 跳过VOL1验证，直接尝试读取LTFS标签和索引
+        info!("Strategy 1: Bypassing VOL1, attempting direct LTFS label reading");
+        
+        let partition_count = self.detect_partition_count()?;
+        let index_partition = if partition_count > 1 { 0 } else { 0 };
+        
+        // 尝试读取LTFS标签 (block 1)
+        match self.scsi.locate_block(index_partition, 1) {
+            Ok(()) => {
+                let block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
+                let mut ltfs_label_buffer = vec![0u8; block_size];
+                
+                match self.scsi.read_blocks(1, &mut ltfs_label_buffer) {
+                    Ok(_) => {
+                        // 尝试从LTFS标签解析索引位置
+                        match self.parse_index_locations_from_volume_label(&ltfs_label_buffer) {
+                            Ok(index_location) => {
+                                info!("✅ Found index location from LTFS label: partition {}, block {}", 
+                                     index_location.partition, index_location.start_block);
+                                
+                                match self.read_index_from_specific_location(&index_location) {
+                                    Ok(index_content) => {
+                                        info!("✅ Strategy 1 succeeded - index read from LTFS label location");
+                                        return self.save_index_and_return(index_content, output_path);
+                                    }
+                                    Err(e) => debug!("Strategy 1 location read failed: {}", e)
+                                }
+                            }
+                            Err(e) => debug!("Strategy 1 location parsing failed: {}", e)
+                        }
+                    }
+                    Err(e) => debug!("Strategy 1 LTFS label read failed: {}", e)
+                }
+            }
+            Err(e) => debug!("Strategy 1 positioning failed: {}", e)
+        }
+        
+        // 策略2: 搜索常见的索引位置
+        info!("Strategy 2: Searching common index locations");
+        let common_locations = vec![2, 5, 6, 10, 20, 100];
+        
+        for &block in &common_locations {
+            debug!("Trying common location: partition {}, block {}", index_partition, block);
+            
+            match self.scsi.locate_block(index_partition, block) {
+                Ok(()) => {
+                    match self.try_read_index_at_current_position_sync() {
+                        Ok(xml_content) => {
+                            if !xml_content.trim().is_empty() && 
+                               xml_content.contains("<ltfsindex") && 
+                               xml_content.contains("</ltfsindex>") {
+                                info!("✅ Strategy 2 succeeded - found valid index at block {}", block);
+                                return self.save_index_and_return(xml_content, output_path);
+                            }
+                        }
+                        Err(e) => debug!("Failed to read index at block {}: {}", block, e)
+                    }
+                }
+                Err(e) => debug!("Cannot position to block {}: {}", block, e)
+            }
+        }
+        
+        // 策略3: 检测分区策略并使用相应的读取方法
+        info!("Strategy 3: Applying partition-specific strategies");
+        
+        if partition_count > 1 {
+            info!("Multi-partition tape detected, trying data partition strategy");
+            
+            // 尝试从数据分区读取索引副本
+            match self.try_read_from_data_partition() {
+                Ok(xml_content) => {
+                    info!("✅ Strategy 3 succeeded - index read from data partition");
+                    return self.save_index_and_return(xml_content, output_path);
+                }
+                Err(e) => debug!("Data partition strategy failed: {}", e)
+            }
+        } else {
+            info!("Single-partition tape detected, trying extended search");
+            
+            // 单分区磁带的扩展搜索
+            match self.try_single_partition_extended_search() {
+                Ok(xml_content) => {
+                    info!("✅ Strategy 3 succeeded - index found via extended search");
+                    return self.save_index_and_return(xml_content, output_path);
+                }
+                Err(e) => debug!("Single partition extended search failed: {}", e)
+            }
+        }
+        
+        // 所有策略都失败了
+        Err(RustLtfsError::ltfs_index(
+            "All alternative index reading strategies failed. Possible causes:\n\
+             1. Blank or unformatted tape\n\
+             2. Corrupted LTFS index\n\
+             3. Non-LTFS tape format\n\
+             4. Hardware communication issues\n\
+             \n\
+             Suggestions:\n\
+             - Check if tape is properly loaded\n\
+             - Try using --skip-index option for file operations\n\
+             - Verify tape format with original LTFS tools".to_string()
+        ))
+    }
+    
+    /// 尝试从当前位置读取索引 (同步版本，用于回退策略)
+    fn try_read_index_at_current_position_sync(&self) -> Result<String> {
+        let block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
+        let max_blocks = 50; // 限制读取块数，避免读取过多数据
+        let mut xml_content = String::new();
+        let mut blocks_read = 0;
+        
+        // 读取多个块直到找到完整的XML或达到限制
+        for block_num in 0..max_blocks {
+            let mut buffer = vec![0u8; block_size];
+            
+            match self.scsi.read_blocks(1, &mut buffer) {
+                Ok(read_count) => {
+                    if read_count == 0 {
+                        break;
+                    }
+                    
+                    blocks_read += 1;
+                    
+                    // 检查是否为全零块（可能的文件标记）
+                    if buffer.iter().all(|&b| b == 0) {
+                        debug!("Encountered zero block at {}, assuming end of data", block_num);
+                        break;
+                    }
+                    
+                    // 转换为UTF-8并添加到内容
+                    match String::from_utf8(buffer) {
+                        Ok(block_content) => {
+                            let trimmed = block_content.trim_end_matches('\0');
+                            xml_content.push_str(trimmed);
+                            
+                            // 检查是否已读取完整的XML
+                            if xml_content.contains("</ltfsindex>") {
+                                debug!("Found complete LTFS index XML after {} blocks", blocks_read);
+                                break;
+                            }
+                        }
+                        Err(_) => {
+                            debug!("Non-UTF8 data encountered at block {}, stopping", block_num);
+                            break;
+                        }
+                    }
+                }
+                Err(_) => {
+                    debug!("Read error at block {}, stopping", block_num);
+                    break;
+                }
+            }
+        }
+        
+        let cleaned_xml = xml_content.replace('\0', "").trim().to_string();
+        
+        if cleaned_xml.is_empty() {
+            Err(RustLtfsError::ltfs_index("No XML content found at current position".to_string()))
+        } else {
+            Ok(cleaned_xml)
+        }
+    }
+    
+    /// 尝试从数据分区读取索引副本
+    fn try_read_from_data_partition(&self) -> Result<String> {
+        info!("Attempting to read index from data partition (partition 1)");
+        
+        // 定位到数据分区的一些常见索引位置
+        let data_partition = 1;
+        let search_blocks = vec![1000, 2000, 5000, 10000]; // 数据分区的常见索引位置
+        
+        for &block in &search_blocks {
+            debug!("Trying data partition block {}", block);
+            
+            match self.scsi.locate_block(data_partition, block) {
+                Ok(()) => {
+                    match self.try_read_index_at_current_position_sync() {
+                        Ok(xml_content) => {
+                            if xml_content.contains("<ltfsindex") && xml_content.contains("</ltfsindex>") {
+                                info!("Found valid index in data partition at block {}", block);
+                                return Ok(xml_content);
+                            }
+                        }
+                        Err(_) => continue,
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+        
+        Err(RustLtfsError::ltfs_index("No valid index found in data partition".to_string()))
+    }
+    
+    /// 单分区磁带的扩展搜索
+    fn try_single_partition_extended_search(&self) -> Result<String> {
+        info!("Performing extended search on single-partition tape");
+        
+        let extended_locations = vec![50, 200, 500, 1000, 2000];
+        
+        for &block in &extended_locations {
+            debug!("Extended search: trying block {}", block);
+            
+            match self.scsi.locate_block(0, block) {
+                Ok(()) => {
+                    match self.try_read_index_at_current_position_sync() {
+                        Ok(xml_content) => {
+                            if xml_content.contains("<ltfsindex") && xml_content.contains("</ltfsindex>") {
+                                info!("Found valid index via extended search at block {}", block);
+                                return Ok(xml_content);
+                            }
+                        }
+                        Err(_) => continue,
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+        
+        Err(RustLtfsError::ltfs_index("Extended search found no valid index".to_string()))
+    }
+    
+    /// 保存索引并返回内容
+    fn save_index_and_return(&self, index_content: String, output_path: Option<String>) -> Result<String> {
+        // 保存索引文件到指定路径或默认路径
+        let save_path = output_path.unwrap_or_else(|| {
+            format!("schema/ltfs_index_{}.xml", chrono::Utc::now().format("%Y%m%d_%H%M%S"))
+        });
+        
+        // 确保目录存在
+        if let Some(parent) = std::path::Path::new(&save_path).parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                RustLtfsError::file_operation(format!("Failed to create directory: {}", e))
+            })?;
+        }
+        
+        std::fs::write(&save_path, &index_content).map_err(|e| {
+            RustLtfsError::file_operation(format!("Failed to save index file: {}", e))
+        })?;
+        
+        info!("LTFS index saved to: {}", save_path);
+        Ok(index_content)
+    }
+
+    /// 异步版本的完整LTFSCopyGUI回退策略
+    async fn try_alternative_index_reading_strategies_async(&mut self) -> Result<String> {
+        info!("🔄 Starting complete LTFSCopyGUI alternative index reading strategies");
+        
+        // 检查是否为真正的空白磁带（前4KB都是零）
+        // 重新读取VOL1进行空白检测
+        match self.scsi.locate_block(0, 0) {
+            Ok(()) => {
+                let mut vol1_buffer = vec![0u8; crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize];
+                if let Ok(_) = self.scsi.read_blocks(1, &mut vol1_buffer) {
+                    let check_size = std::cmp::min(4096, vol1_buffer.len());
+                    let is_completely_blank = vol1_buffer.iter().take(check_size).all(|&b| b == 0);
+                    if is_completely_blank {
+                        info!("📭 Detected blank tape (all zeros in first {}KB)", check_size / 1024);
+                        return Err(RustLtfsError::ltfs_index("Blank tape detected - no LTFS index found".to_string()));
+                    }
+                }
+            }
+            Err(_) => debug!("Could not re-read VOL1 for blank detection")
+        }
+        
+        // 策略1: 跳过VOL1验证，直接尝试读取LTFS标签和索引
+        info!("Strategy 1: Bypassing VOL1, attempting direct LTFS label reading");
+        
+        let partition_count = self.detect_partition_count()?;
+        let index_partition = if partition_count > 1 { 0 } else { 0 };
+        
+        // 尝试读取LTFS标签 (block 1)
+        match self.scsi.locate_block(index_partition, 1) {
+            Ok(()) => {
+                let block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
+                let mut ltfs_label_buffer = vec![0u8; block_size];
+                
+                match self.scsi.read_blocks(1, &mut ltfs_label_buffer) {
+                    Ok(_) => {
+                        // 尝试从LTFS标签解析索引位置
+                        match self.parse_index_locations_from_volume_label(&ltfs_label_buffer) {
+                            Ok(index_location) => {
+                                info!("✅ Found index location from LTFS label: partition {}, block {}", 
+                                     index_location.partition, index_location.start_block);
+                                
+                                match self.read_index_from_specific_location(&index_location) {
+                                    Ok(index_content) => {
+                                        info!("✅ Strategy 1 succeeded - index read from LTFS label location");
+                                        return Ok(index_content);
+                                    }
+                                    Err(e) => debug!("Strategy 1 location read failed: {}", e)
+                                }
+                            }
+                            Err(e) => debug!("Strategy 1 location parsing failed: {}", e)
+                        }
+                    }
+                    Err(e) => debug!("Strategy 1 LTFS label read failed: {}", e)
+                }
+            }
+            Err(e) => debug!("Strategy 1 positioning failed: {}", e)
+        }
+        
+        // 策略2: 搜索常见的索引位置
+        info!("Strategy 2: Searching common index locations");
+        let common_locations = vec![2, 5, 6, 10, 20, 100];
+        
+        for &block in &common_locations {
+            debug!("Trying common location: partition {}, block {}", index_partition, block);
+            
+            match self.scsi.locate_block(index_partition, block) {
+                Ok(()) => {
+                    match self.try_read_index_at_current_position_sync() {
+                        Ok(xml_content) => {
+                            if !xml_content.trim().is_empty() && 
+                               xml_content.contains("<ltfsindex") && 
+                               xml_content.contains("</ltfsindex>") {
+                                info!("✅ Strategy 2 succeeded - found valid index at block {}", block);
+                                return Ok(xml_content);
+                            }
+                        }
+                        Err(e) => debug!("Failed to read index at block {}: {}", block, e)
+                    }
+                }
+                Err(e) => debug!("Cannot position to block {}: {}", block, e)
+            }
+        }
+        
+        // 策略3: 检测分区策略并使用相应的读取方法
+        info!("Strategy 3: Applying partition-specific strategies");
+        
+        if partition_count > 1 {
+            info!("Multi-partition tape detected, trying data partition strategy");
+            
+            // 尝试从数据分区读取索引副本
+            match self.try_read_from_data_partition_async().await {
+                Ok(xml_content) => {
+                    info!("✅ Strategy 3 succeeded - index read from data partition");
+                    return Ok(xml_content);
+                }
+                Err(e) => debug!("Data partition strategy failed: {}", e)
+            }
+        } else {
+            info!("Single-partition tape detected, trying extended search");
+            
+            // 单分区磁带的扩展搜索
+            match self.try_single_partition_extended_search_async().await {
+                Ok(xml_content) => {
+                    info!("✅ Strategy 3 succeeded - index found via extended search");
+                    return Ok(xml_content);
+                }
+                Err(e) => debug!("Single partition extended search failed: {}", e)
+            }
+        }
+        
+        // 所有策略都失败了
+        Err(RustLtfsError::ltfs_index(
+            "All alternative index reading strategies failed. Possible causes:\n\
+             1. Blank or unformatted tape\n\
+             2. Corrupted LTFS index\n\
+             3. Non-LTFS tape format\n\
+             4. Hardware communication issues\n\
+             \n\
+             Suggestions:\n\
+             - Check if tape is properly loaded\n\
+             - Try using --skip-index option for file operations\n\
+             - Verify tape format with original LTFS tools".to_string()
+        ))
+    }
+    
+    /// 异步版本：尝试从数据分区读取索引副本
+    async fn try_read_from_data_partition_async(&mut self) -> Result<String> {
+        info!("Attempting to read index from data partition (partition 1)");
+        
+        // 定位到数据分区的一些常见索引位置
+        let data_partition = 1;
+        let search_blocks = vec![1000, 2000, 5000, 10000]; // 数据分区的常见索引位置
+        
+        for &block in &search_blocks {
+            debug!("Trying data partition block {}", block);
+            
+            match self.scsi.locate_block(data_partition, block) {
+                Ok(()) => {
+                    match self.try_read_index_at_current_position_sync() {
+                        Ok(xml_content) => {
+                            if xml_content.contains("<ltfsindex") && xml_content.contains("</ltfsindex>") {
+                                info!("Found valid index in data partition at block {}", block);
+                                return Ok(xml_content);
+                            }
+                        }
+                        Err(_) => continue,
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+        
+        Err(RustLtfsError::ltfs_index("No valid index found in data partition".to_string()))
+    }
+    
+    /// 异步版本：单分区磁带的扩展搜索
+    async fn try_single_partition_extended_search_async(&mut self) -> Result<String> {
+        info!("Performing extended search on single-partition tape");
+        
+        let extended_locations = vec![50, 200, 500, 1000, 2000];
+        
+        for &block in &extended_locations {
+            debug!("Extended search: trying block {}", block);
+            
+            match self.scsi.locate_block(0, block) {
+                Ok(()) => {
+                    match self.try_read_index_at_current_position_sync() {
+                        Ok(xml_content) => {
+                            if xml_content.contains("<ltfsindex") && xml_content.contains("</ltfsindex>") {
+                                info!("Found valid index via extended search at block {}", block);
+                                return Ok(xml_content);
+                            }
+                        }
+                        Err(_) => continue,
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+        
+        Err(RustLtfsError::ltfs_index("Extended search found no valid index".to_string()))
     }
 }

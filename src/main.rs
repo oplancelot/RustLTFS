@@ -333,9 +333,16 @@ async fn run(args: Cli) -> Result<()> {
             // Create tape operations instance
             let mut ops = tape_ops::TapeOperations::new(&device, false);
             
-            // Execute read index operation
-            match ops.read_index_from_tape_new(output.map(|p| p.to_string_lossy().to_string())) {
-                Ok(_) => {
+            // Initialize and read index using async version
+            ops.initialize().await?;
+            match ops.read_index_from_tape().await {
+                Ok(()) => {
+                    // Save index to file if requested
+                    if let Some(output_path) = output {
+                        let save_path = output_path.to_string_lossy().to_string();
+                        ops.save_index_to_file(&std::path::Path::new(&save_path)).await?;
+                        info!("LTFS index saved to: {}", save_path);
+                    }
                     println!("✅ LTFS index read from tape successfully");
                     Ok(())
                 }
