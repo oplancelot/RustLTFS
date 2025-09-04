@@ -909,34 +909,37 @@ impl ScsiInterface {
             // Matches LTFSCopyGUI: cdbData:={8, 0, ...} - second byte is 0
             cdb[1] = 0x00; // No flags set - variable length mode like LTFSCopyGUI
             
-            // Transfer Length - LTFSCopyGUI compatibility: use byte count, not block count
-            // LTFSCopyGUI: BlockSizeLimit >> 16 And &HFF (byte-based transfer)
-            let byte_count = block_count * block_sizes::LTO_BLOCK_SIZE;
+            // Transfer Length - 精确对应LTFSCopyGUI: BlockSizeLimit >> 16 And &HFF (字节数而非块数)
+            // Critical fix: LTFSCopyGUI使用字节数，而不是块数
+            let byte_count = std::cmp::min(buffer.len(), (block_count * block_sizes::LTO_BLOCK_SIZE) as usize) as u32;
             cdb[2] = ((byte_count >> 16) & 0xFF) as u8;
             cdb[3] = ((byte_count >> 8) & 0xFF) as u8;
             cdb[4] = (byte_count & 0xFF) as u8;
+            cdb[5] = 0x00; // Control byte
             
-            // Control
-            cdb[5] = 0x00;
+            debug!("READ(6) CDB: [{:02X}, {:02X}, {:02X}, {:02X}, {:02X}, {:02X}] - requesting {} bytes", 
+                   cdb[0], cdb[1], cdb[2], cdb[3], cdb[4], cdb[5], byte_count);
             
-            // 使用实际提供的缓冲区大小，而不是假定的块大小
-            // 对应LTFSCopyGUI的动态缓冲区处理逻辑
-            let data_length = buffer.len();
+            // 使用实际要传输的字节数作为缓冲区大小
+            let actual_buffer_size = byte_count as usize;
             
-            // Adjust timeout based on buffer size
-            let timeout = std::cmp::max(300u32, ((data_length / (64 * 1024)) * 60) as u32); // Min 5min, scale with size
+            // Adjust timeout based on data size
+            let timeout = std::cmp::max(300u32, ((actual_buffer_size / (64 * 1024)) * 60) as u32);
+            debug!("Using timeout: {} seconds for {} bytes", timeout, actual_buffer_size);
+            
             let result = self.scsi_io_control(
                 &cdb,
-                Some(&mut buffer[..data_length]),
+                Some(&mut buffer[..actual_buffer_size]),
                 SCSI_IOCTL_DATA_IN,
                 timeout,
                 None,
             )?;
             
             if result {
-                debug!("Successfully read {} blocks directly", block_count);
+                debug!("Successfully read {} bytes directly (requested {} blocks)", actual_buffer_size, block_count);
                 Ok(block_count)
             } else {
+                debug!("SCSI READ(6) command failed");
                 Err(crate::error::RustLtfsError::scsi("Direct block read operation failed"))
             }
         }
