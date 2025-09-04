@@ -760,15 +760,27 @@ impl TapeOperations {
             // 执行SCSI READ命令 (对应ScsiRead调用)
             match self.scsi.read_blocks(1, &mut buffer) {
                 Ok(blocks_read_count) => {
+                    info!("SCSI read returned: {} blocks", blocks_read_count);
+                    
                     // 对应: If bytesRead = 0 Then Exit Do
                     if blocks_read_count == 0 {
-                        debug!("Reached file mark (bytesRead = 0), stopping read");
+                        info!("Reached file mark (blocks_read_count = 0), stopping read");
                         break;
                     }
                     
+                    // 添加数据采样调试
+                    let sample_size = std::cmp::min(32, buffer.len());
+                    let sample_data: Vec<String> = buffer[..sample_size].iter()
+                        .map(|&b| format!("{:02X}", b))
+                        .collect();
+                    info!("Buffer sample (first {} bytes): {}", sample_size, sample_data.join(" "));
+                    
                     // 检查是否为全零块（对应IsAllZeros检查）
-                    if self.is_all_zeros(&buffer, block_size) {
-                        debug!("Encountered all-zero block (file mark indicator), stopping read");
+                    let is_zero_block = self.is_all_zeros(&buffer, block_size);
+                    info!("is_all_zeros check: {}", is_zero_block);
+                    
+                    if is_zero_block {
+                        info!("Encountered all-zero block (file mark indicator), stopping read");
                         break;
                     }
                     
