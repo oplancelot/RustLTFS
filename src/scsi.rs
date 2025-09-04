@@ -447,6 +447,44 @@ impl ScsiInterface {
             Err(crate::error::RustLtfsError::unsupported("Non-Windows platform"))
         }
     }
+
+    /// Enhanced LOAD_UNLOAD command (based on LTFSCopyGUI implementation)
+    /// LTFSCopyGUI: {&H1B, 0, 0, 0, LoadOption, 0}
+    pub fn load_unload_enhanced(&self, load_option: LoadOption) -> Result<bool> {
+        debug!("Executing LOAD_UNLOAD with option: {:?}", load_option);
+        
+        #[cfg(windows)]
+        {
+            let mut cdb = [0u8; 6];
+            cdb[0] = scsi_commands::LOAD_UNLOAD; // 0x1B
+            cdb[1] = 0x00;
+            cdb[2] = 0x00;
+            cdb[3] = 0x00;
+            cdb[4] = load_option as u8;
+            cdb[5] = 0x00;
+            
+            let result = self.scsi_io_control(
+                &cdb,
+                None,
+                SCSI_IOCTL_DATA_UNSPECIFIED,
+                300, // 5 minute timeout for load/unload operations
+                None,
+            )?;
+            
+            if result {
+                debug!("LOAD_UNLOAD completed successfully with option: {:?}", load_option);
+                Ok(true)
+            } else {
+                Err(crate::error::RustLtfsError::scsi("LOAD_UNLOAD command failed"))
+            }
+        }
+        
+        #[cfg(not(windows))]
+        {
+            let _ = load_option;
+            Err(crate::error::RustLtfsError::unsupported("Non-Windows platform"))
+        }
+    }
     
     /// Send SCSI command with simplified interface (for compatibility with tape_ops.rs)
     pub fn send_scsi_command(&self, cdb: &[u8], data_buffer: &mut [u8], data_direction: u8) -> Result<bool> {
@@ -485,6 +523,255 @@ impl ScsiInterface {
             } else {
                 debug!("Test Unit Ready failed, returning sense data");
                 Ok(sense_buffer.to_vec())
+            }
+        }
+        
+        #[cfg(not(windows))]
+        {
+            Err(crate::error::RustLtfsError::unsupported("Non-Windows platform"))
+        }
+    }
+
+    /// INQUIRY command to get device information (based on LTFSCopyGUI implementation)
+    pub fn inquiry(&self, page_code: Option<u8>) -> Result<Vec<u8>> {
+        debug!("Executing INQUIRY command with page code: {:?}", page_code);
+        
+        #[cfg(windows)]
+        {
+            let mut cdb = [0u8; 6];
+            let mut data_buffer = [0u8; 96]; // Standard INQUIRY buffer size
+            
+            cdb[0] = scsi_commands::INQUIRY;
+            
+            if let Some(page) = page_code {
+                // VPD page inquiry (matches LTFSCopyGUI: {&H12, 1, &H80, 0, 4, 0})
+                cdb[1] = 0x01; // EVPD=1 for VPD pages
+                cdb[2] = page; // Page code (0x80 for serial number, etc.)
+                cdb[4] = data_buffer.len() as u8; // Allocation length
+            } else {
+                // Standard INQUIRY (matches LTFSCopyGUI: {&H12, 0, 0, 0, &H60, 0})
+                cdb[1] = 0x00; // EVPD=0 for standard inquiry
+                cdb[2] = 0x00; // Page/operation code
+                cdb[4] = data_buffer.len() as u8; // Allocation length
+            }
+            cdb[5] = 0x00; // Control byte
+            
+            let result = self.scsi_io_control(
+                &cdb,
+                Some(&mut data_buffer),
+                SCSI_IOCTL_DATA_IN,
+                30, // 30 second timeout
+                None,
+            )?;
+            
+            if result {
+                debug!("INQUIRY command completed successfully");
+                Ok(data_buffer.to_vec())
+            } else {
+                Err(crate::error::RustLtfsError::scsi("INQUIRY command failed"))
+            }
+        }
+        
+        #[cfg(not(windows))]
+        {
+            let _ = page_code;
+            Err(crate::error::RustLtfsError::unsupported("Non-Windows platform"))
+        }
+    }
+
+    /// READ BLOCK LIMITS command (based on LTFSCopyGUI implementation)
+    /// Returns (max_block_length, min_block_length)
+    pub fn read_block_limits(&self) -> Result<(u32, u16)> {
+        debug!("Executing READ BLOCK LIMITS command");
+        
+        #[cfg(windows)]
+        {
+            let mut cdb = [0u8; 6];
+            let mut data_buffer = [0u8; 6];
+            
+            // LTFSCopyGUI: {5, 0, 0, 0, 0, 0}
+            cdb[0] = scsi_commands::READ_BLOCK_LIMITS;
+            cdb[1] = 0x00;
+            cdb[2] = 0x00;
+            cdb[3] = 0x00;
+            cdb[4] = 0x00;
+            cdb[5] = 0x00;
+            
+            let result = self.scsi_io_control(
+                &cdb,
+                Some(&mut data_buffer),
+                SCSI_IOCTL_DATA_IN,
+                30, // 30 second timeout
+                None,
+            )?;
+            
+            if result {
+                // Parse response (matches LTFSCopyGUI parsing logic)
+                let max_block_length = ((data_buffer[1] as u32) << 16) |
+                                     ((data_buffer[2] as u32) << 8) |
+                                     (data_buffer[3] as u32);
+                let min_block_length = ((data_buffer[4] as u16) << 8) |
+                                     (data_buffer[5] as u16);
+                
+                debug!("Block limits: max={}, min={}", max_block_length, min_block_length);
+                Ok((max_block_length, min_block_length))
+            } else {
+                Err(crate::error::RustLtfsError::scsi("READ_block_limits command failed"))
+            }
+        }
+        
+        #[cfg(not(windows))]
+        {
+            Err(crate::error::RustLtfsError::unsupported("Non-Windows platform"))
+        }
+    }
+
+    /// LOG SENSE command (based on LTFSCopyGUI implementation)
+    /// LTFSCopyGUI: {&H4D, 0, PageControl << 6 Or PageCode, 0, 0, 0, 0, (PageLen + 4) >> 8 And &HFF, (PageLen + 4) And &HFF, 0}
+    pub fn log_sense(&self, page_code: u8, page_control: u8) -> Result<Vec<u8>> {
+        debug!("Executing LOG SENSE command: page_code=0x{:02X}, page_control=0x{:02X}", page_code, page_control);
+        
+        #[cfg(windows)]
+        {
+            // Step 1: Get header to determine page length
+            let mut header_cdb = [0u8; 10];
+            let mut header_buffer = [0u8; 4];
+            
+            header_cdb[0] = scsi_commands::LOG_SENSE;
+            header_cdb[1] = 0x00;
+            header_cdb[2] = (page_control << 6) | page_code;
+            header_cdb[3] = 0x00;
+            header_cdb[4] = 0x00;
+            header_cdb[5] = 0x00;
+            header_cdb[6] = 0x00;
+            header_cdb[7] = 0x00;
+            header_cdb[8] = 4; // Allocation length for header
+            header_cdb[9] = 0x00;
+            
+            let result = self.scsi_io_control(
+                &header_cdb,
+                Some(&mut header_buffer),
+                SCSI_IOCTL_DATA_IN,
+                30,
+                None,
+            )?;
+            
+            if !result || header_buffer.len() < 4 {
+                return Ok(vec![0, 0, 0, 0]);
+            }
+            
+            // Parse page length from header
+            let page_len = ((header_buffer[2] as u16) << 8) | (header_buffer[3] as u16);
+            let total_len = page_len + 4;
+            
+            // Step 2: Read full page data
+            let mut full_cdb = [0u8; 10];
+            let mut full_buffer = vec![0u8; total_len as usize];
+            
+            full_cdb[0] = scsi_commands::LOG_SENSE;
+            full_cdb[1] = 0x00;
+            full_cdb[2] = (page_control << 6) | page_code;
+            full_cdb[3] = 0x00;
+            full_cdb[4] = 0x00;
+            full_cdb[5] = 0x00;
+            full_cdb[6] = 0x00;
+            full_cdb[7] = (total_len >> 8) as u8;
+            full_cdb[8] = (total_len & 0xFF) as u8;
+            full_cdb[9] = 0x00;
+            
+            let full_result = self.scsi_io_control(
+                &full_cdb,
+                Some(&mut full_buffer),
+                SCSI_IOCTL_DATA_IN,
+                30,
+                None,
+            )?;
+            
+            if full_result {
+                debug!("LOG SENSE completed successfully, {} bytes returned", full_buffer.len());
+                Ok(full_buffer)
+            } else {
+                Err(crate::error::RustLtfsError::scsi("LOG SENSE command failed"))
+            }
+        }
+        
+        #[cfg(not(windows))]
+        {
+            let _ = (page_code, page_control);
+            Err(crate::error::RustLtfsError::unsupported("Non-Windows platform"))
+        }
+    }
+
+    /// READ EOW POSITION command (based on LTFSCopyGUI implementation)
+    /// LTFSCopyGUI: {&HA3, &H1F, &H45, 2, 0, 0, 0, 0, len >> 8, len And &HFF, 0, 0}
+    pub fn read_eow_position(&self) -> Result<Vec<u8>> {
+        debug!("Executing READ EOW POSITION command");
+        
+        #[cfg(windows)]
+        {
+            // Step 1: Get length
+            let mut len_cdb = [0u8; 12];
+            let mut len_buffer = [0u8; 2];
+            
+            len_cdb[0] = 0xA3; // READ EOW POSITION
+            len_cdb[1] = 0x1F;
+            len_cdb[2] = 0x45;
+            len_cdb[3] = 2;
+            len_cdb[4] = 0x00;
+            len_cdb[5] = 0x00;
+            len_cdb[6] = 0x00;
+            len_cdb[7] = 0x00;
+            len_cdb[8] = 0x00;
+            len_cdb[9] = 2; // Allocation length for length data
+            len_cdb[10] = 0x00;
+            len_cdb[11] = 0x00;
+            
+            let result = self.scsi_io_control(
+                &len_cdb,
+                Some(&mut len_buffer),
+                SCSI_IOCTL_DATA_IN,
+                30,
+                None,
+            )?;
+            
+            if !result {
+                return Err(crate::error::RustLtfsError::scsi("READ EOW POSITION length query failed"));
+            }
+            
+            let mut len = ((len_buffer[0] as u16) << 8) | (len_buffer[1] as u16);
+            len += 2;
+            
+            // Step 2: Read full EOW position data
+            let mut full_cdb = [0u8; 12];
+            let mut full_buffer = vec![0u8; len as usize];
+            
+            full_cdb[0] = 0xA3;
+            full_cdb[1] = 0x1F;
+            full_cdb[2] = 0x45;
+            full_cdb[3] = 2;
+            full_cdb[4] = 0x00;
+            full_cdb[5] = 0x00;
+            full_cdb[6] = 0x00;
+            full_cdb[7] = 0x00;
+            full_cdb[8] = (len >> 8) as u8;
+            full_cdb[9] = (len & 0xFF) as u8;
+            full_cdb[10] = 0x00;
+            full_cdb[11] = 0x00;
+            
+            let full_result = self.scsi_io_control(
+                &full_cdb,
+                Some(&mut full_buffer),
+                SCSI_IOCTL_DATA_IN,
+                30,
+                None,
+            )?;
+            
+            if full_result {
+                debug!("READ EOW POSITION completed successfully");
+                // Return data skipping the first 4 bytes (header) like LTFSCopyGUI
+                Ok(full_buffer.into_iter().skip(4).collect())
+            } else {
+                Err(crate::error::RustLtfsError::scsi("READ EOW POSITION command failed"))
             }
         }
         
@@ -613,28 +900,24 @@ impl ScsiInterface {
         
         #[cfg(windows)]
         {
-            // Use READ(10) command for better parameter range support
-            let mut cdb = [0u8; 10];
-            cdb[0] = scsi_commands::READ_10;
+            // Use READ(6) command for tape devices (sequential access)
+            // READ(10) LBA addressing is inappropriate for tape devices
+            let mut cdb = [0u8; 6];
+            cdb[0] = scsi_commands::READ_6;
             
-            // Fixed block mode - use DPO=0, FUA=0, RelAddr=0
-            cdb[1] = 0x00;
+            // LTFSCopyGUI compatibility: Use variable length mode, no SILI flag
+            // Matches LTFSCopyGUI: cdbData:={8, 0, ...} - second byte is 0
+            cdb[1] = 0x00; // No flags set - variable length mode like LTFSCopyGUI
             
-            // Logical Block Address (LBA) - set to 0 for sequential access
-            cdb[2] = 0x00;
-            cdb[3] = 0x00;
-            cdb[4] = 0x00;
-            cdb[5] = 0x00;
-            
-            // Reserved
-            cdb[6] = 0x00;
-            
-            // Transfer Length (in blocks)
-            cdb[7] = ((block_count >> 8) & 0xFF) as u8;
-            cdb[8] = (block_count & 0xFF) as u8;
+            // Transfer Length - LTFSCopyGUI compatibility: use byte count, not block count
+            // LTFSCopyGUI: BlockSizeLimit >> 16 And &HFF (byte-based transfer)
+            let byte_count = block_count * block_sizes::LTO_BLOCK_SIZE;
+            cdb[2] = ((byte_count >> 16) & 0xFF) as u8;
+            cdb[3] = ((byte_count >> 8) & 0xFF) as u8;
+            cdb[4] = (byte_count & 0xFF) as u8;
             
             // Control
-            cdb[9] = 0x00;
+            cdb[5] = 0x00;
             
             // 使用实际提供的缓冲区大小，而不是假定的块大小
             // 对应LTFSCopyGUI的动态缓冲区处理逻辑
@@ -793,11 +1076,15 @@ impl ScsiInterface {
             let mut cdb = [0u8; 6];
             cdb[0] = scsi_commands::WRITE_6;
             
-            // Fixed block mode (MSB=1), transfer length in blocks
-            cdb[1] = 0x01; // Fixed block mode
-            cdb[2] = ((block_count >> 16) & 0xFF) as u8;
-            cdb[3] = ((block_count >> 8) & 0xFF) as u8;
-            cdb[4] = (block_count & 0xFF) as u8;
+            // LTFSCopyGUI compatibility: Use variable length mode
+            // Matches LTFSCopyGUI: cdbData = {&HA, 0, ...} - second byte is 0  
+            cdb[1] = 0x00; // Variable length mode like LTFSCopyGUI
+            // Transfer Length - LTFSCopyGUI compatibility: use byte count, not block count  
+            // LTFSCopyGUI: Length >> 16 And &HFF (byte-based transfer)
+            let byte_count = block_count * block_sizes::LTO_BLOCK_SIZE;
+            cdb[2] = ((byte_count >> 16) & 0xFF) as u8;
+            cdb[3] = ((byte_count >> 8) & 0xFF) as u8;
+            cdb[4] = (byte_count & 0xFF) as u8;
             // cdb[5] is control byte, leave as 0
             
             let data_length = (block_count * block_sizes::LTO_BLOCK_SIZE) as usize;
@@ -1749,6 +2036,8 @@ pub mod scsi_commands {
     pub const WRITE_ATTRIBUTE: u8 = 0x8D;
     pub const LOCATE: u8 = 0x2B;
     pub const SEEK: u8 = 0x2B;
+    pub const READ_BLOCK_LIMITS: u8 = 0x05;
+    pub const LOG_SENSE: u8 = 0x4D;
 }
 
 /// Tape position information structure
@@ -1802,6 +2091,17 @@ pub enum DriveType {
     SLR1,
     /// M2488 drive type
     M2488,
+}
+
+/// Load option enumeration for LOAD_UNLOAD command (based on LTFSCopyGUI)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LoadOption {
+    /// Unthread the tape (0)
+    Unthread = 0,
+    /// Load and thread the tape (1) 
+    LoadThreaded = 1,
+    /// Retension operation (2)
+    Retension = 2,
 }
 
 /// Block size constants for LTO tapes

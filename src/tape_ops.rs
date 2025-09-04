@@ -431,25 +431,34 @@ impl TapeOperations {
             PartitionStrategy::StandardMultiPartition => {
                 info!("🔄 Trying standard multi-partition strategy without VOL1 validation");
                 
-                // 确保我们在正确的索引分区（partition 0 / p0）
-                info!("Positioning to index partition (p0) for standard multi-partition reading");
-                self.scsi.locate_block(0, 0)?;
+                // 基于索引文件分析，LTFS索引通常在block 6，而不是block 0
+                // 先尝试block 6，这是LTFSCopyGUI成功读取的位置
+                let standard_locations = vec![6, 5, 2, 0]; // 从最可能的位置开始
                 
-                // 尝试直接读取索引，跳过VOL1验证
-                match self.read_index_xml_from_tape_with_file_mark() {
-                    Ok(xml_content) => {
-                        if self.validate_and_process_index(&xml_content).await? {
-                            info!("✅ Successfully read index from p0 (index partition) without VOL1 validation");
-                            return Ok(());
+                for &block in &standard_locations {
+                    info!("Trying standard multi-partition at p0 block {}", block);
+                    match self.scsi.locate_block(0, block) {
+                        Ok(()) => {
+                            match self.read_index_xml_from_tape_with_file_mark() {
+                                Ok(xml_content) => {
+                                    if self.validate_and_process_index(&xml_content).await? {
+                                        info!("✅ Successfully read index from p0 block {} (standard multi-partition)", block);
+                                        return Ok(());
+                                    }
+                                }
+                                Err(e) => {
+                                    debug!("Failed to read index from p0 block {}: {}", block, e);
+                                }
+                            }
                         }
-                    }
-                    Err(e) => {
-                        debug!("Direct index reading from p0 failed: {}", e);
+                        Err(e) => {
+                            debug!("Cannot position to p0 block {}: {}", block, e);
+                        }
                     }
                 }
                 
-                // 如果直接读取失败，尝试单分区策略作为回退
-                info!("🔄 Standard multi-partition failed, falling back to single-partition strategy");
+                // 如果标准位置都失败，尝试单分区策略作为回退
+                info!("🔄 All standard locations failed, falling back to single-partition strategy");
                 self.read_index_from_single_partition_tape().await
             }
         }
@@ -2607,15 +2616,16 @@ impl TapeOperations {
         self.parse_index_locations_from_volume_label(&buffer)
     }
     
-    /// 单分区磁带索引读取策略 (对应LTFSCopyGUI的单分区处理逻辑)
+    /// 读取单分区磁带索引读取策略 (对应LTFSCopyGUI的单分区处理逻辑)
     async fn read_index_from_single_partition_tape(&mut self) -> Result<()> {
         info!("Reading index from single-partition tape (LTFSCopyGUI fallback strategy)");
         
         // 在单分区磁带上，数据和索引都存储在同一分区
         // 需要搜索数据分区中的索引副本
         
-        // 步骤1: 尝试从常见的索引位置读取
-        let common_index_locations = vec![5, 6, 10, 20, 100]; // 常见的索引块位置
+        // 步骤1: 尝试从常见的索引位置读取（基于LTFSCopyGUI观察到的模式）
+        // 从索引文件我们看到LTFS索引通常在block 6，而不是block 0
+        let common_index_locations = vec![6, 5, 2, 10, 20, 100]; // 把block 6放在首位
         
         for &block in &common_index_locations {
             debug!("Trying index location at block {} (single-partition strategy)", block);
