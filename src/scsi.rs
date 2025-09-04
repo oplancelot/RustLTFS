@@ -323,7 +323,7 @@ impl ScsiInterface {
                     
                     if !result {
                         let error_code = GetLastError();
-                        debug!("SCSI command failed: Windows error code 0x{:08X}", error_code);
+                        warn!("SCSI command failed: Windows error code 0x{:08X}, CDB: {:?}", error_code, cdb);
                         return Ok(false);
                     }
                     
@@ -876,7 +876,7 @@ impl ScsiInterface {
     
     /// Read tape blocks (enhanced implementation for large file support)
     pub fn read_blocks(&self, block_count: u32, buffer: &mut [u8]) -> Result<u32> {
-        debug!("Reading {} blocks from tape", block_count);
+        info!("read_blocks called: requesting {} blocks, buffer size: {} bytes", block_count, buffer.len());
         
         // 移除硬编码的LTO_BLOCK_SIZE检查，改为动态缓冲区处理
         // 对应LTFSCopyGUI的自适应缓冲区逻辑，不预先检查缓冲区大小
@@ -887,9 +887,11 @@ impl ScsiInterface {
         
         if block_count <= MAX_BLOCKS_PER_READ {
             // Direct read for smaller requests
+            info!("Using direct read for {} blocks", block_count);
             self.read_blocks_direct(block_count, buffer)
         } else {
             // Chunked read for larger requests
+            info!("Using chunked read for {} blocks", block_count);
             self.read_blocks_chunked(block_count, buffer)
         }
     }
@@ -917,7 +919,7 @@ impl ScsiInterface {
             cdb[4] = (byte_count & 0xFF) as u8;
             cdb[5] = 0x00; // Control byte
             
-            debug!("READ(6) CDB: [{:02X}, {:02X}, {:02X}, {:02X}, {:02X}, {:02X}] - requesting {} bytes", 
+            info!("READ(6) CDB: [{:02X}, {:02X}, {:02X}, {:02X}, {:02X}, {:02X}] - requesting {} bytes", 
                    cdb[0], cdb[1], cdb[2], cdb[3], cdb[4], cdb[5], byte_count);
             
             // 使用实际要传输的字节数作为缓冲区大小
@@ -925,7 +927,7 @@ impl ScsiInterface {
             
             // Adjust timeout based on data size
             let timeout = std::cmp::max(300u32, ((actual_buffer_size / (64 * 1024)) * 60) as u32);
-            debug!("Using timeout: {} seconds for {} bytes", timeout, actual_buffer_size);
+            info!("Using timeout: {} seconds for {} bytes", timeout, actual_buffer_size);
             
             let result = self.scsi_io_control(
                 &cdb,
@@ -936,10 +938,10 @@ impl ScsiInterface {
             )?;
             
             if result {
-                debug!("Successfully read {} bytes directly (requested {} blocks)", actual_buffer_size, block_count);
+                info!("Successfully read {} bytes directly (requested {} blocks)", actual_buffer_size, block_count);
                 Ok(block_count)
             } else {
-                debug!("SCSI READ(6) command failed");
+                warn!("SCSI READ(6) command failed");
                 Err(crate::error::RustLtfsError::scsi("Direct block read operation failed"))
             }
         }
