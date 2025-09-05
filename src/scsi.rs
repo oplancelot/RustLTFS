@@ -876,7 +876,7 @@ impl ScsiInterface {
     
     /// Read tape blocks (enhanced implementation for large file support)
     pub fn read_blocks(&self, block_count: u32, buffer: &mut [u8]) -> Result<u32> {
-        info!("read_blocks called: requesting {} blocks, buffer size: {} bytes", block_count, buffer.len());
+        debug!("read_blocks called: requesting {} blocks, buffer size: {} bytes", block_count, buffer.len());
         
         // 移除硬编码的LTO_BLOCK_SIZE检查，改为动态缓冲区处理
         // 对应LTFSCopyGUI的自适应缓冲区逻辑，不预先检查缓冲区大小
@@ -887,11 +887,11 @@ impl ScsiInterface {
         
         if block_count <= MAX_BLOCKS_PER_READ {
             // Direct read for smaller requests
-            info!("Using direct read for {} blocks", block_count);
+            debug!("Using direct read for {} blocks", block_count);
             self.read_blocks_direct(block_count, buffer)
         } else {
             // Chunked read for larger requests
-            info!("Using chunked read for {} blocks", block_count);
+            debug!("Using chunked read for {} blocks", block_count);
             self.read_blocks_chunked(block_count, buffer)
         }
     }
@@ -919,7 +919,7 @@ impl ScsiInterface {
             cdb[4] = (byte_count & 0xFF) as u8;
             cdb[5] = 0x00; // Control byte
             
-            info!("READ(6) CDB: [{:02X}, {:02X}, {:02X}, {:02X}, {:02X}, {:02X}] - requesting {} bytes", 
+            debug!("READ(6) CDB: [{:02X}, {:02X}, {:02X}, {:02X}, {:02X}, {:02X}] - requesting {} bytes", 
                    cdb[0], cdb[1], cdb[2], cdb[3], cdb[4], cdb[5], byte_count);
             
             // 使用实际要传输的字节数作为缓冲区大小
@@ -927,7 +927,7 @@ impl ScsiInterface {
             
             // Adjust timeout based on data size
             let timeout = std::cmp::max(300u32, ((actual_buffer_size / (64 * 1024)) * 60) as u32);
-            info!("Using timeout: {} seconds for {} bytes", timeout, actual_buffer_size);
+            debug!("Using timeout: {} seconds for {} bytes", timeout, actual_buffer_size);
             
             // 创建sense数据缓冲区用于分析
             let mut sense_buffer = [0u8; SENSE_INFO_LEN];
@@ -941,11 +941,11 @@ impl ScsiInterface {
             )?;
             
             if result {
-                info!("Successfully read {} bytes directly (requested {} blocks)", actual_buffer_size, block_count);
+                debug!("Successfully read {} bytes directly (requested {} blocks)", actual_buffer_size, block_count);
                 Ok(block_count)
             } else {
                 // 即使失败也分析sense数据确定实际传输的数据量
-                info!("READ(6) returned error, analyzing sense data for file mark detection");
+                debug!("READ(6) returned error, analyzing sense data for file mark detection");
                 
                 // 分析sense数据确定实际传输的数据量和是否遇到文件标记
                 let (actual_blocks_read, is_file_mark) = self.analyze_read_sense_data(&sense_buffer, byte_count)?;
