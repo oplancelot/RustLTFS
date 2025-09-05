@@ -764,7 +764,7 @@ impl TapeOperations {
                     
                     // 对应: If bytesRead = 0 Then Exit Do
                     if blocks_read_count == 0 {
-                        info!("Reached file mark (blocks_read_count = 0), stopping read");
+                        info!("✅ Reached file mark (blocks_read_count = 0), stopping read");
                         break;
                     }
                     
@@ -775,14 +775,9 @@ impl TapeOperations {
                         .collect();
                     info!("Buffer sample (first {} bytes): {}", sample_size, sample_data.join(" "));
                     
-                    // 检查是否为全零块（对应IsAllZeros检查）
-                    let is_zero_block = self.is_all_zeros(&buffer, block_size);
-                    info!("is_all_zeros check: {}", is_zero_block);
-                    
-                    if is_zero_block {
-                        info!("Encountered all-zero block (file mark indicator), stopping read");
-                        break;
-                    }
+                    // ⚠️ 移除全零块检查 - 这是错误的文件标记检测方式
+                    // 正确的方式是通过SCSI sense数据检测文件标记
+                    // 全零块可能是正常的索引数据内容，不应该被当作文件标记
                     
                     // 写入到输出文件 (对应fileStream.Write(buffer, 0, bytesRead))
                     temp_file.write_all(&buffer)?;
