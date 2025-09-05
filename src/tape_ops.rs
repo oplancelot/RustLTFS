@@ -421,15 +421,15 @@ impl TapeOperations {
         
         match partition_strategy {
             PartitionStrategy::SinglePartitionFallback => {
-                info!("🔄 Trying single-partition fallback strategy");
+                debug!("🔄 Trying single-partition fallback strategy");
                 self.read_index_from_single_partition_tape().await
             }
             PartitionStrategy::IndexFromDataPartition => {
-                info!("🔄 Trying data partition index strategy");
+                debug!("🔄 Trying data partition index strategy");
                 self.read_index_from_data_partition_strategy().await
             }
             PartitionStrategy::StandardMultiPartition => {
-                info!("🔄 Trying standard multi-partition strategy without VOL1 validation");
+                debug!("🔄 Trying standard multi-partition strategy without VOL1 validation");
                 
                 // 基于索引文件分析，LTFS索引通常在block 6，而不是block 0
                 // 先尝试block 6，这是LTFSCopyGUI成功读取的位置
@@ -768,12 +768,14 @@ impl TapeOperations {
                         break;
                     }
                     
-                    // 添加数据采样调试
-                    let sample_size = std::cmp::min(32, buffer.len());
-                    let sample_data: Vec<String> = buffer[..sample_size].iter()
-                        .map(|&b| format!("{:02X}", b))
-                        .collect();
-                    info!("Buffer sample (first {} bytes): {}", sample_size, sample_data.join(" "));
+                    // 添加数据采样调试（仅DEBUG级别输出）
+                    if tracing::enabled!(tracing::Level::DEBUG) {
+                        let sample_size = std::cmp::min(32, buffer.len());
+                        let sample_data: Vec<String> = buffer[..sample_size].iter()
+                            .map(|&b| format!("{:02X}", b))
+                            .collect();
+                        debug!("Buffer sample (first {} bytes): {}", sample_size, sample_data.join(" "));
+                    }
                     
                     // ⚠️ 移除全零块检查 - 这是错误的文件标记检测方式
                     // 正确的方式是通过SCSI sense数据检测文件标记
@@ -2753,6 +2755,20 @@ impl TapeOperations {
         match LtfsIndex::from_xml_streaming(xml_content) {
             Ok(index) => {
                 info!("✅ Index validation successful, updating internal state");
+                
+                // 保存索引文件到当前目录（按时间命名）
+                let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+                let index_filename = format!("ltfs_index_{}.xml", timestamp);
+                
+                match std::fs::write(&index_filename, xml_content) {
+                    Ok(()) => {
+                        info!("📄 LTFS索引已保存到: {}", index_filename);
+                    }
+                    Err(e) => {
+                        warn!("⚠️ 保存索引文件失败: {} - {}", index_filename, e);
+                    }
+                }
+                
                 self.index = Some(index.clone());
                 self.schema = Some(index);
                 Ok(true)
@@ -3844,7 +3860,7 @@ impl TapeOperations {
         info!("🔄 Starting alternative index reading strategies (LTFSCopyGUI compatible)");
         
         // 策略1: 跳过VOL1验证，直接尝试读取LTFS标签和索引
-        info!("Strategy 1: Bypassing VOL1, attempting direct LTFS label reading");
+        debug!("Strategy 1: Bypassing VOL1, attempting direct LTFS label reading");
         
         let partition_count = self.detect_partition_count()?;
         let index_partition = if partition_count > 1 { 0 } else { 0 };
@@ -3881,7 +3897,7 @@ impl TapeOperations {
         }
         
         // 策略2: 搜索常见的索引位置
-        info!("Strategy 2: Searching common index locations");
+        debug!("Strategy 2: Searching common index locations");
         let common_locations = vec![2, 5, 6, 10, 20, 100];
         
         for &block in &common_locations {
@@ -3906,7 +3922,7 @@ impl TapeOperations {
         }
         
         // 策略3: 检测分区策略并使用相应的读取方法
-        info!("Strategy 3: Applying partition-specific strategies");
+        debug!("Strategy 3: Applying partition-specific strategies");
         
         if partition_count > 1 {
             info!("Multi-partition tape detected, trying data partition strategy");
@@ -4145,7 +4161,7 @@ impl TapeOperations {
         }
         
         // 策略2: 搜索常见的索引位置
-        info!("Strategy 2: Searching common index locations");
+        debug!("Strategy 2: Searching common index locations");
         let common_locations = vec![2, 5, 6, 10, 20, 100];
         
         for &block in &common_locations {
@@ -4170,7 +4186,7 @@ impl TapeOperations {
         }
         
         // 策略3: 检测分区策略并使用相应的读取方法
-        info!("Strategy 3: Applying partition-specific strategies");
+        debug!("Strategy 3: Applying partition-specific strategies");
         
         if partition_count > 1 {
             info!("Multi-partition tape detected, trying data partition strategy");
