@@ -760,7 +760,7 @@ impl TapeOperations {
             // 执行SCSI READ命令 (对应ScsiRead调用)
             match self.scsi.read_blocks(1, &mut buffer) {
                 Ok(blocks_read_count) => {
-                    // debug!("SCSI read returned: {} blocks", blocks_read_count);
+                    debug!("SCSI read returned: {} blocks", blocks_read_count);
                     
                     // 对应: If bytesRead = 0 Then Exit Do
                     if blocks_read_count == 0 {
