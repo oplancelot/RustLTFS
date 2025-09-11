@@ -148,14 +148,20 @@ rustltfs write src/example/drivers/ --tape TAPE0 /test/drivers/ --skip-index
 ### 磁带设备管理
 
 ```cmd
-# 列出可用磁带设备
-rustltfs list --detailed
+# 列出所有可用磁带设备
+rustltfs device
 
-# 查看设备状态
-rustltfs status TAPE0
+# 列出设备详细信息
+rustltfs device --detailed
 
-# 查看设备详细信息
-rustltfs info TAPE0
+# 检查特定设备状态
+rustltfs device TAPE0 --status
+
+# 查看设备配置信息
+rustltfs device TAPE0 --info
+
+# 显示设备综合信息
+rustltfs device TAPE0 --detailed
 ```
 
 ### test
@@ -202,9 +208,11 @@ rustltfs.exe read --tape \\.\TAPE1
 
 ### 其他命令
 
-- `list [--detailed]`: 列出磁带设备
-- `info <DEVICE>`: 查看设备信息
-- `status <DEVICE>`: 检查设备状态
+- `device [DEVICE] [OPTIONS]`: 统一的设备管理命令
+  - 不指定设备路径：列出所有设备
+  - `--detailed`: 显示详细信息
+  - `--status`: 显示设备状态
+  - `--info`: 显示设备配置信息
 
 ## 使用示例
 
@@ -234,11 +242,14 @@ rustltfs read --tape TAPE0 /backup/config.txt --lines 20
 ### 磁带管理
 
 ```cmd
-# 检查磁带状态
-rustltfs status TAPE0
+# 检查所有可用磁带设备
+rustltfs device
 
-# 查看磁带容量信息
-rustltfs info TAPE0
+# 检查特定磁带状态和容量
+rustltfs device TAPE0 --status --detailed
+
+# 查看设备配置
+rustltfs device TAPE0 --info
 ```
 
 ## 技术特性
@@ -284,7 +295,7 @@ rustltfs info TAPE0
 
 3. **"Insufficient space"错误**
 
-   - 使用 `rustltfs info TAPE0` 查看剩余空间
+   - 使用 `rustltfs device TAPE0 --info` 查看剩余空间
    - 考虑使用新磁带或清理旧数据
 
 4. **读写速度慢**

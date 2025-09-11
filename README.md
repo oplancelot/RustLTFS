@@ -147,14 +147,20 @@ rustltfs write src/example/drivers/ --tape TAPE0 /test/drivers/ --skip-index
 ### Tape Device Management
 
 ```cmd
-# List available tape devices
-rustltfs list --detailed
+# List all available tape devices
+rustltfs device
 
-# View device status
-rustltfs status TAPE0
+# List devices with detailed information
+rustltfs device --detailed
 
-# View detailed device information
-rustltfs info TAPE0
+# Check specific device status
+rustltfs device TAPE0 --status
+
+# View device configuration information
+rustltfs device TAPE0 --info
+
+# Show comprehensive device information
+rustltfs device TAPE0 --detailed
 ```
 
 ## Command Parameters
@@ -190,9 +196,11 @@ rustltfs info TAPE0
 
 ### Other Commands
 
-- `list [--detailed]`: List tape devices
-- `info <DEVICE>`: View device information
-- `status <DEVICE>`: Check device status
+- `device [DEVICE] [OPTIONS]`: Unified device management command
+  - Without device path: List all devices
+  - `--detailed`: Show detailed information
+  - `--status`: Show device status
+  - `--info`: Show device configuration
 
 ## Usage Examples
 
@@ -222,11 +230,14 @@ rustltfs read --tape TAPE0 /backup/config.txt --lines 20
 ### Tape Management
 
 ```cmd
-# Check tape status
-rustltfs status TAPE0
+# Check all available tape devices
+rustltfs device
 
-# View tape capacity information
-rustltfs info TAPE0
+# Check specific tape status and capacity
+rustltfs device TAPE0 --status --detailed
+
+# View device configuration
+rustltfs device TAPE0 --info
 ```
 
 ## Technical Features
@@ -272,7 +283,7 @@ rustltfs info TAPE0
 
 3. **"Insufficient space" error**
 
-   - Use `rustltfs info TAPE0` to check remaining space
+   - Use `rustltfs device TAPE0 --info` to check remaining space
    - Consider using new tape or cleaning old data
 
 4. **Slow read/write speeds**
