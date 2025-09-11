@@ -119,13 +119,6 @@ impl Default for LtfsPartitionLabel {
     }
 }
 
-/// Helper function to warn about deep directory nesting
-fn warn_if_deep_nesting(subdirs: &[crate::ltfs_index::Directory]) {
-    if !subdirs.is_empty() {
-        warn!("Deep directory nesting detected - some subdirectories may not be extracted in this implementation");
-    }
-}
-
 /// Path content types for describing tape path contents
 #[derive(Debug, Clone)]
 pub enum PathContent {
@@ -3104,32 +3097,29 @@ impl TapeOperations {
             verification_passed &= extract_result.verification_passed;
         }
 
-        // Extract subdirectories (note: limited recursion depth for safety)
+        // Extract subdirectories recursively
         for subdir in &dir_info.contents.directories {
             let subdir_dest = dest_path.join(&subdir.name);
+            
+            // 构建子目录的磁带路径
+            let subdir_tape_path = if _tape_base_path.is_empty() || _tape_base_path == "/" {
+                subdir.name.clone()
+            } else {
+                format!("{}/{}", _tape_base_path.trim_end_matches('/'), subdir.name)
+            };
+            
+            // 递归调用extract_directory来处理嵌套目录 (使用Box::pin处理递归异步)
+            let subdir_result = Box::pin(self.extract_directory(
+                subdir, 
+                &subdir_dest, 
+                &subdir_tape_path, 
+                verify
+            )).await?;
 
-            // Create subdirectory
-            tokio::fs::create_dir_all(&subdir_dest).await.map_err(|e| {
-                RustLtfsError::file_operation(format!(
-                    "Failed to create subdirectory {:?}: {}",
-                    subdir_dest, e
-                ))
-            })?;
-            directories_created += 1;
-
-            // Extract files in subdirectory
-            for file in &subdir.contents.files {
-                let file_dest = subdir_dest.join(&file.name);
-                let extract_result = self.extract_single_file(file, &file_dest, verify).await?;
-
-                files_extracted += extract_result.files_extracted;
-                total_bytes += extract_result.total_bytes;
-                verification_passed &= extract_result.verification_passed;
-            }
-
-            // Note: For deeper nesting, this would need more sophisticated handling
-            // Currently handles 2 levels deep which covers most LTFS use cases
-            warn_if_deep_nesting(&subdir.contents.directories);
+            files_extracted += subdir_result.files_extracted;
+            directories_created += subdir_result.directories_created;
+            total_bytes += subdir_result.total_bytes;
+            verification_passed &= subdir_result.verification_passed;
         }
 
         Ok(ExtractionResult {
