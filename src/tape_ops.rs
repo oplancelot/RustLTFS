@@ -3063,23 +3063,41 @@ impl TapeOperations {
         let mut total_bytes = 0u64;
         let mut verification_passed = true;
 
+        // Determine the actual file path to write to
+        let actual_file_path = if dest_path.is_dir() || dest_path.to_string_lossy().ends_with("\\") || dest_path.to_string_lossy().ends_with("/") {
+            // If dest_path is a directory, use the original filename
+            dest_path.join(&file_info.name)
+        } else {
+            // If dest_path is a specific file path, use it as-is
+            dest_path.to_path_buf()
+        };
+
+        info!("Writing file to: {:?}", actual_file_path);
+
+        // Ensure parent directory exists
+        if let Some(parent) = actual_file_path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                RustLtfsError::file_operation(format!("Unable to create target directory: {}", e))
+            })?;
+        }
+
         // Read complete file content
         let file_content = self.read_complete_file_from_tape(file_info).await?;
         total_bytes += file_content.len() as u64;
 
         // Write to local file
-        tokio::fs::write(dest_path, &file_content)
+        tokio::fs::write(&actual_file_path, &file_content)
             .await
             .map_err(|e| {
                 RustLtfsError::file_operation(format!(
                     "Failed to write file {:?}: {}",
-                    dest_path, e
+                    actual_file_path, e
                 ))
             })?;
 
         // Verify if requested
         if verify {
-            verification_passed = self.verify_extracted_file(dest_path, &file_content).await?;
+            verification_passed = self.verify_extracted_file(&actual_file_path, &file_content).await?;
         }
 
         Ok(ExtractionResult {
@@ -5734,6 +5752,39 @@ impl TapeOperations {
     async fn try_alternative_index_reading_strategies_async(&mut self) -> Result<String> {
         info!("🔄 Starting complete LTFSCopyGUI alternative index reading strategies");
 
+        let partition_count = self.detect_partition_count()?;
+        let index_partition = if partition_count > 1 { 0 } else { 0 };
+
+        // 策略1 (优先): 搜索常见的索引位置 - 将成功率最高的策略放在前面
+        info!("Strategy 1 (Priority): Searching common index locations first");
+        let common_locations = vec![10, 2, 5, 6, 20, 100]; // 将10放在最前面，因为日志显示在这里成功
+
+        for &block in &common_locations {
+            debug!(
+                "Trying common location: partition {}, block {}",
+                index_partition, block
+            );
+
+            match self.scsi.locate_block(index_partition, block) {
+                Ok(()) => match self.try_read_index_at_current_position_sync() {
+                    Ok(xml_content) => {
+                        if !xml_content.trim().is_empty()
+                            && xml_content.contains("<ltfsindex")
+                            && xml_content.contains("</ltfsindex>")
+                        {
+                            info!(
+                                "✅ Strategy 1 succeeded - found valid index at block {}",
+                                block
+                            );
+                            return Ok(xml_content);
+                        }
+                    }
+                    Err(e) => debug!("Failed to read index at block {}: {}", block, e),
+                },
+                Err(e) => debug!("Cannot position to block {}: {}", block, e),
+            }
+        }
+
         // 检查是否为真正的空白磁带（前4KB都是零）
         // 重新读取VOL1进行空白检测
         match self.scsi.locate_block(0, 0) {
@@ -5756,11 +5807,8 @@ impl TapeOperations {
             Err(_) => debug!("Could not re-read VOL1 for blank detection"),
         }
 
-        // 策略1: 跳过VOL1验证，直接尝试读取LTFS标签和索引
-        info!("Strategy 1: Bypassing VOL1, attempting direct LTFS label reading");
-
-        let partition_count = self.detect_partition_count()?;
-        let index_partition = if partition_count > 1 { 0 } else { 0 };
+        // 策略2: 跳过VOL1验证，直接尝试读取LTFS标签和索引
+        info!("Strategy 2: Bypassing VOL1, attempting direct LTFS label reading");
 
         // 尝试读取LTFS标签 (block 1)
         match self.scsi.locate_block(index_partition, 1) {
@@ -5778,53 +5826,23 @@ impl TapeOperations {
 
                                 match self.read_index_from_specific_location(&index_location) {
                                     Ok(index_content) => {
-                                        info!("✅ Strategy 1 succeeded - index read from LTFS label location");
+                                        info!("✅ Strategy 2 succeeded - index read from LTFS label location");
                                         return Ok(index_content);
                                     }
-                                    Err(e) => debug!("Strategy 1 location read failed: {}", e),
+                                    Err(e) => debug!("Strategy 2 location read failed: {}", e),
                                 }
                             }
-                            Err(e) => debug!("Strategy 1 location parsing failed: {}", e),
+                            Err(e) => debug!("Strategy 2 location parsing failed: {}", e),
                         }
                     }
-                    Err(e) => debug!("Strategy 1 LTFS label read failed: {}", e),
+                    Err(e) => debug!("Strategy 2 LTFS label read failed: {}", e),
                 }
             }
-            Err(e) => debug!("Strategy 1 positioning failed: {}", e),
-        }
-
-        // 策略2: 搜索常见的索引位置
-        debug!("Strategy 2: Searching common index locations");
-        let common_locations = vec![2, 5, 6, 10, 20, 100];
-
-        for &block in &common_locations {
-            debug!(
-                "Trying common location: partition {}, block {}",
-                index_partition, block
-            );
-
-            match self.scsi.locate_block(index_partition, block) {
-                Ok(()) => match self.try_read_index_at_current_position_sync() {
-                    Ok(xml_content) => {
-                        if !xml_content.trim().is_empty()
-                            && xml_content.contains("<ltfsindex")
-                            && xml_content.contains("</ltfsindex>")
-                        {
-                            info!(
-                                "✅ Strategy 2 succeeded - found valid index at block {}",
-                                block
-                            );
-                            return Ok(xml_content);
-                        }
-                    }
-                    Err(e) => debug!("Failed to read index at block {}: {}", block, e),
-                },
-                Err(e) => debug!("Cannot position to block {}: {}", block, e),
-            }
+            Err(e) => debug!("Strategy 2 positioning failed: {}", e),
         }
 
         // 策略3: 检测分区策略并使用相应的读取方法
-        debug!("Strategy 3: Applying partition-specific strategies");
+        info!("Strategy 3: Applying partition-specific strategies");
 
         if partition_count > 1 {
             info!("Multi-partition tape detected, trying data partition strategy");
