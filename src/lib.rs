@@ -17,14 +17,9 @@ pub mod utils;
 
 // Re-export key types for easier use
 pub use error::{Result, RustLtfsError};
-pub use ltfs::{LtfsDirectAccess, TapeCapacity, create_ltfs_access};
+pub use ltfs::{create_ltfs_access, LtfsDirectAccess, TapeCapacity};
+pub use ltfs_index::{DirectoryEntry, File, FileExtent, LtfsIndex, PathType};
 pub use scsi::{
-    ScsiInterface, MediaType, TapePosition, MamAttribute, SpaceType,
-    LocateDestType, DriveType,
-    locate_block, locate_with_type, locate_with_drive_type,
-    locate_to_filemark, locate_to_eod
+    locate_block, locate_to_eod, locate_to_filemark, locate_with_drive_type, locate_with_type,
+    DriveType, LocateDestType, MamAttribute, MediaType, ScsiInterface, SpaceType, TapePosition,
 };
-pub use ltfs_index::{LtfsIndex, PathType, DirectoryEntry, File, FileExtent};
-
-#[cfg(test)]
-mod locate_test;

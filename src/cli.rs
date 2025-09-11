@@ -177,42 +177,25 @@ pub enum Commands {
         output: Option<PathBuf>,
     },
 
-    /// List tape devices
-    List {
-        /// Show detailed device information
+    /// Manage tape devices (list devices, show info, check status)
+    /// 
+    /// 统一的设备管理命令，支持列出设备、显示信息和检查状态
+    Device {
+        /// Tape device path (optional - if not provided, list all devices)
+        #[arg(value_name = "DEVICE")]
+        device: Option<String>,
+        
+        /// Show detailed information
         #[arg(short, long)]
         detailed: bool,
-    },
-
-    /// Get tape information
-    Info {
-        /// Tape device path
-        #[arg(value_name = "DEVICE")]
-        device: String,
-    },
-
-    /// Check tape status
-    Status {
-        /// Tape device path
-        #[arg(value_name = "DEVICE")]
-        device: String,
-    },
-
-    /// Diagnose tape drive and media status
-    /// 
-    /// 诊断磁带驱动器和媒体状态，用于排除故障
-    Diagnose {
-        /// Tape device path (e.g., \\.\TAPE0)
-        #[arg(short = 't', long = "tape", value_name = "DEVICE")]
-        device: String,
         
-        /// Detailed diagnostic output
-        #[arg(short = 'd', long = "detailed")]
-        detailed: bool,
+        /// Show device status information
+        #[arg(short, long)]
+        status: bool,
         
-        /// Test basic read operations
-        #[arg(short = 'r', long = "test-read")]
-        test_read: bool,
+        /// Show device configuration info
+        #[arg(short, long)]
+        info: bool,
     },
 
     /// Show tape space information (free/total)

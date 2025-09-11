@@ -398,14 +398,14 @@ async fn run(args: Cli) -> Result<()> {
                         info!("🔍 Suggestions:");
                         info!("  1. Check if a tape drive is connected to your system");
                         info!("  2. Try different device paths: \\\\.\\TAPE0, \\\\.\\TAPE1, etc.");
-                        info!("  3. Run diagnostics: rustltfs.exe diagnose --tape {} --detailed --test-read", device);
+                        info!("  3. Check device status: rustltfs.exe device {} --status --detailed", device);
                         info!("  4. Use --skip-index option for offline mode: rustltfs.exe read --tape {} --skip-index", device);
                     } else if e.to_string().contains("No tape loaded") {
                         error!("No tape cartridge detected in drive: {}", device);
                         info!("🔍 Suggestions:");
                         info!("  1. Insert a tape cartridge into the drive");
                         info!("  2. Wait for the drive to recognize the tape");
-                        info!("  3. Run diagnostics: rustltfs.exe diagnose --tape {} --detailed", device);
+                        info!("  3. Check device status: rustltfs.exe device {} --status --detailed", device);
                     } else if e.to_string().contains("Direct block read operation failed") {
                         error!("Failed to read LTFS index from tape: {}", device);
                         info!("🔍 Possible causes: blank tape, incorrect position, hardware issue, SCSI problem");
@@ -470,8 +470,10 @@ async fn run(args: Cli) -> Result<()> {
             // Execute different read operations based on parameters
             match (source, destination) {
                 (None, None) => {
-                    // List root directory content
-                    info!("Listing tape root directory content");
+                    // Display complete directory tree structure
+                    info!("Displaying tape directory tree structure");
+                    
+                    // Show index statistics first
                     if let Some(stats) = ops.get_index_statistics() {
                         println!("\n📊 Tape Index Information:");
                         println!("  • Volume UUID: {}", stats.volume_uuid);
@@ -479,6 +481,9 @@ async fn run(args: Cli) -> Result<()> {
                         println!("  • Update Time: {}", stats.update_time);
                         println!("  • Total Files: {}", stats.total_files);
                     }
+                    
+                    // Display complete directory tree
+                    ops.print_directory_tree()?;
                 }
                 (Some(src_path), None) => {
                     // Display file or directory content
@@ -576,27 +581,34 @@ async fn run(args: Cli) -> Result<()> {
             ).await
         }
         
-        Commands::List { detailed } => {
-            info!("Listing tape devices");
-            tape::list_devices(detailed).await
-        }
-        
-        Commands::Info { device } => {
-            info!("Getting device information: {}", device);
-            tape::get_device_info(device).await
-        }
-        
-        Commands::Status { device } => {
-            info!("Checking device status: {}", device);
-            tape::get_device_status(device).await
-        }
-        
-        Commands::Diagnose { device, detailed, test_read } => {
-            info!("Starting tape diagnosis: {}", device);
-            // Note: diagnose_tape_status method is not needed anymore
-            println!("⚠️  Diagnose functionality is not implemented in the new LTFS commands");
-            println!("💡 Try using other commands like 'info' or 'status' for device information");
-            Ok(())
+        Commands::Device { device, detailed, status, info } => {
+            match device {
+                Some(device_path) => {
+                    // 处理特定设备的信息请求
+                    if status {
+                        tracing::info!("Getting device status: {}", device_path);
+                        tape::get_device_status(device_path).await
+                    } else if info {
+                        tracing::info!("Getting device information: {}", device_path);
+                        tape::get_device_info(device_path).await
+                    } else {
+                        // 默认显示设备状态和信息
+                        tracing::info!("Getting comprehensive device info: {}", device_path);
+                        println!("📱 Device: {}", device_path);
+                        println!("\n🔧 Configuration Information:");
+                        if let Err(e) = tape::get_device_info(device_path.clone()).await {
+                            println!("❌ Failed to get device info: {}", e);
+                        }
+                        println!("\n📊 Status Information:");
+                        tape::get_device_status(device_path).await
+                    }
+                }
+                None => {
+                    // 列出所有设备
+                    tracing::info!("Listing tape devices");
+                    tape::list_devices(detailed).await
+                }
+            }
         }
 
         Commands::Space { device, skip_index, detailed } => {

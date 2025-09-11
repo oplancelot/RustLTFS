@@ -311,7 +311,7 @@ impl LtfsIndex {
         }
 
         // Validate root directory
-        if index.root_directory.name != "" {
+        if !index.root_directory.name.is_empty() {
             return Err(crate::error::RustLtfsError::parse(
                 "Root directory must have empty name",
             ));
