@@ -220,13 +220,16 @@ rustltfs write "C:\data\database.bak" --tape TAPE0 /backup/database.bak --verify
 
 ```cmd
 # View what's on the tape
-rustltfs read --tape TAPE0 /backup/
+rustltfs read --tape TAPE0
 
-# Restore entire Documents folder
+# Download entire Documents folder to current directory
+rustltfs read --tape TAPE0 /backup/documents
+
+# Download to specific location
 rustltfs read --tape TAPE0 /backup/documents "C:\restore\documents"
 
-# Preview file content
-rustltfs read --tape TAPE0 /backup/config.txt --lines 20
+# Download single file to current directory
+rustltfs read --tape TAPE0 /backup/config.txt
 ```
 
 ### Tape Management

@@ -375,8 +375,8 @@ async fn run(args: Cli) -> Result<()> {
             skip_index,
             index_file,
             verify,
-            lines,
-            detailed 
+            lines: _,
+            detailed: _ 
         } => {
             info!("Starting read operation: {} -> {:?}", device, source);
             
@@ -486,50 +486,32 @@ async fn run(args: Cli) -> Result<()> {
                     ops.print_directory_tree()?;
                 }
                 (Some(src_path), None) => {
-                    // Display file or directory content
-                    info!("Displaying tape content: {:?}", src_path);
+                    // Download file or directory to current directory
+                    info!("Downloading from tape: {:?} -> current directory", src_path);
                     
-                    // Parse tape path and display content
-                    if let Some(content) = ops.list_path_content(&src_path.to_string_lossy()).await? {
-                        match content {
-                            tape_ops::PathContent::Directory(entries) => {
-                                println!("\n📁 Directory Content: {}", src_path.display());
-                                for entry in entries {
-                                    let type_icon = if entry.is_directory { "📁" } else { "📄" };
-                                    let size_info = if entry.is_directory {
-                                        format!("({} items)", entry.file_count.unwrap_or(0))
-                                    } else {
-                                        format!("({} bytes)", entry.size.unwrap_or(0))
-                                    };
-                                    println!("  {} {} {}", type_icon, entry.name, size_info);
-                                    
-                                    if detailed {
-                                        println!("    Created: {}", entry.created_time.as_deref().unwrap_or("Unknown"));
-                                        println!("    Modified: {}", entry.modified_time.as_deref().unwrap_or("Unknown"));
-                                        if let Some(uid) = entry.file_uid {
-                                            println!("    File UID: {}", uid);
-                                        }
-                                    }
-                                }
-                            }
-                            tape_ops::PathContent::File(file_info) => {
-                                println!("\n📄 File Information: {}", src_path.display());
-                                println!("  Size: {} bytes", file_info.size);
-                                println!("  Created: {}", file_info.created_time.as_deref().unwrap_or("Unknown"));
-                                println!("  Modified: {}", file_info.modified_time.as_deref().unwrap_or("Unknown"));
-                                println!("  File UID: {}", file_info.file_uid);
-                                
-                                // Display file content preview
-                                if file_info.size <= 1024 * 1024 && lines > 0 { // Preview files under 1MB only
-                                    println!("\n📖 File Content Preview (first {} lines):", lines);
-                                    if let Ok(preview) = ops.preview_file_content(file_info.file_uid, lines).await {
-                                        println!("{}", preview);
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        println!("❌ Path does not exist or is not accessible: {}", src_path.display());
+                    let current_dir = std::env::current_dir().map_err(|e| 
+                        crate::error::RustLtfsError::cli_error(format!("Failed to get current directory: {}", e))
+                    )?;
+                    
+                    // Extract files to current directory
+                    let extract_result = ops.extract_from_tape(
+                        &src_path.to_string_lossy(),
+                        &current_dir,
+                        verify
+                    ).await?;
+                    
+                    println!("✅ Download Completed:");
+                    println!("  Files Downloaded: {}", extract_result.files_extracted);
+                    println!("  Directories Created: {}", extract_result.directories_created);
+                    println!("  Total Bytes: {} bytes", extract_result.total_bytes);
+                    println!("  Destination: {}", current_dir.display());
+                    
+                    if verify {
+                        println!("  Verification Status: {}", if extract_result.verification_passed {
+                            "✅ Passed"
+                        } else {
+                            "❌ Failed"
+                        });
                     }
                 }
                 (Some(src_path), Some(dest_path)) => {

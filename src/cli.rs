@@ -121,17 +121,17 @@ pub enum Commands {
 
     /// Read from tape (对应LTFSCopyGUI的读取索引和提取功能)
     /// 
-    /// 从LTFS磁带读取文件、目录或查看内容
+    /// 从LTFS磁带下载文件或目录
     Read {
         /// Tape device path (e.g. \\.\TAPE0)
         #[arg(short = 't', long = "tape", value_name = "DEVICE")]
         device: String,
 
-        /// Source path in tape (optional - if not provided, list root)
+        /// Source path in tape (optional - if not provided, list root directory)
         #[arg(value_name = "SOURCE")]
         source: Option<PathBuf>,
 
-        /// Local destination path (optional - if not provided, display content)
+        /// Local destination path (optional - if not provided, download to current directory)
         #[arg(value_name = "DESTINATION")]
         destination: Option<PathBuf>,
 

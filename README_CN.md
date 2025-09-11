@@ -232,13 +232,16 @@ rustltfs write "C:\data\database.bak" --tape TAPE0 /backup/database.bak --verify
 
 ```cmd
 # 查看磁带上有什么
-rustltfs read --tape TAPE0 /backup/
+rustltfs read --tape TAPE0
 
-# 恢复整个文档文件夹
+# 下载整个文档文件夹到当前目录
+rustltfs read --tape TAPE0 /backup/documents
+
+# 下载到指定位置
 rustltfs read --tape TAPE0 /backup/documents "C:\restore\documents"
 
-# 预览文件内容
-rustltfs read --tape TAPE0 /backup/config.txt --lines 20
+# 下载单个文件到当前目录
+rustltfs read --tape TAPE0 /backup/config.txt
 ```
 
 ### 磁带管理
