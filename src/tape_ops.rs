@@ -3271,11 +3271,9 @@ impl TapeOperations {
             return Ok(());
         }
 
-        if self.tape_handle.is_none() {
-            return Err(RustLtfsError::tape_device(
-                "Tape device not initialized".to_string(),
-            ));
-        }
+        // 移除过度严格的tape_handle检查，按照LTFSCopyGUI逻辑
+        // LTFSCopyGUI直接使用driveHandle而不检查是否为空
+        // 如果设备真的有问题，后续的SCSI操作会自然失败
 
         // Check if index exists and has modifications
         let mut current_index = match &self.schema {
@@ -3286,8 +3284,10 @@ impl TapeOperations {
             }
         };
 
-        if !self.modified {
-            info!("Index not modified, skipping update");
+        // 按照LTFSCopyGUI逻辑：检查TotalBytesUnindexed而不是modified标志
+        // LTFSCopyGUI: If (My.Settings.LTFSWriter_ForceIndex OrElse TotalBytesUnindexed <> 0)
+        if self.write_progress.total_bytes_unindexed == 0 {
+            info!("No unindexed data, skipping update (matching LTFSCopyGUI logic)");
             return Ok(());
         }
 
@@ -3320,14 +3320,19 @@ impl TapeOperations {
         current_index.updatetime = chrono::Utc::now().to_rfc3339();
         current_index.location.partition = "b".to_string(); // Data partition
 
-        // Store previous generation location if exists
+        // Store previous generation location if exists (对应LTFSCopyGUI的previousgenerationlocation)
         if let Some(ref existing_index) = &self.index {
             current_index.previousgenerationlocation = Some(existing_index.location.clone());
         }
 
-        // Get position for index write
+        // 按照LTFSCopyGUI逻辑：写入FileMarker后再次获取位置作为索引写入位置
+        // LTFSCopyGUI: CurrentPos = GetPos; schema.location.startblock = CurrentPos.BlockNumber
         let index_position = self.scsi.read_position()?;
         current_index.location.startblock = index_position.block_number;
+        info!(
+            "Index will be written at position: partition={}, block={}",
+            index_position.partition, index_position.block_number
+        );
 
         info!("Generating index XML...");
 
