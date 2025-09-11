@@ -58,17 +58,65 @@ pub enum Commands {
         #[arg(short = 'f', long = "index-file", value_name = "INDEX_FILE")]
         index_file: Option<PathBuf>,
 
-        /// Skip confirmation prompt
+        /// Overwrite existing files without confirmation
         #[arg(long = "force")]
         force: bool,
 
-        /// Verify written data
+        /// Verify written data using hash comparison
         #[arg(long)]
         verify: bool,
 
-        /// Show detailed progress
+        /// Show detailed progress information
         #[arg(short, long)]
         progress: bool,
+
+        /// Skip symbolic links during write operations
+        #[arg(long = "skip-symlinks")]
+        skip_symlinks: bool,
+
+        /// Enable parallel file processing (faster but higher memory usage)
+        #[arg(long = "parallel")]
+        parallel: bool,
+
+        /// Limit write speed in MiB/s (e.g., 100 for 100 MiB/s)
+        #[arg(long = "speed-limit", value_name = "MBPS")]
+        speed_limit: Option<u32>,
+
+        /// Index update interval in GiB (default: 36 GiB)
+        #[arg(long = "index-interval", value_name = "GIB", default_value = "36")]
+        index_interval: u32,
+
+        /// File extensions to exclude (comma-separated, e.g., .tmp,.log)
+        #[arg(long = "exclude", value_name = "EXTENSIONS")]
+        exclude_extensions: Option<String>,
+
+        /// Resume write from previous interruption
+        #[arg(long = "resume")]
+        resume: bool,
+
+        /// Dry run mode - show what would be written without actual operation
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+
+        /// Set compression level (0=none, 1=low, 2=medium, 3=high)
+        #[arg(long = "compress", value_name = "LEVEL")]
+        compression_level: Option<u8>,
+
+        /// Enable encryption with password prompt
+        #[arg(long = "encrypt")]
+        encrypt: bool,
+
+        /// Create checkpoint every N files (useful for large operations)
+        #[arg(long = "checkpoint", value_name = "COUNT")]
+        checkpoint_interval: Option<u32>,
+
+        /// Maximum file size to process in one operation (in GiB)
+        #[arg(long = "max-file-size", value_name = "GIB")]
+        max_file_size: Option<u32>,
+
+        /// Use quiet mode (minimal output)
+        #[arg(short = 'q', long = "quiet")]
+        quiet: bool,
     },
 
     /// Read from tape (对应LTFSCopyGUI的读取索引和提取功能)
