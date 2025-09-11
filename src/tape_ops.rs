@@ -499,105 +499,72 @@ impl TapeOperations {
         Ok(())
     }
 
-    /// Read LTFS index from tape (精准对应LTFSCopyGUI的读取索引ToolStripMenuItem_Click)
+    /// Read LTFS index from tape (优化版本：优先使用成功的策略)
     pub async fn read_index_from_tape(&mut self) -> Result<()> {
-        info!("Starting LTFS index reading process (LTFSCopyGUI sequence)...");
+        info!("Starting optimized LTFS index reading process...");
 
         if self.offline_mode {
             info!("Offline mode: using dummy index for simulation");
             return Ok(());
         }
 
-        // 简言之，获取索引的核心流程是：定位到索引分区 -> 读取 LTFS 标签 -> 读取完整的索引文件并解析
-        info!("=== LTFS Index Reading Process (LTFSCopyGUI Exact Sequence) ===");
+        info!("=== Optimized LTFS Index Reading Process ===");
 
-        // Step 1: 定位到索引分区 (partition a) - 对应TapeUtils.Locate
-        info!("Step 1: Locating to index partition (partition a, block 0)");
-        let index_partition = 0; // partition a
-        self.scsi.locate_block(index_partition, 0)?;
-        debug!(
-            "Successfully located to partition {}, block 0",
-            index_partition
-        );
+        // Step 1 (Priority): 优先使用经过验证的成功策略
+        info!("Step 1 (Priority): Trying proven successful strategies first");
+        
+        match self.try_alternative_index_reading_strategies_async().await {
+            Ok(xml_content) => {
+                if self.validate_and_process_index(&xml_content).await? {
+                    info!("✅ Priority strategy succeeded - index loaded successfully");
+                    return Ok(());
+                }
+            }
+            Err(e) => {
+                debug!("Priority strategy failed: {}", e);
+            }
+        }
 
-        // Step 2: 读取LTFS标签并验证 - 对应TapeUtils.ReadBlock
-        info!("Step 2: Reading and validating LTFS label (VOL1 check)");
-
+        // Step 2: 标准流程作为后备
+        info!("Step 2: Fallback to standard LTFS reading process");
+        
+        // 定位到索引分区并读取VOL1标签
+        self.scsi.locate_block(0, 0)?;
         let mut label_buffer = vec![0u8; crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize];
         self.scsi.read_blocks(1, &mut label_buffer)?;
 
-        // 使用严格的三条件验证VOL1标签
         let vol1_valid = self.parse_vol1_label(&label_buffer)?;
 
         if vol1_valid {
-            info!("✅ VOL1 label validation passed");
+            info!("VOL1 label validation passed, trying standard reading");
 
-            // Step 2.5: 检测多分区配置并应用LTFSCopyGUI的分区策略
-            info!("Step 2.5: Detecting multi-partition configuration (LTFSCopyGUI strategy)");
             let partition_strategy = self.detect_partition_strategy().await?;
 
             match partition_strategy {
                 PartitionStrategy::StandardMultiPartition => {
-                    info!(
-                        "✅ Standard multi-partition tape detected, reading index from partition A"
-                    );
+                    // 使用ReadToFileMark方法读取整个索引文件
+                    match self.read_index_xml_from_tape_with_file_mark() {
+                        Ok(xml_content) => {
+                            if self.validate_and_process_index(&xml_content).await? {
+                                info!("✅ Standard reading strategy succeeded");
+                                return Ok(());
+                            }
+                        }
+                        Err(e) => debug!("Standard reading failed: {}", e),
+                    }
                 }
                 PartitionStrategy::SinglePartitionFallback => {
-                    warn!("⚠️ Single-partition tape detected, falling back to data partition index reading");
                     return self.read_index_from_single_partition_tape().await;
                 }
                 PartitionStrategy::IndexFromDataPartition => {
-                    info!("📍 Index location indicates data partition, reading from partition B");
                     return self.read_index_from_data_partition_strategy().await;
                 }
             }
-
-            // Step 3: 读取完整的索引文件 - 对应TapeUtils.ReadToFileMark
-            info!("Step 3: Reading complete LTFS index file using ReadToFileMark method");
-
-            // 使用ReadToFileMark方法读取整个索引文件
-            let xml_content = self.read_index_xml_from_tape_with_file_mark()?;
-
-            // 验证并处理索引
-            if self.validate_and_process_index(&xml_content).await? {
-                info!("=== LTFS Index Reading Process Completed Successfully ===");
-                return Ok(());
-            } else {
-                warn!("Standard index reading failed, trying alternative strategies");
-            }
-        } else {
-            warn!("⚠️ VOL1 label validation failed, trying alternative tape reading strategies");
-
-            // 显示磁带内容诊断信息（与同步版本保持一致）
-            let display_len = std::cmp::min(40, label_buffer.len());
-            info!("🔍 Tape content analysis (first {} bytes):", display_len);
-            info!("   Hex: {:02X?}", &label_buffer[0..display_len]);
-            info!(
-                "   Text: {:?}",
-                String::from_utf8_lossy(&label_buffer[0..display_len])
-            );
         }
 
-        // Step 2.5 (Alternative): 当VOL1验证失败时，使用完整的LTFSCopyGUI回退策略
-        info!("Step 2.5 (Alternative): Applying complete LTFSCopyGUI fallback strategies");
-
-        // 调用完整的回退策略（使用同步版本中的完整实现）
-        match self.try_alternative_index_reading_strategies_async().await {
-            Ok(xml_content) => {
-                // 处理和验证索引
-                if self.validate_and_process_index(&xml_content).await? {
-                    info!("✅ Alternative strategies succeeded - index loaded successfully");
-                    return Ok(());
-                } else {
-                    warn!("Index validation failed after successful reading");
-                }
-            }
-            Err(e) => {
-                debug!("All alternative strategies failed: {}", e);
-            }
-        }
-
-        // 原有的多分区策略作为最后的回退
+        // Step 3: 最后的多分区策略回退
+        info!("Step 3: Final multi-partition strategy fallback");
+        
         let partition_strategy = self
             .detect_partition_strategy()
             .await
@@ -615,9 +582,7 @@ impl TapeOperations {
             PartitionStrategy::StandardMultiPartition => {
                 debug!("🔄 Trying standard multi-partition strategy without VOL1 validation");
 
-                // 基于索引文件分析，LTFS索引通常在block 6，而不是block 0
-                // 先尝试block 6，这是LTFSCopyGUI成功读取的位置
-                let standard_locations = vec![6, 5, 2, 0]; // 从最可能的位置开始
+                let standard_locations = vec![6, 5, 2, 0];
 
                 for &block in &standard_locations {
                     info!("Trying standard multi-partition at p0 block {}", block);
@@ -639,10 +604,7 @@ impl TapeOperations {
                     }
                 }
 
-                // 如果标准位置都失败，尝试单分区策略作为回退
-                info!(
-                    "🔄 All standard locations failed, falling back to single-partition strategy"
-                );
+                info!("🔄 All standard locations failed, falling back to single-partition strategy");
                 self.read_index_from_single_partition_tape().await
             }
         }
