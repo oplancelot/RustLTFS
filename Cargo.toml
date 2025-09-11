@@ -48,6 +48,8 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # 哈希计算
 sha2 = "0.10"
+sha1 = "0.10"
+md5 = "0.7"
 
 # 进度显示
 indicatif = "0.17"

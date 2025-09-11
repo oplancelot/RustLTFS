@@ -200,11 +200,8 @@ impl LtfsDirectAccess {
             .unwrap_or_else(|| "unknown".to_string());
         
         let extent = FileExtent {
-            partition: match write_position.partition {
-                0 => "a".to_string(),
-                1 => "b".to_string(),
-                _ => "b".to_string(), // Default to data partition
-            },
+            // 强制使用数据分区，按照LTFSCopyGUI逻辑文件应该写入数据分区b
+            partition: "b".to_string(),
             start_block: write_position.block_number,
             byte_count: file_size,
             file_offset: 0,

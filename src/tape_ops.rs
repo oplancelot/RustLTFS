@@ -1721,9 +1721,9 @@ impl TapeOperations {
             ));
         }
 
-        // Calculate hash if configured (对应LTFSCopyGUI的HashOnWrite)
-        let file_hash = if self.write_options.hash_on_write {
-            Some(self.calculate_file_hash(source_path).await?)
+        // Calculate multiple hashes if configured (对应LTFSCopyGUI的HashOnWrite)
+        let file_hashes = if self.write_options.hash_on_write {
+            Some(self.calculate_file_hashes(source_path).await?)
         } else {
             None
         };
@@ -1737,7 +1737,7 @@ impl TapeOperations {
             target_path,
             file_size,
             &write_result.position,
-            file_hash,
+            file_hashes,
         )?;
 
         // Update progress counters (对应LTFSCopyGUI的进度统计)
@@ -1884,7 +1884,48 @@ impl TapeOperations {
         }
     }
 
-    /// Calculate file hash (对应LTFSCopyGUI的HashOnWrite功能)
+    /// Calculate multiple file hashes (对应LTFSCopyGUI的多种哈希计算)
+    async fn calculate_file_hashes(&self, file_path: &Path) -> Result<std::collections::HashMap<String, String>> {
+        use sha1::{Digest, Sha1};
+        use sha2::{Digest as Sha256Digest, Sha256};
+        use tokio::io::AsyncReadExt;
+
+        let mut file = tokio::fs::File::open(file_path).await.map_err(|e| {
+            RustLtfsError::file_operation(format!("Cannot open file for hashing: {}", e))
+        })?;
+
+        let mut sha1_hasher = Sha1::new();
+        let mut md5_hasher = md5::Context::new();
+        let mut sha256_hasher = Sha256::new();
+        // TODO: BLAKE3 hasher when available in deps
+        
+        let mut buffer = vec![0u8; 1024 * 1024]; // 1MB buffer
+
+        loop {
+            let bytes_read = file.read(&mut buffer).await.map_err(|e| {
+                RustLtfsError::file_operation(format!("Error reading file for hash: {}", e))
+            })?;
+
+            if bytes_read == 0 {
+                break;
+            }
+
+            sha1_hasher.update(&buffer[..bytes_read]);
+            md5_hasher.consume(&buffer[..bytes_read]);
+            sha256_hasher.update(&buffer[..bytes_read]);
+        }
+
+        let mut hashes = std::collections::HashMap::new();
+        
+        // 按照LTFSCopyGUI的格式生成哈希值
+        hashes.insert("sha1sum".to_string(), format!("{:X}", sha1_hasher.finalize()));
+        hashes.insert("md5sum".to_string(), format!("{:X}", md5_hasher.compute()));
+        // hashes.insert("blake3sum".to_string(), format!("{:X}", blake3_hasher.finalize()));
+        
+        Ok(hashes)
+    }
+
+    /// Calculate file hash (preserved for backward compatibility)
     async fn calculate_file_hash(&self, file_path: &Path) -> Result<String> {
         use sha2::{Digest, Sha256};
         use tokio::io::AsyncReadExt;
@@ -1984,7 +2025,7 @@ impl TapeOperations {
         target_path: &str,
         file_size: u64,
         write_position: &crate::scsi::TapePosition,
-        file_hash: Option<String>,
+        file_hashes: Option<std::collections::HashMap<String, String>>,
     ) -> Result<()> {
         debug!(
             "Updating LTFS index for write: {:?} -> {} ({} bytes)",
@@ -2011,11 +2052,8 @@ impl TapeOperations {
         let new_uid = current_index.highestfileuid.unwrap_or(0) + 1;
 
         let extent = crate::ltfs_index::FileExtent {
-            partition: match write_position.partition {
-                0 => "a".to_string(),
-                1 => "b".to_string(),
-                _ => "b".to_string(), // Default to data partition
-            },
+            // 强制使用数据分区，按照LTFSCopyGUI逻辑文件应该写入数据分区b
+            partition: "b".to_string(),
             start_block: write_position.block_number,
             byte_count: file_size,
             file_offset: 0,
@@ -2066,14 +2104,24 @@ impl TapeOperations {
             extent_info: crate::ltfs_index::ExtentInfo {
                 extents: vec![extent],
             },
-            extended_attributes: if let Some(hash) = file_hash {
-                // Store hash in extended attributes if available
-                Some(crate::ltfs_index::ExtendedAttributes {
-                    attributes: vec![crate::ltfs_index::ExtendedAttribute {
-                        key: "user.sha256".to_string(),
-                        value: hash,
-                    }],
-                })
+            extended_attributes: if let Some(hashes) = file_hashes {
+                // Create extended attributes following LTFSCopyGUI format
+                let mut attributes = Vec::new();
+                
+                for (hash_type, hash_value) in hashes {
+                    attributes.push(crate::ltfs_index::ExtendedAttribute {
+                        key: format!("ltfs.hash.{}", hash_type),
+                        value: hash_value,
+                    });
+                }
+                
+                // Add capacity remain attribute (placeholder)
+                attributes.push(crate::ltfs_index::ExtendedAttribute {
+                    key: "ltfscopygui.capacityremain".to_string(),
+                    value: "12".to_string(), // Placeholder value
+                });
+                
+                Some(crate::ltfs_index::ExtendedAttributes { attributes })
             } else {
                 None
             },
@@ -2302,11 +2350,8 @@ impl TapeOperations {
         let new_uid = current_index.highestfileuid.unwrap_or(0) + 1;
 
         let extent = crate::ltfs_index::FileExtent {
-            partition: match write_position.partition {
-                0 => "a".to_string(),
-                1 => "b".to_string(),
-                _ => "b".to_string(), // Default to data partition
-            },
+            // 强制使用数据分区，按照LTFSCopyGUI逻辑文件应该写入数据分区b
+            partition: "b".to_string(),
             start_block: write_position.block_number,
             byte_count: file_size,
             file_offset: 0,
