@@ -1,5 +1,7 @@
 # RustLTFS - Rust 实现的 LTFS 磁带直接读写工具
 
+**🇨🇳 中文** | [🇺🇸 English](README.md)
+
 ## 概述
 
 RustLTFS 是一个用 Rust 编写的 IBM LTFS 磁带直接读写命令行工具，支持无需挂载磁带文件系统即可直接读写 LTO 磁带。

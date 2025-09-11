@@ -1,5 +1,7 @@
 # RustLTFS - LTFS Direct Access Tool for Tape Drives
 
+[🇨🇳 中文版本](README_CN.md) | **🇺🇸 English**
+
 ## Overview
 
 RustLTFS is an IBM LTFS tape direct read/write command-line tool written in Rust, supporting direct read/write access to LTO tapes without mounting the tape file system.
