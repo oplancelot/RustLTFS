@@ -46,6 +46,9 @@ pub enum RustLtfsError {
     #[error("Parameter validation error: {0}")]
     ParameterValidation(String),
     
+    #[error("Operation cancelled: {0}")]
+    OperationCancelled(String),
+    
     #[error("Generic error: {0}")]
     Generic(#[from] anyhow::Error),
 }
@@ -101,6 +104,10 @@ impl RustLtfsError {
     
     pub fn parameter_validation<T: Into<String>>(msg: T) -> Self {
         Self::ParameterValidation(msg.into())
+    }
+    
+    pub fn operation_cancelled<T: Into<String>>(msg: T) -> Self {
+        Self::OperationCancelled(msg.into())
     }
 }
 

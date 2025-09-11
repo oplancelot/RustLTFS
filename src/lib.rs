@@ -13,6 +13,7 @@ pub mod ltfs_index;
 pub mod scsi;
 pub mod tape;
 pub mod tape_ops;
+pub mod utils;
 
 // Re-export key types for easier use
 pub use error::{Result, RustLtfsError};
