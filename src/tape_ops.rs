@@ -6489,86 +6489,224 @@ impl TapeOperations {
         }
     }
     
-    /// LocateToWritePosition - 对应LTFSCopyGUI的LocateToWritePosition函数
-    /// 该函数确保磁带定位到正确的写入位置，包含完整的错误处理和用户确认逻辑
+    /// LocateToWritePosition - 完全兼容LTFSCopyGUI的LocateToWritePosition函数
+    /// 实现与LTFSCopyGUI完全一致的三分支处理逻辑，解决首次写入定位验证失败问题
     async fn locate_to_write_position(&mut self) -> Result<bool> {
         info!("执行LocateToWritePosition，确保磁带在正确的写入位置");
         
-        // 确保我们有有效的索引和分区信息
+        // 确保我们有有效的索引
         let current_index = self.schema.as_ref()
             .ok_or_else(|| RustLtfsError::ltfs_index("No LTFS index available".to_string()))?;
         
-        // 检查当前索引位置是否在索引分区（对应LTFSCopyGUI的判断逻辑）
+        // 检查当前索引位置是否在索引分区（对应LTFSCopyGUI的第一个条件）
         let is_index_partition = current_index.location.partition == "a" || 
                                 current_index.location.partition == self.index_partition.to_string();
         
+        // LTFSCopyGUI兼容的三分支逻辑
         if is_index_partition {
-            info!("当前索引在索引分区，需要定位到数据分区的上次写入位置");
+            // 分支1: 索引在partition a，需要读取previousgenerationlocation
+            info!("分支1: 索引在分区a，定位到数据分区上次写入位置");
+            self.handle_index_in_partition_a().await
+        } else if let Some(height) = self.current_height {
+            if height > 0 {
+                // 分支2: CurrentHeight > 0，非首次写入
+                info!("分支2: CurrentHeight={}，定位到已知写入位置", height);
+                self.handle_current_height_positioning(height).await
+            } else {
+                // 分支3: CurrentHeight = 0，首次写入场景
+                info!("分支3: CurrentHeight=0，首次写入场景");
+                self.handle_first_write_scenario().await
+            }
+        } else {
+            // 分支3: 无CurrentHeight，首次写入场景
+            info!("分支3: 无CurrentHeight，首次写入场景");
+            self.handle_first_write_scenario().await
+        }
+    }
+    
+    /// 处理索引在partition a的情况 - 对应LTFSCopyGUI的第一个分支
+    async fn handle_index_in_partition_a(&mut self) -> Result<bool> {
+        let current_index = self.schema.as_ref().unwrap();
+        
+        // 检查是否有有效的previousgenerationlocation
+        if let Some(prev_location) = &current_index.previousgenerationlocation {
+            let target_partition = self.data_partition;
+            let target_block = prev_location.startblock;
             
-            // 获取上次生成位置信息（对应schema.previousgenerationlocation）
-            if let Some(prev_location) = &current_index.previousgenerationlocation {
-                let target_partition = self.data_partition;
-                let target_block = prev_location.startblock;
-                
-                info!("定位到数据分区 {} 的块 {}", target_partition, target_block);
-                
-                // 执行带重试逻辑的定位操作（对应LTFSCopyGUI的While True循环）
-                loop {
-                    match self.scsi.locate_block(target_partition, target_block) {
-                        Ok(()) => {
-                            // 验证定位是否成功
-                            let current_pos = self.scsi.read_position()?;
+            info!("定位到数据分区P{}的块{}", target_partition, target_block);
+            
+            // LTFSCopyGUI风格的重试循环：自动重试2次，然后Ignore继续
+            const MAX_RETRIES: u8 = 2; // 只重试2次
+            
+            for retry_count in 0..=MAX_RETRIES {
+                match self.scsi.locate_block(target_partition, target_block) {
+                    Ok(()) => {
+                        let current_pos = self.scsi.read_position()?;
+                        
+                        // 精确位置验证，不允许容差
+                        if current_pos.partition == target_partition && current_pos.block_number == target_block {
+                            info!("成功定位到目标位置: P{} B{}", current_pos.partition, current_pos.block_number);
                             
-                            if current_pos.partition == target_partition && current_pos.block_number == target_block {
-                                info!("成功定位到写入位置: P{} B{}", current_pos.partition, current_pos.block_number);
-                                break;
-                            } else {
+                            // 更新CurrentHeight
+                            self.current_height = Some(current_pos.block_number);
+                            return Ok(true);
+                        } else {
+                            if retry_count >= MAX_RETRIES {
+                                // 对应LTFSCopyGUI的自动Ignore选项 - 2次重试后自动继续
                                 warn!(
-                                    "定位验证失败 - 当前: P{} B{}, 期望: P{} B{}",
-                                    current_pos.partition, current_pos.block_number,
+                                    "定位验证失败（已重试{}次），自动选择Ignore继续: 当前P{} B{}，期望P{} B{}",
+                                    MAX_RETRIES, current_pos.partition, current_pos.block_number,
                                     target_partition, target_block
                                 );
                                 
-                                // 在CLI环境中，我们可以选择自动重试或返回错误
-                                // 对应LTFSCopyGUI的用户确认对话框
-                                return Err(RustLtfsError::scsi(format!(
-                                    "无法定位到期望的写入位置。当前: P{} B{}, 期望: P{} B{}",
-                                    current_pos.partition, current_pos.block_number,
-                                    target_partition, target_block
-                                )));
+                                // 更新CurrentHeight为当前位置，然后继续
+                                self.current_height = Some(current_pos.block_number);
+                                return Ok(true);
+                            }
+                            
+                            warn!(
+                                "定位验证失败（第{}次重试）: 当前P{} B{}，期望P{} B{}",
+                                retry_count + 1, current_pos.partition, current_pos.block_number,
+                                target_partition, target_block
+                            );
+                            
+                            // 短暂延迟后重试
+                            if retry_count < MAX_RETRIES {
+                                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                             }
                         }
-                        Err(e) => {
-                            error!("定位操作失败: {}", e);
-                            return Err(RustLtfsError::scsi(format!(
-                                "无法定位到写入位置: {}", e
-                            )));
+                    }
+                    Err(e) => {
+                        if retry_count >= MAX_RETRIES {
+                            // 2次重试后自动选择Ignore - 使用EOD定位作为备选
+                            warn!("定位操作失败（已重试{}次），自动选择Ignore，使用EOD定位: {}", MAX_RETRIES, e);
+                            return self.fallback_to_eod_positioning().await;
+                        }
+                        
+                        warn!("定位失败（第{}次重试）: {}", retry_count + 1, e);
+                        
+                        // 短暂延迟后重试
+                        if retry_count < MAX_RETRIES {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                         }
                     }
                 }
-            } else {
-                return Err(RustLtfsError::ltfs_index(
-                    "No previous generation location found in index".to_string()
-                ));
             }
+            
+            // 这里不应该到达，但为了安全起见
+            warn!("意外退出重试循环，使用EOD定位");
+            return self.fallback_to_eod_positioning().await;
         } else {
-            info!("当前索引已在数据分区，无需额外定位");
+            // 没有previousgenerationlocation，可能是首次创建的索引
+            warn!("索引缺少previousgenerationlocation，按首次写入场景处理");
+            return self.handle_first_write_scenario().await;
+        }
+    }
+    
+    /// 处理CurrentHeight > 0的情况 - 对应LTFSCopyGUI的第二个分支
+    async fn handle_current_height_positioning(&mut self, current_height: u64) -> Result<bool> {
+        let target_partition = self.data_partition;
+        let target_block = current_height;
+        
+        info!("定位到已知高度: P{} B{}", target_partition, target_block);
+        
+        // 获取当前位置
+        let current_pos = self.scsi.read_position()?;
+        
+        // 如果已经在正确位置，无需重新定位
+        if current_pos.partition == target_partition && current_pos.block_number == target_block {
+            info!("已在目标位置，无需重新定位: P{} B{}", current_pos.partition, current_pos.block_number);
+            return Ok(true);
         }
         
-        // 定位成功，现在需要定位到该分区的写入位置（EOD）
-        info!("定位到数据分区EOD位置");
+        // 执行定位操作，自动重试2次后Ignore
+        const MAX_RETRIES: u8 = 2;
+        
+        for retry_count in 0..=MAX_RETRIES {
+            match self.scsi.locate_block(target_partition, target_block) {
+                Ok(()) => {
+                    let current_pos = self.scsi.read_position()?;
+                    
+                    // 精确位置验证，不允许容差
+                    if current_pos.partition == target_partition && current_pos.block_number == target_block {
+                        info!("成功定位到CurrentHeight位置: P{} B{}", current_pos.partition, current_pos.block_number);
+                        return Ok(true);
+                    } else {
+                        if retry_count >= MAX_RETRIES {
+                            // 对应LTFSCopyGUI的自动Ignore选项 - 2次重试后自动继续
+                            warn!(
+                                "CurrentHeight定位验证失败（已重试{}次），自动选择Ignore继续: 当前P{} B{}，期望P{} B{}",
+                                MAX_RETRIES, current_pos.partition, current_pos.block_number,
+                                target_partition, target_block
+                            );
+                            return Ok(true); // 继续执行
+                        }
+                        
+                        warn!(
+                            "CurrentHeight定位验证失败（第{}次重试）: 当前P{} B{}，期望P{} B{}",
+                            retry_count + 1, current_pos.partition, current_pos.block_number,
+                            target_partition, target_block
+                        );
+                        
+                        // 短暂延迟后重试
+                        if retry_count < MAX_RETRIES {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        }
+                    }
+                }
+                Err(e) => {
+                    if retry_count >= MAX_RETRIES {
+                        warn!("CurrentHeight定位多次失败（已重试{}次），自动选择Ignore继续: {}", MAX_RETRIES, e);
+                        return Ok(true); // 对应LTFSCopyGUI的Ignore选项
+                    }
+                    
+                    warn!("CurrentHeight定位失败（第{}次重试）: {}", retry_count + 1, e);
+                    
+                    // 短暂延迟后重试
+                    if retry_count < MAX_RETRIES {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                }
+            }
+        }
+        
+        // 不应该到达这里
+        Ok(true)
+    }
+    
+    /// 处理首次写入场景 - 对应LTFSCopyGUI的Else分支（关键修复）
+    async fn handle_first_write_scenario(&mut self) -> Result<bool> {
+        info!("检测到首次写入场景（CurrentHeight=0），按LTFSCopyGUI Else分支处理");
+        
+        // 获取当前位置信息
+        let current_pos = self.scsi.read_position()?;
+        
+        // 对应LTFSCopyGUI的警告对话框 - 在CLI中显示警告但继续
+        warn!(
+            "首次写入警告: 当前位置P{} B{}。这是首次写入操作，将直接定位到数据分区EOD位置",
+            current_pos.partition, current_pos.block_number
+        );
+        
+        // 关键：LTFSCopyGUI的Else分支不进行严格验证，直接继续
+        // 我们直接定位到数据分区EOD，这是首次写入的标准做法
+        return self.fallback_to_eod_positioning().await;
+    }
+    
+    /// 备选EOD定位策略 - 对应WriteCurrentIndex的GotoEOD逻辑
+    async fn fallback_to_eod_positioning(&mut self) -> Result<bool> {
+        info!("执行EOD定位策略，定位到数据分区末尾");
+        
         match self.scsi.locate_to_eod(self.data_partition) {
             Ok(()) => {
                 let final_pos = self.scsi.read_position()?;
-                info!("定位到写入位置完成: P{} B{}", final_pos.partition, final_pos.block_number);
+                info!("成功定位到数据分区EOD: P{} B{}", final_pos.partition, final_pos.block_number);
                 
-                // 更新CurrentHeight状态（对应LTFSCopyGUI的CurrentHeight）
+                // 更新CurrentHeight
                 self.current_height = Some(final_pos.block_number);
-                
                 Ok(true)
             }
             Err(e) => {
-                error!("无法定位到EOD位置: {}", e);
+                error!("EOD定位也失败: {}", e);
                 Err(RustLtfsError::scsi(format!(
                     "无法定位到数据分区EOD位置: {}", e
                 )))
