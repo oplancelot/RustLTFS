@@ -1,4 +1,5 @@
 use crate::error::{Result, RustLtfsError};
+use std::ffi::CString;
 
 use tracing::{debug, warn, info};
 
