@@ -1976,8 +1976,36 @@ impl TapeOperations {
         let data_partition = 1; // Partition B
         let write_start_block = current_position.block_number.max(100); // Start at block 100 for data
 
+        // 强制移动到数据分区，确保文件写入到正确的分区（LTFSCopyGUI兼容性）
+        info!("Ensuring position in data partition B for file write");
         if current_position.partition != data_partition {
+            info!("Moving from partition {} to data partition {}", current_position.partition, data_partition);
             self.scsi.locate_block(data_partition, write_start_block)?;
+            
+            // 确认分区切换成功
+            let new_position = self.scsi.read_position()?;
+            info!("Confirmed position after partition switch: partition={}, block={}", 
+                  new_position.partition, new_position.block_number);
+            
+            if new_position.partition != data_partition {
+                return Err(RustLtfsError::scsi(format!(
+                    "Failed to switch to data partition: expected partition {}, but at partition {}",
+                    data_partition, new_position.partition
+                )));
+            }
+        } else {
+            // 即使已经在数据分区，也要确保位置合适
+            info!("Already in data partition {}, verifying position", data_partition);
+            let safe_position = current_position.block_number.max(write_start_block);
+            if current_position.block_number < safe_position {
+                info!("Moving to safe write position at block {}", safe_position);
+                self.scsi.locate_block(data_partition, safe_position)?;
+                
+                // 确认位置更新成功
+                let new_position = self.scsi.read_position()?;
+                info!("Confirmed position after block update: partition={}, block={}", 
+                      new_position.partition, new_position.block_number);
+            }
         }
 
         // Calculate blocks needed
@@ -5859,9 +5887,9 @@ impl TapeOperations {
             }
         }
 
-        // 策略1 (次级优先): 搜索常见的索引位置 - 将成功率最高的策略放在前面
+        // 策略1 (次级优先): 搜索常见的索引位置 - 基于实际写入位置优化
         info!("Strategy 1 (Priority): Searching common index locations first");
-        let common_locations = vec![10, 2, 5, 6, 20, 100]; // 将10放在最前面，因为日志显示在这里成功
+        let common_locations = vec![12, 10, 14, 1000, 2, 5, 6, 20, 100]; // 基于实际写入位置(10-12)优化搜索顺序
 
         for &block in &common_locations {
             debug!(
@@ -5984,9 +6012,32 @@ impl TapeOperations {
         info!("Attempting to read index from data partition (matching LTFSCopyGUI logic)");
 
         // 按照LTFSCopyGUI的"读取数据区索引"逻辑：
-        // 1. 定位到数据分区EOD
-        // 2. 向前查找最后的索引
+        // 优先策略：直接搜索最可能的索引位置（基于RustLTFS写入模式）
         let data_partition = 1;
+        
+        // 基于实际写入日志优化的搜索序列
+        let priority_blocks = vec![12, 10, 14, 16, 8, 6, 4, 18, 20, 22]; 
+        
+        info!("Priority search: trying most likely index locations in data partition");
+        for &block in &priority_blocks {
+            debug!("Trying priority data partition block {}", block);
+            
+            match self.scsi.locate_block(data_partition, block) {
+                Ok(()) => match self.try_read_index_at_current_position_sync() {
+                    Ok(xml_content) => {
+                        if xml_content.contains("<ltfsindex") && xml_content.contains("</ltfsindex>") {
+                            info!("✅ Found valid index in data partition at block {} (priority search)", block);
+                            return Ok(xml_content);
+                        }
+                    }
+                    Err(_) => continue,
+                },
+                Err(_) => continue,
+            }
+        }
+        
+        // 原有的EOD策略作为次要方法
+        info!("Priority search failed, trying EOD-based approach");
         
         // 先尝试定位到数据分区EOD
         match self.scsi.locate_block(data_partition, 0) {
@@ -6029,9 +6080,9 @@ impl TapeOperations {
             Err(e) => debug!("Failed to position to data partition: {}", e),
         }
 
-        // 回退策略：搜索数据分区的一些常见索引位置
+        // 回退策略：基于写入日志，直接搜索数据分区的实际索引位置
         info!("EOD strategy failed, trying common data partition locations");
-        let search_blocks = vec![10000, 5000, 2000, 1000]; // 数据分区的常见索引位置
+        let search_blocks = vec![12, 10, 14, 20, 15, 8, 6, 4]; // 基于实际写入位置优化的搜索顺序
 
         for &block in &search_blocks {
             debug!("Trying data partition block {}", block);
