@@ -1,6 +1,6 @@
 use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::{LtfsIndex, LtfsLabel};
-use crate::scsi::{MediaType, ScsiInterface};
+use crate::scsi::{MediaType, ScsiInterface, block_sizes};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1449,7 +1449,7 @@ impl TapeOperations {
                 let blocksize_bytes = &buffer[40..44];
                 if let Ok(blocksize_str) = std::str::from_utf8(blocksize_bytes) {
                     if let Ok(blocksize) = blocksize_str.trim().parse::<u32>() {
-                        if [65536, 524288, 1048576, 262144, 131072].contains(&blocksize) {
+                        if [block_sizes::LTO_BLOCK_SIZE_64K, block_sizes::LTO_BLOCK_SIZE, 1048576, 262144, 131072].contains(&blocksize) {
                             info!("从VOL1标签提取到blocksize: {}", blocksize);
                             plabel.blocksize = blocksize;
                         }
@@ -1607,8 +1607,8 @@ impl TapeOperations {
             info!("High zero ratio detected, using 512KB blocksize");
         } else if non_zero_count > 32768 {
             // 较多数据，可能是标准blocksize
-            plabel.blocksize = 65536; // 64KB
-            info!("Standard data pattern detected, using 64KB blocksize");
+            plabel.blocksize = block_sizes::LTO_BLOCK_SIZE; // LTFSCopyGUI兼容的512KB
+            info!("Standard data pattern detected, using LTFSCopyGUI compatible blocksize: {}", block_sizes::LTO_BLOCK_SIZE);
         } else {
             // 默认使用常见的512KB
             plabel.blocksize = 524288;
@@ -4032,7 +4032,7 @@ impl TapeOperations {
                 "      Effective Capacity: {:.2} GB (with compression)",
                 total_gb * space_info.compression_ratio
             );
-            println!("      Block Size: 64 KB (Standard)");
+            println!("      Block Size: {} KB (LTFSCopyGUI Compatible)", block_sizes::LTO_BLOCK_SIZE / 1024);
 
             if let Some(ref index) = self.index {
                 let file_count = index.extract_tape_file_locations().len();
@@ -4145,7 +4145,7 @@ impl TapeOperations {
                 "      Effective Capacity: {:.2} GB (with compression)",
                 total_gb * 2.5
             );
-            println!("      Block Size: 64 KB");
+            println!("      Block Size: {} KB", block_sizes::LTO_BLOCK_SIZE / 1024);
         }
 
         println!("\n⚠️  Note: This is simulated data. Connect to a real tape device for actual space information.");

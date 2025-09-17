@@ -939,7 +939,7 @@ impl ScsiInterface {
         // 让SCSI驱动返回实际读取的字节数或错误信息
         
         // For large block counts, break into smaller chunks to avoid SCSI timeout
-        const MAX_BLOCKS_PER_READ: u32 = 256; // 16MB chunks (256 * 64KB)
+        const MAX_BLOCKS_PER_READ: u32 = 256; // 128MB chunks (256 * 512KB)
         
         if block_count <= MAX_BLOCKS_PER_READ {
             // Direct read for smaller requests

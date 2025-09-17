@@ -988,7 +988,7 @@ impl FileExtent {
         }
 
         // Check block alignment for byte_offset
-        const BLOCK_SIZE: u64 = 65536; // 64KB LTO block size
+        const BLOCK_SIZE: u64 = crate::scsi::block_sizes::LTO_BLOCK_SIZE as u64; // LTFSCopyGUI兼容的512KB块大小
         if self.byte_offset >= BLOCK_SIZE {
             return Err(crate::error::RustLtfsError::parse(format!(
                 "Byte offset {} exceeds block size {}",
@@ -1250,8 +1250,9 @@ impl LtfsIndex {
 impl TapeDataExtent {
     /// 计算extent在磁带上的结束位置
     pub fn end_block(&self) -> u64 {
-        // 假设每个块64KB
-        self.start_block + ((self.byte_count + 65535) / 65536)
+        // 使用LTFSCopyGUI兼容的512KB块大小计算
+        const BLOCK_SIZE: u64 = crate::scsi::block_sizes::LTO_BLOCK_SIZE as u64;
+        self.start_block + ((self.byte_count + BLOCK_SIZE - 1) / BLOCK_SIZE)
     }
 
     /// 检查是否在数据分区
