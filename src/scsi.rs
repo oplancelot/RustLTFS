@@ -16,11 +16,16 @@ use winapi::{
         winnt::{GENERIC_READ, GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE},
         errhandlingapi::GetLastError,
     },
+    ctypes::c_void,
 };
 
 // Define IOCTL_SCSI_PASS_THROUGH_DIRECT constant
 #[cfg(windows)]
 const IOCTL_SCSI_PASS_THROUGH_DIRECT: u32 = 0x0004D014;
+
+// Define IOCTL_SCSI_PASS_THROUGH constant  
+#[cfg(windows)]
+const IOCTL_SCSI_PASS_THROUGH: u32 = 0x0004D004;
 
 // Type aliases for non-Windows platforms
 #[cfg(not(windows))]
@@ -66,6 +71,25 @@ struct ScsiPassThroughDirect {
     data_transfer_length: ULONG,
     timeout_value: ULONG,
     data_buffer: PVOID,
+    sense_info_offset: ULONG,
+    cdb: [UCHAR; 16],
+}
+
+/// SCSI Pass Through structure (corresponds to SCSI_PASS_THROUGH in C code)
+#[repr(C)]
+#[derive(Debug)]
+struct ScsiPassThrough {
+    length: USHORT,
+    scsi_status: UCHAR,
+    path_id: UCHAR,
+    target_id: UCHAR,
+    lun: UCHAR,
+    cdb_length: UCHAR,
+    sense_info_length: UCHAR,
+    data_in: UCHAR,
+    data_transfer_length: ULONG,
+    timeout_value: ULONG,
+    data_buffer_offset: ULONG,
     sense_info_offset: ULONG,
     cdb: [UCHAR; 16],
 }
@@ -171,6 +195,36 @@ pub struct ScsiInterface {
     device_handle: Option<DeviceHandle>,
     drive_type: DriveType,
     allow_partition: bool,
+}
+
+/// Build SCSI Pass Through structure for simple commands
+#[cfg(windows)]
+fn build_scsi_pass_through(
+    cdb: &[u8],
+    _data_buffer: Option<&mut [u8]>,
+    data_direction: u8,
+) -> ScsiPassThrough {
+    let mut scsi_pass_through = ScsiPassThrough {
+        length: std::mem::size_of::<ScsiPassThrough>() as USHORT,
+        scsi_status: 0,
+        path_id: 0,
+        target_id: 0,
+        lun: 0,
+        cdb_length: cdb.len() as UCHAR,
+        sense_info_length: SENSE_INFO_LEN as UCHAR,
+        data_in: data_direction,
+        data_transfer_length: 0,
+        timeout_value: 30, // 30 second timeout
+        data_buffer_offset: std::mem::size_of::<ScsiPassThrough>() as ULONG,
+        sense_info_offset: std::mem::size_of::<ScsiPassThrough>() as ULONG,
+        cdb: [0; 16],
+    };
+    
+    // Copy CDB
+    let copy_len = std::cmp::min(cdb.len(), 16);
+    scsi_pass_through.cdb[..copy_len].copy_from_slice(&cdb[..copy_len]);
+    
+    scsi_pass_through
 }
 
 /// Device handle wrapper that ensures proper resource cleanup
@@ -2341,7 +2395,8 @@ impl ScsiInterface {
         {
             use std::ptr;
             
-            if let Some(handle) = self.device_handle {
+            if let Some(device_handle) = &self.device_handle {
+                let handle = device_handle.handle;
                 let cdb = [0x17, 0x00, 0x00, 0x00, 0x00, 0x00]; // RELEASE(6) command
                 let mut scsi_pass_through = build_scsi_pass_through(
                     &cdb,
@@ -2370,10 +2425,10 @@ impl ScsiInterface {
                     )));
                 }
                 
-                if scsi_pass_through.ScsiStatus != 0 {
+                if scsi_pass_through.scsi_status != 0 {
                     return Err(crate::error::RustLtfsError::scsi(format!(
                         "RELEASE UNIT failed with SCSI status: 0x{:02X}", 
-                        scsi_pass_through.ScsiStatus
+                        scsi_pass_through.scsi_status
                     )));
                 }
                 
@@ -2401,7 +2456,8 @@ impl ScsiInterface {
         {
             use std::ptr;
             
-            if let Some(handle) = self.device_handle {
+            if let Some(device_handle) = &self.device_handle {
+                let handle = device_handle.handle;
                 let prevent_flag = if allow { 0x00 } else { 0x01 };
                 let cdb = [0x1E, 0x00, 0x00, 0x00, prevent_flag, 0x00]; // PREVENT ALLOW MEDIUM REMOVAL command
                 let mut scsi_pass_through = build_scsi_pass_through(
@@ -2431,10 +2487,10 @@ impl ScsiInterface {
                     )));
                 }
                 
-                if scsi_pass_through.ScsiStatus != 0 {
+                if scsi_pass_through.scsi_status != 0 {
                     return Err(crate::error::RustLtfsError::scsi(format!(
                         "ALLOW/PREVENT MEDIA REMOVAL failed with SCSI status: 0x{:02X}", 
-                        scsi_pass_through.ScsiStatus
+                        scsi_pass_through.scsi_status
                     )));
                 }
                 
