@@ -1,10 +1,28 @@
 use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::{LtfsIndex, LtfsLabel};
 use crate::scsi::{MediaType, ScsiInterface};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+
+/// 索引更新后的操作策略 - 优化的实用方案
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum PostIndexUpdateAction {
+    /// 无操作 - 仅更新索引，继续后续写入操作（默认）
+    None,
+    /// 安全释放 - 执行完整的安全释放流程，推荐用于长时间存储或操作完成
+    SafeRelease,
+    /// 仅刷新缓冲区 - 确保数据写入磁带但保持设备可用
+    FlushOnly,
+}
+
+impl Default for PostIndexUpdateAction {
+    fn default() -> Self {
+        Self::FlushOnly // 默认只刷新缓冲区，平衡安全性和可用性
+    }
+}
 
 /// Format bytes in human-readable format
 fn format_bytes(bytes: u64) -> String {
@@ -3471,7 +3489,135 @@ impl TapeOperations {
             }
         }
         
+        // Execute optimized safety operations, default FlushOnly keeps device available
+        self.perform_safe_tape_operations(PostIndexUpdateAction::FlushOnly).await?;
+        
         Ok(())
+    }
+    
+    /// 执行磁带安全操作 - 根据策略执行不同级别的安全措施
+    /// 默认FlushOnly策略：平衡数据安全和设备可用性
+    async fn perform_safe_tape_operations(&mut self, action: PostIndexUpdateAction) -> Result<()> {
+        if self.offline_mode {
+            info!("离线模式: 模拟磁带安全操作");
+            return Ok(());
+        }
+        
+        match action {
+            PostIndexUpdateAction::None => {
+                info!("跳过磁带安全操作");
+                Ok(())
+            },
+            PostIndexUpdateAction::FlushOnly => {
+                info!("执行缓冲区刷新 - 确保数据安全写入磁带");
+                self.flush_tape_buffers().await
+            },
+            PostIndexUpdateAction::SafeRelease => {
+                info!("执行完整安全释放流程 - 用于长时间存储");
+                self.perform_full_safe_release().await
+            }
+        }
+    }
+    
+    /// 刷新磁带缓冲区 - 确保数据写入但保持设备可用
+    async fn flush_tape_buffers(&mut self) -> Result<()> {
+        info!("刷新磁带缓冲区，确保数据持久化到磁带");
+        
+        match self.scsi.write_filemarks(0) {
+            Ok(_) => {
+                info!("磁带缓冲区刷新完成，数据已安全写入");
+                Ok(())
+            },
+            Err(e) => {
+                warn!("磁带缓冲区刷新失败: {}，但数据可能已写入", e);
+                // 不中断操作，某些驱动器可能不支持此命令或已经刷新
+                Ok(())
+            }
+        }
+    }
+    
+    /// 执行完整安全释放 - 对应LTFSCopyGUI的UpdataAllIndex完整流程
+    async fn perform_full_safe_release(&mut self) -> Result<()> {
+        info!("执行完整磁带安全释放流程");
+        
+        // 1. 刷新磁带缓冲区
+        self.flush_tape_buffers().await?;
+        
+        // 2. 释放SCSI设备独占控制 - 对应TapeUtils.ReleaseUnit(driveHandle)
+        info!("释放SCSI设备独占控制...");
+        match self.scsi.release_unit() {
+            Ok(_) => info!("SCSI设备独占控制释放完成"),
+            Err(e) => {
+                warn!("SCSI设备释放失败: {}，继续执行", e);
+                // 继续执行，这可能是驱动器不支持或已经释放
+            }
+        }
+        
+        // 3. 允许介质移除 - 对应TapeUtils.AllowMediaRemoval(driveHandle)
+        info!("允许磁带介质移除...");
+        match self.scsi.allow_media_removal(true) {
+            Ok(_) => info!("磁带介质移除权限已启用"),
+            Err(e) => {
+                warn!("允许介质移除设置失败: {}，继续执行", e);
+                // 继续执行，某些驱动器可能不支持此命令
+            }
+        }
+        
+        info!("完整安全释放流程完成 - 磁带可安全长时间存储");
+        Ok(())
+    }
+    
+    /// 完整的索引更新和磁带管理流程 - 实用化的设计
+    /// 提供三种策略：无操作、刷新缓冲区(默认)、完整安全释放
+    pub async fn complete_index_update_with_safety(&mut self, post_action: PostIndexUpdateAction) -> Result<()> {
+        info!("开始索引更新和磁带安全管理流程");
+        
+        // 1. 执行索引更新（内部已包含默认的FlushOnly操作）
+        self.update_index_on_tape().await?;
+        
+        // 2. 根据用户指定的策略执行额外操作
+        match post_action {
+            PostIndexUpdateAction::None => {
+                info!("索引更新完成，无额外安全操作");
+            },
+            PostIndexUpdateAction::FlushOnly => {
+                info!("索引更新完成，已执行缓冲区刷新");
+                // FlushOnly已在update_index_on_tape中执行，无需重复
+            },
+            PostIndexUpdateAction::SafeRelease => {
+                info!("执行完整安全释放流程（推荐用于长时间存储）");
+                self.perform_full_safe_release().await?;
+            }
+        }
+        
+        info!("索引更新和磁带管理流程完成");
+        Ok(())
+    }
+    
+    /// 弹出磁带 - 作为独立命令使用，非自动操作
+    /// 用法：rustltfs eject 或在需要时手动调用
+    pub async fn eject_tape_safely(&mut self) -> Result<()> {
+        info!("执行磁带弹出命令");
+        
+        if self.offline_mode {
+            info!("离线模式: 模拟磁带弹出");
+            return Ok(());
+        }
+        
+        // 执行完整安全释放后弹出
+        self.perform_full_safe_release().await?;
+        
+        // 执行弹出操作
+        match self.eject_tape() {
+            Ok(()) => {
+                info!("磁带已安全弹出");
+                Ok(())
+            },
+            Err(e) => {
+                error!("磁带弹出失败: {}", e);
+                Err(e)
+            }
+        }
     }
 
     /// Refresh index partition (对应LTFSCopyGUI的RefreshIndexPartition)

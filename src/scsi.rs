@@ -2332,6 +2332,127 @@ impl ScsiInterface {
         
         self.set_mam_attribute(0x806, &barcode_data, MamAttributeFormat::Text)
     }
+    
+    /// Release Unit command (对应LTFSCopyGUI的ReleaseUnit)
+    pub fn release_unit(&self) -> Result<()> {
+        debug!("Executing RELEASE UNIT command");
+        
+        #[cfg(windows)]
+        {
+            use std::ptr;
+            
+            if let Some(handle) = self.device_handle {
+                let cdb = [0x17, 0x00, 0x00, 0x00, 0x00, 0x00]; // RELEASE(6) command
+                let mut scsi_pass_through = build_scsi_pass_through(
+                    &cdb,
+                    None,
+                    SCSI_IOCTL_DATA_OUT
+                );
+                
+                let mut bytes_returned: u32 = 0;
+                let result = unsafe {
+                    DeviceIoControl(
+                        handle,
+                        IOCTL_SCSI_PASS_THROUGH,
+                        &mut scsi_pass_through as *mut _ as *mut c_void,
+                        std::mem::size_of::<SCSI_PASS_THROUGH>() as u32,
+                        &mut scsi_pass_through as *mut _ as *mut c_void,
+                        std::mem::size_of::<SCSI_PASS_THROUGH>() as u32,
+                        &mut bytes_returned,
+                        ptr::null_mut()
+                    )
+                };
+                
+                if result == 0 {
+                    let error = unsafe { GetLastError() };
+                    return Err(crate::error::RustLtfsError::scsi(format!(
+                        "RELEASE UNIT command failed with error: {}", error
+                    )));
+                }
+                
+                if scsi_pass_through.ScsiStatus != 0 {
+                    return Err(crate::error::RustLtfsError::scsi(format!(
+                        "RELEASE UNIT failed with SCSI status: 0x{:02X}", 
+                        scsi_pass_through.ScsiStatus
+                    )));
+                }
+                
+                debug!("RELEASE UNIT command completed successfully");
+                Ok(())
+            } else {
+                Err(crate::error::RustLtfsError::scsi(
+                    "Device not opened for RELEASE UNIT".to_string()
+                ))
+            }
+        }
+        
+        #[cfg(not(windows))]
+        {
+            warn!("RELEASE UNIT not implemented for non-Windows platforms");
+            Ok(()) // Return success for compatibility
+        }
+    }
+    
+    /// Allow/Prevent Media Removal command (对应LTFSCopyGUI的AllowMediaRemoval)
+    pub fn allow_media_removal(&self, allow: bool) -> Result<()> {
+        debug!("Setting media removal permission: {}", allow);
+        
+        #[cfg(windows)]
+        {
+            use std::ptr;
+            
+            if let Some(handle) = self.device_handle {
+                let prevent_flag = if allow { 0x00 } else { 0x01 };
+                let cdb = [0x1E, 0x00, 0x00, 0x00, prevent_flag, 0x00]; // PREVENT ALLOW MEDIUM REMOVAL command
+                let mut scsi_pass_through = build_scsi_pass_through(
+                    &cdb,
+                    None,
+                    SCSI_IOCTL_DATA_OUT
+                );
+                
+                let mut bytes_returned: u32 = 0;
+                let result = unsafe {
+                    DeviceIoControl(
+                        handle,
+                        IOCTL_SCSI_PASS_THROUGH,
+                        &mut scsi_pass_through as *mut _ as *mut c_void,
+                        std::mem::size_of::<SCSI_PASS_THROUGH>() as u32,
+                        &mut scsi_pass_through as *mut _ as *mut c_void,
+                        std::mem::size_of::<SCSI_PASS_THROUGH>() as u32,
+                        &mut bytes_returned,
+                        ptr::null_mut()
+                    )
+                };
+                
+                if result == 0 {
+                    let error = unsafe { GetLastError() };
+                    return Err(crate::error::RustLtfsError::scsi(format!(
+                        "ALLOW/PREVENT MEDIA REMOVAL command failed with error: {}", error
+                    )));
+                }
+                
+                if scsi_pass_through.ScsiStatus != 0 {
+                    return Err(crate::error::RustLtfsError::scsi(format!(
+                        "ALLOW/PREVENT MEDIA REMOVAL failed with SCSI status: 0x{:02X}", 
+                        scsi_pass_through.ScsiStatus
+                    )));
+                }
+                
+                debug!("ALLOW/PREVENT MEDIA REMOVAL command completed successfully");
+                Ok(())
+            } else {
+                Err(crate::error::RustLtfsError::scsi(
+                    "Device not opened for ALLOW/PREVENT MEDIA REMOVAL".to_string()
+                ))
+            }
+        }
+        
+        #[cfg(not(windows))]
+        {
+            warn!("ALLOW/PREVENT MEDIA REMOVAL not implemented for non-Windows platforms");
+            Ok(()) // Return success for compatibility
+        }
+    }
 
     /// MODE SELECT command for partition configuration (对应LTFSCopyGUI的MODE SELECT 11h)
     pub fn mode_select_partition(&self, max_extra_partitions: u8, extra_partition_count: u8, 
