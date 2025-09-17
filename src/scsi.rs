@@ -2254,11 +2254,15 @@ pub enum LoadOption {
     Retension = 2,
 }
 
-/// Block size constants for LTO tapes
+/// Block size constants for LTO tapes  
 pub mod block_sizes {
-    pub const LTO_BLOCK_SIZE: u32 = 65536; // 64KB standard LTO block size
+    // LTFSCopyGUI兼容的标准块大小 (524288字节 = 512KB)
+    pub const LTO_BLOCK_SIZE: u32 = 524288; // 512KB - LTFSCopyGUI compatible
     pub const MIN_BLOCK_SIZE: u32 = 512;
     pub const MAX_BLOCK_SIZE: u32 = 1048576; // 1MB maximum
+    
+    // 原64KB块大小保留作为备用（如果需要）
+    pub const LTO_BLOCK_SIZE_64K: u32 = 65536; // 64KB legacy
 }
 
 /// Helper function: Convert byte array to safe string
