@@ -1323,3 +1323,108 @@ mod tests {
         assert!(!entry.is_directory());
     }
 }
+
+/// LTFS分区标签结构 - 基于LTFSCopyGUI完整实现
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename = "label")]
+pub struct LtfsLabel {
+    #[serde(rename = "@version")]
+    pub version: String,
+    pub creator: String,
+    pub formattime: String,
+    pub volumeuuid: String,
+    pub location: LabelLocation,
+    pub partitions: PartitionInfo,
+    pub blocksize: u32,
+    pub compression: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LabelLocation {
+    pub partition: PartitionLabel,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PartitionInfo {
+    pub index: PartitionLabel,
+    pub data: PartitionLabel,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PartitionLabel {
+    #[serde(rename = "a")]
+    A,
+    #[serde(rename = "b")]
+    B,
+}
+
+impl Default for LtfsLabel {
+    fn default() -> Self {
+        use chrono::Utc;
+        use uuid::Uuid;
+        
+        Self {
+            version: "2.4.0".to_string(),
+            creator: "RustLTFS".to_string(),
+            formattime: Utc::now().format("%Y-%m-%dT%H:%M:%S.%f00Z").to_string(),
+            volumeuuid: Uuid::new_v4().to_string(),
+            location: LabelLocation {
+                partition: PartitionLabel::A,
+            },
+            partitions: PartitionInfo {
+                index: PartitionLabel::A,
+                data: PartitionLabel::B,
+            },
+            blocksize: 524288,
+            compression: true,
+        }
+    }
+}
+
+impl LtfsLabel {
+    /// 从XML字符串解析LTFS标签 - 完全基于LTFSCopyGUI的FromXML逻辑
+    pub fn from_xml(xml_text: &str) -> Result<Self> {
+        // 使用serde-xml-rs进行完整的XML反序列化，如同LTFSCopyGUI的XmlSerializer.Deserialize
+        serde_xml_rs::from_str(xml_text).map_err(|e| {
+            crate::error::RustLtfsError::ltfs_index(format!(
+                "Failed to parse LTFS label XML: {}",
+                e
+            ))
+        })
+    }
+    
+    /// 序列化为XML字符串 - 对应LTFSCopyGUI的GetSerializedText
+    pub fn to_xml(&self) -> Result<String> {
+        serde_xml_rs::to_string(self).map_err(|e| {
+            crate::error::RustLtfsError::ltfs_index(format!(
+                "Failed to serialize LTFS label to XML: {}",
+                e
+            ))
+        })
+    }
+    
+    /// 克隆标签 - 对应LTFSCopyGUI的Clone方法
+    pub fn clone_label(&self) -> Result<Self> {
+        let xml_text = self.to_xml()?;
+        Self::from_xml(&xml_text)
+    }
+    
+    /// 检查是否为数据分区标签
+    pub fn is_data_partition(&self) -> bool {
+        matches!(self.location.partition, PartitionLabel::B)
+    }
+    
+    /// 检查是否为索引分区标签
+    pub fn is_index_partition(&self) -> bool {
+        matches!(self.location.partition, PartitionLabel::A)
+    }
+    
+    /// 获取分区标签的字符串表示
+    pub fn get_partition_string(&self) -> String {
+        match self.location.partition {
+            PartitionLabel::A => "a".to_string(),
+            PartitionLabel::B => "b".to_string(),
+        }
+    }
+}

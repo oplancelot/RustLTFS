@@ -1,5 +1,5 @@
 use crate::error::{Result, RustLtfsError};
-use crate::ltfs_index::LtfsIndex;
+use crate::ltfs_index::{LtfsIndex, LtfsLabel};
 use crate::scsi::{MediaType, ScsiInterface};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -93,30 +93,6 @@ struct PartitionInfo {
 struct IndexLocation {
     partition: String,
     start_block: u64,
-}
-
-/// LTFS分区标签结构 (对应LTFSCopyGUI的ltfslabel)
-#[derive(Debug, Clone)]
-pub struct LtfsPartitionLabel {
-    pub volume_uuid: String,
-    pub blocksize: u32,
-    pub compression: bool,
-    pub index_partition: u8, // 通常是0 (partition a)
-    pub data_partition: u8,  // 通常是1 (partition b)
-    pub format_time: String,
-}
-
-impl Default for LtfsPartitionLabel {
-    fn default() -> Self {
-        Self {
-            volume_uuid: String::new(),
-            blocksize: crate::scsi::block_sizes::LTO_BLOCK_SIZE, // 默认64KB
-            compression: false,
-            index_partition: 0,
-            data_partition: 1,
-            format_time: String::new(),
-        }
-    }
 }
 
 /// Path content types for describing tape path contents
@@ -290,13 +266,20 @@ pub struct TapeOperations {
     block_size: u32,
     tape_drive: String,
     scsi: ScsiInterface,
-    partition_label: Option<LtfsPartitionLabel>, // 对应LTFSCopyGUI的plabel
+    partition_label: Option<LtfsLabel>, // 对应LTFSCopyGUI的plabel
     write_queue: Vec<FileWriteEntry>,
     write_progress: WriteProgress,
     write_options: WriteOptions,
     modified: bool,   // 对应LTFSCopyGUI的Modified标志
     stop_flag: bool,  // 对应LTFSCopyGUI的StopFlag
     pause_flag: bool, // 对应LTFSCopyGUI的Pause
+    
+    // 新增LTFSCopyGUI兼容字段
+    current_height: Option<u64>,        // 对应LTFSCopyGUI的CurrentHeight
+    data_partition: u8,                 // 对应LTFSCopyGUI的DataPartition (动态确定)
+    index_partition: u8,                // 对应LTFSCopyGUI的IndexPartition (动态确定)
+    partition_mapping_detected: bool,   // 是否已检测分区映射
+    extra_partition_count: u8,          // 对应LTFSCopyGUI的ExtraPartitionCount
 }
 
 impl TapeOperations {
@@ -319,6 +302,13 @@ impl TapeOperations {
             modified: false,
             stop_flag: false,
             pause_flag: false,
+            
+            // 新增字段初始化（LTFSCopyGUI兼容）
+            current_height: None,
+            data_partition: 1,              // 默认值，动态检测后更新
+            index_partition: 0,             // 默认值，动态检测后更新
+            partition_mapping_detected: false,
+            extra_partition_count: 0,       // 默认单分区，动态检测后更新
         }
     }
 
@@ -476,7 +466,19 @@ impl TapeOperations {
 
         // Set a default block size, can be updated later if needed
         self.block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE;
-        self.partition_label = Some(LtfsPartitionLabel::default());
+        self.partition_label = Some(LtfsLabel::default());
+
+        // 执行动态分区检测 (基于LTFSCopyGUI逻辑)
+        info!("Performing dynamic partition mapping detection...");
+        match self.detect_partition_mapping().await {
+            Ok(()) => {
+                info!("Partition mapping detection completed: DataPartition={}, IndexPartition={}", 
+                      self.data_partition, self.index_partition);
+            }
+            Err(e) => {
+                warn!("Partition mapping detection failed: {}, using defaults", e);
+            }
+        }
 
         // Auto read LTFS index when device opened
         info!("Device opened, auto reading LTFS index ...");
@@ -701,7 +703,7 @@ impl TapeOperations {
                         potential_block
                     );
                     return Ok(IndexLocation {
-                        partition: "b".to_string(),
+                        partition: self.data_partition.to_string(),
                         start_block: potential_block,
                     });
                 }
@@ -1322,11 +1324,11 @@ impl TapeOperations {
     }
 
     /// 读取LTFS分区标签 (对应LTFSCopyGUI的plabel读取)
-    async fn read_partition_label(&mut self) -> Result<LtfsPartitionLabel> {
+    async fn read_partition_label(&mut self) -> Result<LtfsLabel> {
         info!("Reading LTFS partition label from tape");
 
         if self.offline_mode {
-            return Ok(LtfsPartitionLabel::default());
+            return Ok(LtfsLabel::default());
         }
 
         // LTFS分区标签通常位于分区a的block 0
@@ -1410,12 +1412,12 @@ impl TapeOperations {
     }
 
     /// 解析LTFS卷标签获取分区标签信息（使用严格的VOL1验证）
-    fn parse_ltfs_volume_label(&self, buffer: &[u8]) -> Result<LtfsPartitionLabel> {
+    fn parse_ltfs_volume_label(&self, buffer: &[u8]) -> Result<LtfsLabel> {
         // 首先进行严格的VOL1标签验证
         if self.parse_vol1_label(buffer)? {
             info!("找到有效的VOL1标签");
 
-            let mut plabel = LtfsPartitionLabel::default();
+            let mut plabel = LtfsLabel::default();
 
             // 从VOL1标签中提取额外信息（基于标准VOL1格式）
             // VOL1标签格式：
@@ -1569,10 +1571,10 @@ impl TapeOperations {
     }
 
     /// 启发式检测blocksize
-    fn detect_blocksize_heuristic(&self, buffer: &[u8]) -> Result<LtfsPartitionLabel> {
+    fn detect_blocksize_heuristic(&self, buffer: &[u8]) -> Result<LtfsLabel> {
         info!("Using heuristic blocksize detection");
 
-        let mut plabel = LtfsPartitionLabel::default();
+        let mut plabel = LtfsLabel::default();
 
         // 分析buffer中的模式来猜测blocksize
         // 如果buffer主要是零，可能使用了较大的blocksize
@@ -1965,61 +1967,41 @@ impl TapeOperations {
             .await
             .map_err(|e| RustLtfsError::file_operation(format!("Unable to read file: {}", e)))?;
 
-        // Position to data partition (partition B) for file data
-        let current_position = self.scsi.read_position()?;
-        info!(
-            "Current tape position: partition={}, block={}",
-            current_position.partition, current_position.block_number
-        );
-
-        // Move to data partition if not already there
-        let data_partition = 1; // Partition B
-        let write_start_block = current_position.block_number.max(100); // Start at block 100 for data
-
-        // 强制移动到数据分区，确保文件写入到正确的分区（LTFSCopyGUI兼容性）
-        info!("Ensuring position in data partition B for file write");
-        if current_position.partition != data_partition {
-            info!("Moving from partition {} to data partition {}", current_position.partition, data_partition);
-            self.scsi.locate_block(data_partition, write_start_block)?;
-            
-            // 确认分区切换成功
-            let new_position = self.scsi.read_position()?;
-            info!("Confirmed position after partition switch: partition={}, block={}", 
-                  new_position.partition, new_position.block_number);
-            
-            if new_position.partition != data_partition {
-                return Err(RustLtfsError::scsi(format!(
-                    "Failed to switch to data partition: expected partition {}, but at partition {}",
-                    data_partition, new_position.partition
-                )));
-            }
-        } else {
-            // 即使已经在数据分区，也要确保位置合适
-            info!("Already in data partition {}, verifying position", data_partition);
-            let safe_position = current_position.block_number.max(write_start_block);
-            if current_position.block_number < safe_position {
-                info!("Moving to safe write position at block {}", safe_position);
-                self.scsi.locate_block(data_partition, safe_position)?;
-                
-                // 确认位置更新成功
-                let new_position = self.scsi.read_position()?;
-                info!("Confirmed position after block update: partition={}, block={}", 
-                      new_position.partition, new_position.block_number);
-            }
+        // 调用LocateToWritePosition确保磁带在正确的写入位置（对应LTFSCopyGUI逻辑）
+        info!("执行LocateToWritePosition以确保正确的写入位置");
+        if !self.locate_to_write_position().await? {
+            return Err(RustLtfsError::scsi("LocateToWritePosition failed".to_string()));
         }
 
-        // Calculate blocks needed
-        let blocks_needed = (file_size + crate::scsi::block_sizes::LTO_BLOCK_SIZE as u64 - 1)
-            / crate::scsi::block_sizes::LTO_BLOCK_SIZE as u64;
-        let buffer_size =
-            blocks_needed as usize * crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
+        // 获取当前位置作为写入起始位置
+        let write_position = self.scsi.read_position()?;
+        info!(
+            "文件写入位置确认: partition={}, block={}",
+            write_position.partition, write_position.block_number
+        );
+
+        // 验证我们在数据分区（对应LTFSCopyGUI的分区验证）
+        if write_position.partition != self.data_partition {
+            return Err(RustLtfsError::scsi(format!(
+                "写入位置验证失败：期望数据分区 {} 但实际在分区 {}",
+                self.data_partition, write_position.partition
+            )));
+        }
+
+        // 计算需要的块数（使用动态blocksize）
+        let block_size = self.partition_label.as_ref()
+            .map(|plabel| plabel.blocksize as u64)
+            .unwrap_or(crate::scsi::block_sizes::LTO_BLOCK_SIZE as u64);
+            
+        let blocks_needed = (file_size + block_size - 1) / block_size;
+        let buffer_size = blocks_needed as usize * block_size as usize;
         let mut buffer = vec![0u8; buffer_size];
 
         // Copy file data to buffer (rest will be zero-padded)
         buffer[..file_content.len()].copy_from_slice(&file_content);
 
-        // Get position before writing for extent information
-        let write_position = self.scsi.read_position()?;
+        // 使用之前获取的写入位置进行文件数据写入
+        info!("开始写入文件数据到磁带，位置: P{} B{}", write_position.partition, write_position.block_number);
 
         // Write file data blocks
         let blocks_written = self.scsi.write_blocks(blocks_needed as u32, &buffer)?;
@@ -2080,8 +2062,8 @@ impl TapeOperations {
         let new_uid = current_index.highestfileuid.unwrap_or(0) + 1;
 
         let extent = crate::ltfs_index::FileExtent {
-            // 强制使用数据分区，按照LTFSCopyGUI逻辑文件应该写入数据分区b
-            partition: "b".to_string(),
+            // 使用动态检测的数据分区（对应LTFSCopyGUI的分区映射逻辑）
+            partition: self.data_partition.to_string(),
             start_block: write_position.block_number,
             byte_count: file_size,
             file_offset: 0,
@@ -2321,7 +2303,7 @@ impl TapeOperations {
             generationnumber: 1,
             updatetime: now.clone(),
             location: crate::ltfs_index::Location {
-                partition: "b".to_string(), // Data partition
+                partition: self.data_partition.to_string(), // Data partition
                 startblock: 0,
             },
             previousgenerationlocation: None,
@@ -2378,8 +2360,8 @@ impl TapeOperations {
         let new_uid = current_index.highestfileuid.unwrap_or(0) + 1;
 
         let extent = crate::ltfs_index::FileExtent {
-            // 强制使用数据分区，按照LTFSCopyGUI逻辑文件应该写入数据分区b
-            partition: "b".to_string(),
+            // 使用动态检测的数据分区（对应LTFSCopyGUI的分区映射逻辑）
+            partition: self.data_partition.to_string(),
             start_block: write_position.block_number,
             byte_count: file_size,
             file_offset: 0,
@@ -3391,7 +3373,7 @@ impl TapeOperations {
         // Update index metadata (对应LTFSCopyGUI的索引元数据更新)
         current_index.generationnumber += 1;
         current_index.updatetime = chrono::Utc::now().to_rfc3339();
-        current_index.location.partition = "b".to_string(); // Data partition
+        current_index.location.partition = self.data_partition.to_string(); // Data partition
 
         // Store previous generation location if exists (对应LTFSCopyGUI的previousgenerationlocation)
         if let Some(ref existing_index) = &self.index {
@@ -3523,10 +3505,9 @@ impl TapeOperations {
         let has_index_partition = self.detect_index_partition_support().await?;
 
         if has_index_partition {
-            // Move to index partition (partition A) and locate to filemark 3
-            info!("Moving to index partition");
-            let index_partition = 0; // Partition A
-            self.scsi.locate_block(index_partition, 3)?; // Locate to 3rd filemark
+            // Move to index partition and locate to filemark 3
+            info!("Moving to index partition {}", self.index_partition);
+            self.scsi.locate_block(self.index_partition, 3)?; // Locate to 3rd filemark
 
             // Write filemark in index partition
             self.scsi.write_filemarks(1)?;
@@ -3539,7 +3520,7 @@ impl TapeOperations {
 
             let index_position = self.scsi.read_position()?;
             current_index.location.startblock = index_position.block_number + 1;
-            current_index.location.partition = "a".to_string();
+            current_index.location.partition = self.index_partition.to_string();
 
             info!(
                 "Index partition position updated: block {}",
@@ -5184,9 +5165,8 @@ impl TapeOperations {
         let partition_count = self.detect_partition_count()?;
         info!("Detected {} partitions on tape", partition_count);
 
-        // 定位到索引分区(P0或P255)
-        let index_partition = if partition_count > 1 { 0 } else { 0 };
-        self.scsi.locate_block(index_partition, 0)?;
+        // 定位到索引分区
+        self.scsi.locate_block(self.index_partition, 0)?;
 
         // 读取并验证VOL1标签（使用LTFSCopyGUI兼容的缓冲区大小）
         // 对应LTFSCopyGUI: ReadBlock(driveHandle, senseData)
@@ -5269,7 +5249,7 @@ impl TapeOperations {
         info!("✅ Confirmed LTFS formatted tape with valid VOL1 label");
 
         // 读取LTFS标签
-        self.scsi.locate_block(index_partition, 1)?;
+        self.scsi.locate_block(self.index_partition, 1)?;
         let block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
         let mut ltfs_label_buffer = vec![0u8; block_size];
         let _bytes_read = self.scsi.read_blocks(1, &mut ltfs_label_buffer)?;
@@ -5600,11 +5580,8 @@ impl TapeOperations {
         // 策略1: 跳过VOL1验证，直接尝试读取LTFS标签和索引
         debug!("Strategy 1: Bypassing VOL1, attempting direct LTFS label reading");
 
-        let partition_count = self.detect_partition_count()?;
-        let index_partition = if partition_count > 1 { 0 } else { 0 };
-
         // 尝试读取LTFS标签 (block 1)
-        match self.scsi.locate_block(index_partition, 1) {
+        match self.scsi.locate_block(self.index_partition, 1) {
             Ok(()) => {
                 let block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
                 let mut ltfs_label_buffer = vec![0u8; block_size];
@@ -5642,10 +5619,10 @@ impl TapeOperations {
         for &block in &common_locations {
             debug!(
                 "Trying common location: partition {}, block {}",
-                index_partition, block
+                self.index_partition, block
             );
 
-            match self.scsi.locate_block(index_partition, block) {
+            match self.scsi.locate_block(self.index_partition, block) {
                 Ok(()) => match self.try_read_index_at_current_position_sync() {
                     Ok(xml_content) => {
                         if !xml_content.trim().is_empty()
@@ -5667,7 +5644,8 @@ impl TapeOperations {
 
         // 策略3: 检测分区策略并使用相应的读取方法
         debug!("Strategy 3: Applying partition-specific strategies");
-
+        
+        let partition_count = self.detect_partition_count()?;
         if partition_count > 1 {
             info!("Multi-partition tape detected, trying data partition strategy");
 
@@ -5871,8 +5849,7 @@ impl TapeOperations {
         info!("🔄 Starting complete LTFSCopyGUI alternative index reading strategies");
 
         let partition_count = self.detect_partition_count()?;
-        let index_partition = if partition_count > 1 { 0 } else { 0 };
-
+        
         // 策略0 (最高优先级): 按照LTFSCopyGUI逻辑优先读取数据分区索引  
         info!("Strategy 0 (Highest Priority): Reading from data partition first (LTFSCopyGUI logic)");
         
@@ -5894,10 +5871,10 @@ impl TapeOperations {
         for &block in &common_locations {
             debug!(
                 "Trying common location: partition {}, block {}",
-                index_partition, block
+                self.index_partition, block
             );
 
-            match self.scsi.locate_block(index_partition, block) {
+            match self.scsi.locate_block(self.index_partition, block) {
                 Ok(()) => match self.try_read_index_at_current_position_sync() {
                     Ok(xml_content) => {
                         if !xml_content.trim().is_empty()
@@ -5943,7 +5920,7 @@ impl TapeOperations {
         info!("Strategy 2: Bypassing VOL1, attempting direct LTFS label reading");
 
         // 尝试读取LTFS标签 (block 1)
-        match self.scsi.locate_block(index_partition, 1) {
+        match self.scsi.locate_block(self.index_partition, 1) {
             Ok(()) => {
                 let block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
                 let mut ltfs_label_buffer = vec![0u8; block_size];
@@ -6369,5 +6346,233 @@ impl TapeOperations {
             encryption_algorithm: Some("AES-256".to_string()),
             key_management: Some("Application Managed".to_string()),
         })
+    }
+
+    /// 动态检测分区映射 - 对应LTFSCopyGUI的分区检测逻辑
+    async fn detect_partition_mapping(&mut self) -> Result<()> {
+        if self.partition_mapping_detected {
+            return Ok(());
+        }
+
+        info!("Starting dynamic partition mapping detection (LTFSCopyGUI compatible)");
+
+        if self.offline_mode {
+            info!("Offline mode: using default dual-partition mapping");
+            self.data_partition = 1;
+            self.index_partition = 0;
+            self.extra_partition_count = 1;
+            self.partition_mapping_detected = true;
+            return Ok(());
+        }
+
+        // 步骤1：检测ExtraPartitionCount
+        match self.check_multi_partition_support().await {
+            Ok(has_multi_partition) => {
+                if has_multi_partition {
+                    self.extra_partition_count = 1;
+                    info!("Multi-partition tape detected (ExtraPartitionCount = 1)");
+                } else {
+                    self.extra_partition_count = 0;
+                    info!("Single-partition tape detected (ExtraPartitionCount = 0)");
+                    // 单分区磁带：索引和数据都在同一分区
+                    self.data_partition = 0;
+                    self.index_partition = 0;
+                    self.partition_mapping_detected = true;
+                    return Ok(());
+                }
+            }
+            Err(e) => {
+                warn!("Failed to detect partition count: {}, assuming single-partition", e);
+                self.extra_partition_count = 0;
+                self.data_partition = 0;
+                self.index_partition = 0;
+                self.partition_mapping_detected = true;
+                return Ok(());
+            }
+        }
+
+        // 步骤2：读取磁带标签确定分区映射（对应LTFSCopyGUI逻辑）
+        match self.read_partition_label_for_mapping().await {
+            Ok(()) => {
+                info!("Partition mapping detected successfully: DataPartition={}, IndexPartition={}", 
+                      self.data_partition, self.index_partition);
+            }
+            Err(e) => {
+                warn!("Failed to read partition label: {}, using default mapping", e);
+                // 使用默认映射：通常数据分区是1，索引分区是0
+                self.data_partition = 1;
+                self.index_partition = 0;
+            }
+        }
+
+        self.partition_mapping_detected = true;
+        Ok(())
+    }
+
+    /// 读取分区标签确定映射 - 对应LTFSCopyGUI的plabel读取逻辑
+    async fn read_partition_label_for_mapping(&mut self) -> Result<()> {
+        // 保存当前位置
+        let current_position = self.scsi.read_position()?;
+        
+        // 定位到开始位置读取标签
+        self.scsi.locate_block(0, 0)?;
+        
+        // 跳过VOL1标签，读取LTFS标签
+        match self.scsi.space(crate::scsi::SpaceType::FileMarks, 1) {
+            Ok(_) => {
+                // 读取LTFS partition label
+                let block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
+                let mut buffer = vec![0u8; block_size];
+                
+                match self.scsi.read_blocks(1, &mut buffer) {
+                    Ok(_) => {
+                        // 解析LTFS标签
+                        if let Ok(label_text) = String::from_utf8(buffer.clone()) {
+                            if let Some(partition_label) = self.parse_ltfs_partition_label(&label_text) {
+                                // 根据标签确定分区映射（LTFSCopyGUI逻辑）
+                                let current_pos = self.scsi.read_position()?;
+                                
+                                if partition_label.is_data_partition() {
+                                    // 当前在数据分区
+                                    self.data_partition = current_pos.partition;
+                                    self.index_partition = (self.data_partition + 1) % 2;
+                                    info!("Data partition detected at partition {}", self.data_partition);
+                                } else {
+                                    // 当前在索引分区  
+                                    self.index_partition = current_pos.partition;
+                                    self.data_partition = (self.index_partition + 1) % 2;
+                                    info!("Index partition detected at partition {}", self.index_partition);
+                                }
+                                
+                                self.partition_label = Some(partition_label);
+                                
+                                // 恢复原位置
+                                self.scsi.locate_block(current_position.partition, current_position.block_number)?;
+                                return Ok(());
+                            }
+                        }
+                    }
+                    Err(e) => debug!("Failed to read LTFS label: {}", e),
+                }
+            }
+            Err(e) => debug!("Failed to skip to LTFS label: {}", e),
+        }
+        
+        // 恢复原位置
+        self.scsi.locate_block(current_position.partition, current_position.block_number)?;
+        
+        Err(RustLtfsError::ltfs_index("Failed to read partition label".to_string()))
+    }
+
+    /// 解析LTFS分区标签 - 完整XML解析（完全基于LTFSCopyGUI的FromXML逻辑）
+    fn parse_ltfs_partition_label(&self, label_text: &str) -> Option<LtfsLabel> {
+        debug!("开始解析LTFS分区标签，文本长度: {}", label_text.len());
+        
+        // 完全基于LTFSCopyGUI的FromXML逻辑进行XML反序列化
+        match LtfsLabel::from_xml(label_text) {
+            Ok(label) => {
+                info!(
+                    "成功解析LTFS标签: version={}, blocksize={}, partition={:?}, data_partition={:?}, index_partition={:?}",
+                    label.version,
+                    label.blocksize,
+                    label.location.partition,
+                    label.partitions.data,
+                    label.partitions.index
+                );
+                Some(label)
+            }
+            Err(e) => {
+                warn!("LTFS标签XML解析失败: {}", e);
+                debug!("解析失败的XML内容: {}", label_text);
+                None
+            }
+        }
+    }
+    
+    /// LocateToWritePosition - 对应LTFSCopyGUI的LocateToWritePosition函数
+    /// 该函数确保磁带定位到正确的写入位置，包含完整的错误处理和用户确认逻辑
+    async fn locate_to_write_position(&mut self) -> Result<bool> {
+        info!("执行LocateToWritePosition，确保磁带在正确的写入位置");
+        
+        // 确保我们有有效的索引和分区信息
+        let current_index = self.schema.as_ref()
+            .ok_or_else(|| RustLtfsError::ltfs_index("No LTFS index available".to_string()))?;
+        
+        // 检查当前索引位置是否在索引分区（对应LTFSCopyGUI的判断逻辑）
+        let is_index_partition = current_index.location.partition == "a" || 
+                                current_index.location.partition == self.index_partition.to_string();
+        
+        if is_index_partition {
+            info!("当前索引在索引分区，需要定位到数据分区的上次写入位置");
+            
+            // 获取上次生成位置信息（对应schema.previousgenerationlocation）
+            if let Some(prev_location) = &current_index.previousgenerationlocation {
+                let target_partition = self.data_partition;
+                let target_block = prev_location.startblock;
+                
+                info!("定位到数据分区 {} 的块 {}", target_partition, target_block);
+                
+                // 执行带重试逻辑的定位操作（对应LTFSCopyGUI的While True循环）
+                loop {
+                    match self.scsi.locate_block(target_partition, target_block) {
+                        Ok(()) => {
+                            // 验证定位是否成功
+                            let current_pos = self.scsi.read_position()?;
+                            
+                            if current_pos.partition == target_partition && current_pos.block_number == target_block {
+                                info!("成功定位到写入位置: P{} B{}", current_pos.partition, current_pos.block_number);
+                                break;
+                            } else {
+                                warn!(
+                                    "定位验证失败 - 当前: P{} B{}, 期望: P{} B{}",
+                                    current_pos.partition, current_pos.block_number,
+                                    target_partition, target_block
+                                );
+                                
+                                // 在CLI环境中，我们可以选择自动重试或返回错误
+                                // 对应LTFSCopyGUI的用户确认对话框
+                                return Err(RustLtfsError::scsi(format!(
+                                    "无法定位到期望的写入位置。当前: P{} B{}, 期望: P{} B{}",
+                                    current_pos.partition, current_pos.block_number,
+                                    target_partition, target_block
+                                )));
+                            }
+                        }
+                        Err(e) => {
+                            error!("定位操作失败: {}", e);
+                            return Err(RustLtfsError::scsi(format!(
+                                "无法定位到写入位置: {}", e
+                            )));
+                        }
+                    }
+                }
+            } else {
+                return Err(RustLtfsError::ltfs_index(
+                    "No previous generation location found in index".to_string()
+                ));
+            }
+        } else {
+            info!("当前索引已在数据分区，无需额外定位");
+        }
+        
+        // 定位成功，现在需要定位到该分区的写入位置（EOD）
+        info!("定位到数据分区EOD位置");
+        match self.scsi.locate_to_eod(self.data_partition) {
+            Ok(()) => {
+                let final_pos = self.scsi.read_position()?;
+                info!("定位到写入位置完成: P{} B{}", final_pos.partition, final_pos.block_number);
+                
+                // 更新CurrentHeight状态（对应LTFSCopyGUI的CurrentHeight）
+                self.current_height = Some(final_pos.block_number);
+                
+                Ok(true)
+            }
+            Err(e) => {
+                error!("无法定位到EOD位置: {}", e);
+                Err(RustLtfsError::scsi(format!(
+                    "无法定位到数据分区EOD位置: {}", e
+                )))
+            }
+        }
     }
 }
