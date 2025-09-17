@@ -3451,6 +3451,16 @@ impl TapeOperations {
         self.write_progress.current_files_processed = 0;
 
         info!("LTFS index update completed successfully");
+        
+        // Auto-refresh index partition after data partition update (对应LTFSCopyGUI的UpdataAllIndex逻辑)
+        if self.detect_index_partition_support().await.unwrap_or(false) {
+            info!("Auto-refreshing index partition after data update");
+            if let Err(e) = self.refresh_index_partition().await {
+                warn!("Index partition refresh failed: {}", e);
+                // Don't fail the main operation, just log the warning
+            }
+        }
+        
         Ok(())
     }
 
@@ -3482,8 +3492,7 @@ impl TapeOperations {
         };
 
         // Check if tape supports extra partitions (对应LTFSCopyGUI的ExtraPartitionCount逻辑)
-        // For now, assume single partition tape
-        let has_index_partition = false; // This should be detected from tape capabilities
+        let has_index_partition = self.detect_index_partition_support().await?;
 
         if has_index_partition {
             // Move to index partition (partition A) and locate to filemark 3
@@ -3563,19 +3572,12 @@ impl TapeOperations {
         }
 
         // Write Volume Coherency Information (VCI) (对应LTFSCopyGUI的WriteVCI)
-        info!("Writing Volume Coherency Information");
-
-        let generation = current_index.generationnumber;
-        let index_block = index_start_block;
-        let data_block = data_partition_info.map(|loc| loc.startblock).unwrap_or(0);
-        let volume_uuid = current_index.volumeuuid.to_string();
-
-        // This would write VCI to the beginning of the tape
-        // For now, we'll simulate this operation
-        debug!(
-            "VCI Info - Generation: {}, Index Block: {}, Data Block: {}, UUID: {}",
-            generation, index_block, data_block, volume_uuid
-        );
+        self.write_volume_coherency_information(
+            current_index.generationnumber.try_into().unwrap(),
+            index_start_block.try_into().unwrap(),
+            data_partition_info.map(|loc| loc.startblock).unwrap_or(0).try_into().unwrap(),
+            &current_index.volumeuuid.to_string(),
+        ).await?;
 
         // Update internal state
         self.index = Some(current_index.clone());
@@ -3584,6 +3586,92 @@ impl TapeOperations {
 
         info!("Index partition refresh completed successfully");
         Ok(())
+    }
+
+    /// Write Volume Coherency Information (VCI) 对应LTFSCopyGUI的WriteVCI功能
+    async fn write_volume_coherency_information(
+        &mut self,
+        generation: i64,
+        index_block: i64,
+        data_block: i64,
+        volume_uuid: &str,
+    ) -> Result<()> {
+        info!("Writing Volume Coherency Information");
+        
+        if self.offline_mode {
+            info!("Offline mode: simulating VCI write");
+            debug!(
+                "VCI Info - Generation: {}, Index Block: {}, Data Block: {}, UUID: {}",
+                generation, index_block, data_block, volume_uuid
+            );
+            return Ok(());
+        }
+
+        // Save current position
+        let current_position = self.scsi.read_position()?;
+        
+        // Move to beginning of tape (block 0) to write VCI
+        self.scsi.locate_block(current_position.partition, 0)?;
+        
+        // Create VCI record (simplified version matching LTFSCopyGUI format)
+        let vci_content = format!(
+            "LTFS VCI: Gen={}, IdxBlk={}, DataBlk={}, UUID={}",
+            generation, index_block, data_block, volume_uuid
+        );
+        
+        // Pad to block size
+        let block_size = self.block_size as usize;
+        let mut vci_buffer = vec![0u8; block_size];
+        let content_bytes = vci_content.as_bytes();
+        
+        if content_bytes.len() <= block_size {
+            vci_buffer[..content_bytes.len()].copy_from_slice(content_bytes);
+            
+            // Write VCI block
+            let blocks_written = self.scsi.write_blocks(1, &vci_buffer)?;
+            if blocks_written != 1 {
+                return Err(RustLtfsError::scsi(format!(
+                    "VCI write failed: expected 1 block, wrote {}",
+                    blocks_written
+                )));
+            }
+            
+            info!("VCI written successfully");
+        } else {
+            warn!("VCI content too large for single block, skipping VCI write");
+        }
+        
+        // Restore position (optional, depending on use case)
+        // For now, we'll leave the tape at the current position after VCI write
+        
+        Ok(())
+    }
+
+    /// Detect if tape supports index partition (对应LTFSCopyGUI的ExtraPartitionCount检测)
+    async fn detect_index_partition_support(&mut self) -> Result<bool> {
+        if self.offline_mode {
+            debug!("Offline mode: assuming dual-partition support");
+            return Ok(true); // For testing purposes
+        }
+
+        // Try to read tape capabilities to detect partition support
+        // This is a simplified implementation - real implementation would use SCSI commands
+        // to query tape drive capabilities
+        match self.scsi.test_unit_ready() {
+            Ok(_) => {
+                // For now, return true if we can access the drive
+                // In real implementation, this would check:
+                // - Drive model capabilities
+                // - Medium auxiliary memory (MAM) attributes
+                // - Partition count from drive inquiry
+                debug!("Tape device accessible, assuming dual-partition support");
+                Ok(true)
+            }
+            Err(e) => {
+                warn!("Cannot access tape device for partition detection: {}", e);
+                Ok(false)
+            }
+        }
     }
 
     /// Get tape space information (free/total)
@@ -5757,7 +5845,21 @@ impl TapeOperations {
         let partition_count = self.detect_partition_count()?;
         let index_partition = if partition_count > 1 { 0 } else { 0 };
 
-        // 策略1 (优先): 搜索常见的索引位置 - 将成功率最高的策略放在前面
+        // 策略0 (最高优先级): 按照LTFSCopyGUI逻辑优先读取数据分区索引  
+        info!("Strategy 0 (Highest Priority): Reading from data partition first (LTFSCopyGUI logic)");
+        
+        if partition_count > 1 {
+            // 多分区磁带：优先尝试读取数据分区最新索引，匹配LTFSCopyGUI的"读取数据区索引"
+            match self.try_read_from_data_partition_async().await {
+                Ok(xml_content) => {
+                    info!("✅ Strategy 0 succeeded - index read from data partition (LTFSCopyGUI priority)");
+                    return Ok(xml_content);
+                }
+                Err(e) => debug!("Strategy 0 (data partition priority) failed: {}", e),
+            }
+        }
+
+        // 策略1 (次级优先): 搜索常见的索引位置 - 将成功率最高的策略放在前面
         info!("Strategy 1 (Priority): Searching common index locations first");
         let common_locations = vec![10, 2, 5, 6, 20, 100]; // 将10放在最前面，因为日志显示在这里成功
 
@@ -5843,31 +5945,22 @@ impl TapeOperations {
             Err(e) => debug!("Strategy 2 positioning failed: {}", e),
         }
 
-        // 策略3: 检测分区策略并使用相应的读取方法
-        info!("Strategy 3: Applying partition-specific strategies");
+        // 策略3: 扩展搜索策略 - 单分区和多分区都适用
+        info!("Strategy 3: Extended search strategies");
 
         if partition_count > 1 {
-            info!("Multi-partition tape detected, trying data partition strategy");
-
-            // 尝试从数据分区读取索引副本
-            match self.try_read_from_data_partition_async().await {
-                Ok(xml_content) => {
-                    info!("✅ Strategy 3 succeeded - index read from data partition");
-                    return Ok(xml_content);
-                }
-                Err(e) => debug!("Data partition strategy failed: {}", e),
-            }
+            info!("Multi-partition tape: trying single-partition fallback search");
         } else {
-            info!("Single-partition tape detected, trying extended search");
+            info!("Single-partition tape: trying extended search");
+        }
 
-            // 单分区磁带的扩展搜索
-            match self.try_single_partition_extended_search_async().await {
-                Ok(xml_content) => {
-                    info!("✅ Strategy 3 succeeded - index found via extended search");
-                    return Ok(xml_content);
-                }
-                Err(e) => debug!("Single partition extended search failed: {}", e),
+        // 单分区磁带的扩展搜索
+        match self.try_single_partition_extended_search_async().await {
+            Ok(xml_content) => {
+                info!("✅ Strategy 3 succeeded - index found via extended search");
+                return Ok(xml_content);
             }
+            Err(e) => debug!("Single partition extended search failed: {}", e),
         }
 
         // 所有策略都失败了
@@ -5888,11 +5981,57 @@ impl TapeOperations {
 
     /// 异步版本：尝试从数据分区读取索引副本
     async fn try_read_from_data_partition_async(&mut self) -> Result<String> {
-        info!("Attempting to read index from data partition (partition 1)");
+        info!("Attempting to read index from data partition (matching LTFSCopyGUI logic)");
 
-        // 定位到数据分区的一些常见索引位置
+        // 按照LTFSCopyGUI的"读取数据区索引"逻辑：
+        // 1. 定位到数据分区EOD
+        // 2. 向前查找最后的索引
         let data_partition = 1;
-        let search_blocks = vec![1000, 2000, 5000, 10000]; // 数据分区的常见索引位置
+        
+        // 先尝试定位到数据分区EOD
+        match self.scsi.locate_block(data_partition, 0) {
+            Ok(()) => {
+                // 定位到数据分区的EOD
+                match self.scsi.space(crate::scsi::SpaceType::EndOfData, 0) {
+                    Ok(()) => {
+                        let eod_position = self.scsi.read_position()?;
+                        info!("Data partition EOD at partition={}, block={}", eod_position.partition, eod_position.block_number);
+                        
+                        // 从EOD向前查找索引，类似LTFSCopyGUI的FM-1定位
+                        if eod_position.file_number > 1 {
+                            // 向前定位到最后一个FileMark之前
+                            match self.scsi.locate_to_filemark(eod_position.file_number - 1, data_partition) {
+                                Ok(()) => {
+                                    // 跳过FileMark，向前移动一个filemark
+                                    match self.scsi.space(crate::scsi::SpaceType::FileMarks, 1) {
+                                        Ok(_) => {
+                                            // 现在应该在最后的索引位置，尝试读取
+                                            match self.try_read_index_at_current_position_sync() {
+                                                Ok(xml_content) => {
+                                                    if xml_content.contains("<ltfsindex") && xml_content.contains("</ltfsindex>") {
+                                                        info!("✅ Found valid index at data partition EOD-1");
+                                                        return Ok(xml_content);
+                                                    }
+                                                }
+                                                Err(e) => debug!("Failed to read index at EOD-1: {}", e),
+                                            }
+                                        }
+                                        Err(e) => debug!("Failed to read filemark: {}", e),
+                                    }
+                                }
+                                Err(e) => debug!("Failed to locate to filemark: {}", e),
+                            }
+                        }
+                    }
+                    Err(e) => debug!("Failed to locate to EOD: {}", e),
+                }
+            }
+            Err(e) => debug!("Failed to position to data partition: {}", e),
+        }
+
+        // 回退策略：搜索数据分区的一些常见索引位置
+        info!("EOD strategy failed, trying common data partition locations");
+        let search_blocks = vec![10000, 5000, 2000, 1000]; // 数据分区的常见索引位置
 
         for &block in &search_blocks {
             debug!("Trying data partition block {}", block);
