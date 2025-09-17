@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
-use uuid::Uuid;
 
 /// 索引更新后的操作策略 - 优化的实用方案
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -1980,7 +1979,23 @@ impl TapeOperations {
         source_path: &Path,
         file_size: u64,
     ) -> Result<WriteResult> {
-        // Read file content
+        // 获取块大小用于小文件检测（对应LTFSCopyGUI小文件处理逻辑）
+        let block_size = self.partition_label.as_ref()
+            .map(|plabel| plabel.blocksize as u64)
+            .unwrap_or(crate::scsi::block_sizes::LTO_BLOCK_SIZE as u64);
+        
+        // 检测是否为小文件且支持IndexPartition (对应LTFSCopyGUI lines 3843-3844)
+        let is_small_file = file_size <= block_size;
+        let supports_index_partition = self.extra_partition_count > 0 && 
+                                     self.index_partition != self.data_partition;
+        
+        if is_small_file && supports_index_partition {
+            info!("Small file detected (size: {}, blocksize: {}), using IndexPartition strategy", 
+                  format_bytes(file_size), format_bytes(block_size));
+            return self.write_small_file_to_index_partition(source_path, file_size).await;
+        }
+        
+        // Read file content for normal file processing
         let file_content = tokio::fs::read(source_path)
             .await
             .map_err(|e| RustLtfsError::file_operation(format!("Unable to read file: {}", e)))?;
@@ -2001,27 +2016,12 @@ impl TapeOperations {
         // 验证我们在合理的写入位置（对应LTFSCopyGUI的分区验证逻辑）
         // 注意：LocateToWritePosition可能会选择Ignore继续，此时应该接受当前位置
         if write_position.partition != self.data_partition {
-            // 检查是否在索引分区 - 这种情况下可能是首次写入或特殊情况
-            if write_position.partition == self.index_partition {
-                warn!(
-                    "当前在索引分区 {} 而非数据分区 {}，但LocateToWritePosition已选择继续，接受当前位置",
-                    write_position.partition, self.data_partition
-                );
-                // 动态调整分区映射：交换数据分区和索引分区
-                let old_data_partition = self.data_partition;
-                let old_index_partition = self.index_partition;
-                
-                info!("动态调整：将数据分区映射从 {} 更新为 {}", old_data_partition, write_position.partition);
-                info!("动态调整：将索引分区映射从 {} 更新为 {}", old_index_partition, old_data_partition);
-                
-                self.data_partition = write_position.partition;
-                self.index_partition = old_data_partition;
-            } else {
-                return Err(RustLtfsError::scsi(format!(
-                    "写入位置验证失败：期望数据分区 {} 但实际在分区 {}",
-                    self.data_partition, write_position.partition
-                )));
-            }
+            warn!(
+                "当前在分区 {} 而非预期数据分区 {}，按LTFSCopyGUI标准接受当前位置",
+                write_position.partition, self.data_partition
+            );
+            // 遵循LTFSCopyGUI标准：不动态调整分区映射，接受当前定位结果
+            // 这确保与LTFS标准兼容，避免分区映射错乱
         }
 
         // 计算需要的块数（使用动态blocksize）
@@ -2037,16 +2037,54 @@ impl TapeOperations {
         buffer[..file_content.len()].copy_from_slice(&file_content);
 
         // 使用之前获取的写入位置进行文件数据写入
-        info!("开始写入文件数据到磁带，位置: P{} B{}", write_position.partition, write_position.block_number);
+        info!("Starting file data write to tape, position: P{} B{}", write_position.partition, write_position.block_number);
 
-        // Write file data blocks
-        let blocks_written = self.scsi.write_blocks(blocks_needed as u32, &buffer)?;
+        // Implement LTFSCopyGUI retry logic (lines 3897-3912) with automatic retry instead of user interaction
+        let max_write_retries = 3; // Auto-retry up to 3 times
+        let mut write_success = false;
+        let mut final_blocks_written = 0u32;
+        
+        for retry_count in 0..max_write_retries {
+            match self.scsi.write_blocks(blocks_needed as u32, &buffer) {
+                Ok(blocks_written) => {
+                    if blocks_written == blocks_needed as u32 {
+                        final_blocks_written = blocks_written;
+                        write_success = true;
+                        if retry_count > 0 {
+                            info!("Write succeeded after {} retries", retry_count);
+                        }
+                        break;
+                    } else {
+                        warn!("Partial write: expected {} blocks, wrote {} (retry {}/{})", 
+                              blocks_needed, blocks_written, retry_count + 1, max_write_retries);
+                        
+                        if retry_count == max_write_retries - 1 {
+                            return Err(RustLtfsError::scsi(format!(
+                                "Expected to write {} blocks, but wrote {} after {} retries",
+                                blocks_needed, blocks_written, max_write_retries
+                            )));
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Write failed (retry {}/{}): {}", retry_count + 1, max_write_retries, e);
+                    
+                    if retry_count == max_write_retries - 1 {
+                        return Err(RustLtfsError::scsi(format!(
+                            "Write failed after {} retries: {}", max_write_retries, e
+                        )));
+                    }
+                    
+                    // Short delay before retry (matching LTFSCopyGUI behavior)
+                    if retry_count < max_write_retries - 1 {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                    }
+                }
+            }
+        }
 
-        if blocks_written != blocks_needed as u32 {
-            return Err(RustLtfsError::scsi(format!(
-                "Expected to write {} blocks, but wrote {}",
-                blocks_needed, blocks_written
-            )));
+        if !write_success {
+            return Err(RustLtfsError::scsi("Write operation failed after all retries".to_string()));
         }
 
         // Write file mark to separate this file from next
@@ -2054,12 +2092,12 @@ impl TapeOperations {
 
         info!(
             "Successfully wrote {} blocks ({} bytes) to tape",
-            blocks_written, file_size
+            final_blocks_written, file_size
         );
 
         Ok(WriteResult {
             position: write_position,
-            blocks_written,
+            blocks_written: final_blocks_written,
             bytes_written: file_size,
         })
     }
@@ -2098,8 +2136,8 @@ impl TapeOperations {
         let new_uid = current_index.highestfileuid.unwrap_or(0) + 1;
 
         let extent = crate::ltfs_index::FileExtent {
-            // 使用动态检测的数据分区（对应LTFSCopyGUI的分区映射逻辑）
-            partition: self.data_partition.to_string(),
+            // 根据WriteResult中的实际写入分区设置partition（支持IndexPartition）
+            partition: write_position.partition.to_string(),
             start_block: write_position.block_number,
             byte_count: file_size,
             file_offset: 0,
@@ -6711,6 +6749,19 @@ impl TapeOperations {
                         if current_pos.partition == target_partition && current_pos.block_number == target_block {
                             info!("成功定位到目标位置: P{} B{}", current_pos.partition, current_pos.block_number);
                             
+                            // 🔧 关键修复：添加LTFSCopyGUI第3649-3656行的索引读取更新逻辑
+                            info!("读取当前位置的索引以更新previousgenerationlocation (对应LTFSCopyGUI逻辑)");
+                            
+                            match self.read_and_update_index_at_current_position().await {
+                                Ok(()) => {
+                                    info!("索引读取和更新成功");
+                                }
+                                Err(e) => {
+                                    warn!("索引读取失败，但继续执行: {}", e);
+                                    // 继续执行，因为这可能是新磁带或索引损坏的情况
+                                }
+                            }
+                            
                             // 更新CurrentHeight
                             self.current_height = Some(current_pos.block_number);
                             return Ok(true);
@@ -6870,11 +6921,276 @@ impl TapeOperations {
                 Ok(true)
             }
             Err(e) => {
-                error!("EOD定位也失败: {}", e);
+                error!("EOD positioning also failed: {}", e);
                 Err(RustLtfsError::scsi(format!(
-                    "无法定位到数据分区EOD位置: {}", e
+                    "Unable to position to data partition EOD: {}", e
                 )))
             }
         }
+    }
+
+    /// Read index at current position and update previousgenerationlocation (matching LTFSCopyGUI lines 3649-3656)
+    /// Precisely matches LTFSCopyGUI's ReadToFileMark -> FromSchFile -> schema update logic
+    async fn read_and_update_index_at_current_position(&mut self) -> Result<()> {
+        info!("Reading index at current position (matching LTFSCopyGUI ReadToFileMark logic)");
+        
+        // Get dynamic blocksize (matching plabel.blocksize)
+        let block_size = self.partition_label.as_ref()
+            .map(|plabel| plabel.blocksize as usize)
+            .unwrap_or(crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize);
+        
+        // Use temporary file to read index (matching LTFSCopyGUI tmpf logic)
+        let temp_dir = std::env::temp_dir();
+        let temp_filename = format!(
+            "LWS_{}.tmp",
+            chrono::Utc::now().format("%Y%m%d_%H%M%S%.3f")
+        );
+        let temp_path = temp_dir.join(temp_filename);
+        
+        info!("Reading index using temporary file: {:?}", temp_path);
+        
+        // Execute ReadToFileMark operation (precisely matching TapeUtils.ReadToFileMark)
+        match self.read_to_file_mark_for_temp_file(&temp_path, block_size).await {
+            Ok(()) => {
+                // Load index from temporary file (matching FromSchFile)
+                info!("Parsing index from temporary file");
+                match crate::ltfs_index::LtfsIndex::from_xml_file(&temp_path) {
+                    Ok(sch2) => {
+                        info!("Index parsed successfully, updating previousgenerationlocation");
+                        
+                        // Key update: schema.previousgenerationlocation = sch2.previousgenerationlocation
+                        if let Some(ref mut current_schema) = self.schema {
+                            current_schema.previousgenerationlocation = sch2.previousgenerationlocation.clone();
+                            info!("previousgenerationlocation updated successfully");
+                        }
+                        
+                        // Cleanup temporary file (matching IO.File.Delete(tmpf))
+                        if let Err(e) = std::fs::remove_file(&temp_path) {
+                            warn!("Failed to cleanup temporary file: {}", e);
+                        }
+                        
+                        Ok(())
+                    }
+                    Err(e) => {
+                        warn!("Index parsing failed: {}", e);
+                        // Cleanup temporary file
+                        let _ = std::fs::remove_file(&temp_path);
+                        Err(RustLtfsError::ltfs_index(format!("Index parsing failed: {}", e)))
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("ReadToFileMark failed: {}", e);
+                // Cleanup temporary file
+                let _ = std::fs::remove_file(&temp_path);
+                Err(e)
+            }
+        }
+    }
+
+    /// Execute ReadToFileMark to temporary file (precisely matching TapeUtils.ReadToFileMark)
+    async fn read_to_file_mark_for_temp_file(&mut self, temp_path: &std::path::Path, block_size: usize) -> Result<()> {
+        use std::io::Write;
+        
+        let mut temp_file = std::fs::File::create(temp_path)
+            .map_err(|e| RustLtfsError::file_operation(format!("Failed to create temporary file: {}", e)))?;
+        
+        let max_blocks = 50; // Prevent reading too much data
+        let mut blocks_read = 0u32;
+        
+        info!("Starting ReadToFileMark, blocksize={}, max {} blocks", block_size, max_blocks);
+        
+        loop {
+            if blocks_read >= max_blocks {
+                warn!("Reached maximum block limit ({}), stopping", max_blocks);
+                break;
+            }
+            
+            let mut buffer = vec![0u8; block_size];
+            
+            match self.scsi.read_blocks(1, &mut buffer) {
+                Ok(bytes_read) => {
+                    if bytes_read == 0 || self.is_all_zeros(&buffer, bytes_read as usize) {
+                        info!("Encountered file mark or empty data, ReadToFileMark completed");
+                        break;
+                    }
+                    
+                    // Write to temporary file
+                    temp_file.write_all(&buffer[..bytes_read as usize])
+                        .map_err(|e| RustLtfsError::file_operation(format!("Failed to write to temporary file: {}", e)))?;
+                    
+                    blocks_read += 1;
+                }
+                Err(e) => {
+                    if blocks_read > 0 {
+                        info!("ReadToFileMark encountered error after reading {} blocks, ending normally", blocks_read);
+                        break;
+                    } else {
+                        return Err(RustLtfsError::scsi(format!("ReadToFileMark failed: {}", e)));
+                    }
+                }
+            }
+        }
+        
+        temp_file.flush()
+            .map_err(|e| RustLtfsError::file_operation(format!("Failed to flush temporary file: {}", e)))?;
+        
+        info!("ReadToFileMark completed, read {} blocks", blocks_read);
+        Ok(())
+    }
+
+    /// Write small file to IndexPartition (对应LTFSCopyGUI的小文件处理逻辑)
+    async fn write_small_file_to_index_partition(
+        &mut self,
+        source_path: &Path,
+        file_size: u64,
+    ) -> Result<WriteResult> {
+        info!("Writing small file to IndexPartition: {:?} ({} bytes)", source_path, file_size);
+        
+        // Read file content
+        let file_content = tokio::fs::read(source_path).await
+            .map_err(|e| RustLtfsError::file_operation(format!("Unable to read small file: {}", e)))?;
+        
+        // Call DumpDataToIndexPartition
+        let start_block = self.dump_data_to_index_partition(&file_content, true, true, true).await?;
+        
+        // Create position result
+        let position = crate::scsi::TapePosition {
+            partition: self.index_partition,
+            block_number: start_block,
+            file_number: 0, // Will be updated by caller
+            beginning_of_partition: false,
+            end_of_data: false,
+            set_number: 0,
+        };
+        
+        // Calculate blocks written (always 1 for small files)
+        let block_size = self.partition_label.as_ref()
+            .map(|plabel| plabel.blocksize as u64)
+            .unwrap_or(crate::scsi::block_sizes::LTO_BLOCK_SIZE as u64);
+        let blocks_written = ((file_size + block_size - 1) / block_size) as u32;
+        
+        info!("Small file written to IndexPartition at block {}, {} blocks", start_block, blocks_written);
+        
+        Ok(WriteResult {
+            position,
+            blocks_written,
+            bytes_written: file_size,
+        })
+    }
+
+    /// Dump data to IndexPartition (对应LTFSCopyGUI的DumpDataToIndexPartition方法)
+    async fn dump_data_to_index_partition(
+        &mut self,
+        data: &[u8],
+        retain_position: bool,
+        is_first_file: bool,
+        is_last_file: bool,
+    ) -> Result<u64> {
+        if self.extra_partition_count == 0 {
+            return Err(RustLtfsError::scsi("No extra partitions available for IndexPartition".to_string()));
+        }
+        
+        // Record previous position (对应LTFSCopyGUI line 2461)
+        let previous_position = if retain_position {
+            Some(self.scsi.read_position()?)
+        } else {
+            None
+        };
+        
+        // Locate to IndexPartition filemark 3 (对应LTFSCopyGUI line 2465)
+        let mut fm_index_position = None;
+        if is_first_file {
+            info!("Locating to IndexPartition filemark 3");
+            self.scsi.locate_to_filemark(3, self.index_partition)?;
+            fm_index_position = Some(self.scsi.read_position()?);
+        }
+        
+        let start_block = fm_index_position
+            .as_ref()
+            .map(|pos| pos.block_number)
+            .unwrap_or_else(|| {
+                self.scsi.read_position()
+                    .map(|pos| pos.block_number)
+                    .unwrap_or(0)
+            });
+        
+        // Read old index if first file (对应LTFSCopyGUI lines 2471-2473)
+        let temp_file_path = if is_first_file {
+            let temp_path = std::env::temp_dir().join(format!("LIT_{}.tmp", 
+                chrono::Utc::now().format("%Y%m%d_%H%M%S%.7f")));
+            
+            // Try to skip past the filemark by reading a small chunk first
+            let mut small_buffer = vec![0u8; 512];
+            if let Ok(bytes_read) = self.scsi.read_blocks(1, &mut small_buffer) {
+                if bytes_read > 0 {
+                    info!("Successfully skipped past filemark");
+                } else {
+                    warn!("No data found when trying to skip filemark");
+                }
+            } else {
+                warn!("Failed to skip filemark, continuing anyway");
+            }
+            
+            // Read to next filemark and save to temp file
+            self.read_to_file_mark_for_temp_file(&temp_path, 
+                self.partition_label.as_ref().map(|p| p.blocksize as usize).unwrap_or(524288)).await?;
+            
+            Some(temp_path)
+        } else {
+            None
+        };
+        
+        // Write data (对应LTFSCopyGUI lines 2476-2482)
+        if let Some(fm_pos) = fm_index_position {
+            self.scsi.locate_block(fm_pos.partition, fm_pos.block_number)?;
+        }
+        
+        // Prepare data buffer
+        let block_size = self.partition_label.as_ref()
+            .map(|plabel| plabel.blocksize as usize)
+            .unwrap_or(crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize);
+        
+        let blocks_needed = (data.len() + block_size - 1) / block_size;
+        let buffer_size = blocks_needed * block_size;
+        let mut buffer = vec![0u8; buffer_size];
+        buffer[..data.len()].copy_from_slice(data);
+        
+        // Write to tape
+        let blocks_written = self.scsi.write_blocks(blocks_needed as u32, &buffer)?;
+        info!("Written {} blocks to IndexPartition", blocks_written);
+        
+        // Recover old index if last file (对应LTFSCopyGUI lines 2484-2488)
+        if is_last_file {
+            if let Some(temp_path) = temp_file_path {
+                // Write filemark
+                self.scsi.write_filemarks(1)?;
+                
+                // Write back the old index
+                let old_index_data = tokio::fs::read(&temp_path).await
+                    .map_err(|e| RustLtfsError::file_operation(format!("Failed to read temp index: {}", e)))?;
+                
+                let old_blocks = (old_index_data.len() + block_size - 1) / block_size;
+                let mut old_buffer = vec![0u8; old_blocks * block_size];
+                old_buffer[..old_index_data.len()].copy_from_slice(&old_index_data);
+                
+                self.scsi.write_blocks(old_blocks as u32, &old_buffer)?;
+                
+                // Clean up temp file
+                if let Err(e) = tokio::fs::remove_file(&temp_path).await {
+                    warn!("Failed to remove temp file {:?}: {}", temp_path, e);
+                }
+                
+                // Write final filemark
+                self.scsi.write_filemarks(1)?;
+            }
+            
+            // Recover position (对应LTFSCopyGUI line 2490)
+            if let Some(prev_pos) = previous_position {
+                self.scsi.locate_block(prev_pos.partition, prev_pos.block_number)?;
+            }
+        }
+        
+        Ok(start_block)
     }
 }

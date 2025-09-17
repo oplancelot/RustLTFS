@@ -219,6 +219,17 @@ impl LtfsIndex {
         Self::from_xml(xml_content)
     }
 
+    /// Parse LTFS index from XML file (matching LTFSCopyGUI's FromSchFile)
+    pub fn from_xml_file(file_path: &std::path::Path) -> Result<Self> {
+        debug!("Reading LTFS index from file: {:?}", file_path);
+        
+        let xml_content = std::fs::read_to_string(file_path)
+            .map_err(|e| crate::error::RustLtfsError::file_operation(
+                format!("Failed to read index file {:?}: {}", file_path, e)))?;
+        
+        Self::from_xml(&xml_content)
+    }
+
     /// Validate XML structure before parsing
     fn validate_xml_structure(xml_content: &str) -> Result<()> {
         debug!("Validating XML structure");
@@ -651,8 +662,12 @@ impl LtfsIndex {
             ))
         })?;
 
+        // Fix LTFS standard compliance: replace self-closing <name/> with <name></name>
+        // This ensures compatibility with LTFS spec which requires explicit empty tags
+        let fixed_xml = xml_string.replace("<name/>", "<name></name>");
+
         // Add XML declaration
-        let complete_xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{}", xml_string);
+        let complete_xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{}", fixed_xml);
 
         debug!(
             "Serialized LTFS index to XML ({} bytes)",
