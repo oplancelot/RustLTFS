@@ -7118,7 +7118,7 @@ impl TapeOperations {
         // Read old index if first file (对应LTFSCopyGUI lines 2471-2473)
         let temp_file_path = if is_first_file {
             let temp_path = std::env::temp_dir().join(format!("LIT_{}.tmp", 
-                chrono::Utc::now().format("%Y%m%d_%H%M%S%.7f")));
+                chrono::Utc::now().format("%Y%m%d_%H%M%S%.3f")));
             
             // Try to skip past the filemark by reading a small chunk first
             let mut small_buffer = vec![0u8; 512];

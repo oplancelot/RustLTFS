@@ -1,7 +1,7 @@
 use crate::error::{Result, RustLtfsError};
 use std::ffi::CString;
 
-use tracing::{debug, warn, info};
+use tracing::{debug, warn, info, error};
 
 #[cfg(windows)]
 use winapi::{
