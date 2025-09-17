@@ -2007,9 +2007,15 @@ impl TapeOperations {
                     "当前在索引分区 {} 而非数据分区 {}，但LocateToWritePosition已选择继续，接受当前位置",
                     write_position.partition, self.data_partition
                 );
-                // 这种情况下，更新数据分区映射以匹配实际写入位置
-                info!("动态调整：将数据分区映射从 {} 更新为 {}", self.data_partition, write_position.partition);
+                // 动态调整分区映射：交换数据分区和索引分区
+                let old_data_partition = self.data_partition;
+                let old_index_partition = self.index_partition;
+                
+                info!("动态调整：将数据分区映射从 {} 更新为 {}", old_data_partition, write_position.partition);
+                info!("动态调整：将索引分区映射从 {} 更新为 {}", old_index_partition, old_data_partition);
+                
                 self.data_partition = write_position.partition;
+                self.index_partition = old_data_partition;
             } else {
                 return Err(RustLtfsError::scsi(format!(
                     "写入位置验证失败：期望数据分区 {} 但实际在分区 {}",
