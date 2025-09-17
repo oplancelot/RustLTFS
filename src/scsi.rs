@@ -19,13 +19,13 @@ use winapi::{
     ctypes::c_void,
 };
 
-// Define IOCTL_SCSI_PASS_THROUGH_DIRECT constant
+// Define IOCTL_ScsiPassThrough_DIRECT constant
 #[cfg(windows)]
-const IOCTL_SCSI_PASS_THROUGH_DIRECT: u32 = 0x0004D014;
+const IOCTL_ScsiPassThrough_DIRECT: u32 = 0x0004D014;
 
-// Define IOCTL_SCSI_PASS_THROUGH constant  
+// Define IOCTL_ScsiPassThrough constant  
 #[cfg(windows)]
-const IOCTL_SCSI_PASS_THROUGH: u32 = 0x0004D004;
+const IOCTL_ScsiPassThrough: u32 = 0x0004D004;
 
 // Type aliases for non-Windows platforms
 #[cfg(not(windows))]
@@ -56,9 +56,10 @@ const SCSI_IOCTL_DATA_IN: u8 = 1;
 const SCSI_IOCTL_DATA_OUT: u8 = 0;
 const SCSI_IOCTL_DATA_UNSPECIFIED: u8 = 2;
 
-/// SCSI Pass Through Direct structure (corresponds to SCSI_PASS_THROUGH_DIRECT in C code)
+/// SCSI Pass Through Direct structure (corresponds to ScsiPassThrough_DIRECT in C code)
 #[repr(C)]
 #[derive(Debug)]
+#[cfg(windows)]
 struct ScsiPassThroughDirect {
     length: USHORT,
     scsi_status: UCHAR,
@@ -75,9 +76,10 @@ struct ScsiPassThroughDirect {
     cdb: [UCHAR; 16],
 }
 
-/// SCSI Pass Through structure (corresponds to SCSI_PASS_THROUGH in C code)
+/// SCSI Pass Through structure (corresponds to ScsiPassThrough in C code)
 #[repr(C)]
 #[derive(Debug)]
+#[cfg(windows)]
 struct ScsiPassThrough {
     length: USHORT,
     scsi_status: UCHAR,
@@ -357,7 +359,7 @@ impl ScsiInterface {
                     let mut bytes_returned: DWORD = 0;
                     let result = DeviceIoControl(
                         device.handle,
-                        IOCTL_SCSI_PASS_THROUGH_DIRECT,
+                        IOCTL_ScsiPassThrough_DIRECT,
                         scsi_buffer.as_mut_ptr() as PVOID,
                         scsi_buffer.len() as DWORD,
                         scsi_buffer.as_mut_ptr() as PVOID,
@@ -2408,11 +2410,11 @@ impl ScsiInterface {
                 let result = unsafe {
                     DeviceIoControl(
                         handle,
-                        IOCTL_SCSI_PASS_THROUGH,
+                        IOCTL_ScsiPassThrough,
                         &mut scsi_pass_through as *mut _ as *mut c_void,
-                        std::mem::size_of::<SCSI_PASS_THROUGH>() as u32,
+                        std::mem::size_of::<ScsiPassThrough>() as u32,
                         &mut scsi_pass_through as *mut _ as *mut c_void,
-                        std::mem::size_of::<SCSI_PASS_THROUGH>() as u32,
+                        std::mem::size_of::<ScsiPassThrough>() as u32,
                         &mut bytes_returned,
                         ptr::null_mut()
                     )
@@ -2470,11 +2472,11 @@ impl ScsiInterface {
                 let result = unsafe {
                     DeviceIoControl(
                         handle,
-                        IOCTL_SCSI_PASS_THROUGH,
+                        IOCTL_ScsiPassThrough,
                         &mut scsi_pass_through as *mut _ as *mut c_void,
-                        std::mem::size_of::<SCSI_PASS_THROUGH>() as u32,
+                        std::mem::size_of::<ScsiPassThrough>() as u32,
                         &mut scsi_pass_through as *mut _ as *mut c_void,
-                        std::mem::size_of::<SCSI_PASS_THROUGH>() as u32,
+                        std::mem::size_of::<ScsiPassThrough>() as u32,
                         &mut bytes_returned,
                         ptr::null_mut()
                     )
