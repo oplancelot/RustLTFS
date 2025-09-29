@@ -387,6 +387,20 @@ async fn run(args: Cli) -> Result<()> {
             let device_initialized = match ops.initialize().await {
                 Ok(_) => {
                     info!("Device initialized successfully");
+                    
+                    // Read LTFS index from tape if not skipping index
+                    if !skip_index {
+                        match ops.read_index_from_tape().await {
+                            Ok(_) => {
+                                info!("LTFS index loaded from tape successfully");
+                            }
+                            Err(e) => {
+                                warn!("Failed to read LTFS index from tape: {}", e);
+                                // Continue with device initialized but no index loaded
+                            }
+                        }
+                    }
+                    
                     true
                 }
                 Err(e) => {
