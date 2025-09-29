@@ -483,7 +483,7 @@ async fn run(args: Cli) -> Result<()> {
                     }
                     
                     // Display complete directory tree
-                    ops.print_directory_tree()?;
+                    ops.print_directory_tree();
                 }
                 (Some(src_path), None) => {
                     // Download file or directory to current directory
@@ -555,12 +555,20 @@ async fn run(args: Cli) -> Result<()> {
             output 
         } => {
             info!("Viewing LTFS index file: {:?}", index_file);
+            let format_str = export_format.as_ref().map(|f| match f {
+                crate::cli::ExportFormat::Tsv => "list",
+                crate::cli::ExportFormat::Json => "json",
+                crate::cli::ExportFormat::Xml => "xml",
+                crate::cli::ExportFormat::Batch => "batch",
+            });
+            let output_str = output.as_ref().map(|p| p.to_string_lossy().to_string());
             tape_ops::IndexViewer::handle_view_index_command(
-                &index_file,
-                detailed,
-                export_format,
-                output.as_deref(),
-            ).await
+                &index_file.to_string_lossy(),
+                Some(detailed),
+                format_str,
+                output_str.as_deref(),
+            )?;
+            Ok(())
         }
         
         Commands::Device { device, detailed, status, info } => {
@@ -600,7 +608,18 @@ async fn run(args: Cli) -> Result<()> {
             let mut ops = tape_ops::TapeOperations::new(&device, skip_index);
             
             // Get space information
-            ops.get_tape_space_info(detailed).await
+            let space_info = ops.get_tape_space_info()?;
+            
+            println!("📦 Tape Space Information:");
+            println!("  Total Capacity: {} GB", space_info.total_capacity / (1024 * 1024 * 1024));
+            println!("  Used Space: {} GB", space_info.used_space / (1024 * 1024 * 1024));
+            println!("  Available Space: {} GB", space_info.available_space / (1024 * 1024 * 1024));
+            
+            if detailed {
+                println!("  Detailed information would be shown here");
+            }
+            
+            Ok(())
         }
 
         Commands::ReadIndex { device, output, .. } => {
@@ -658,7 +677,7 @@ async fn run(args: Cli) -> Result<()> {
             ops.initialize().await?;
             
             // Execute manual index update operation
-            match ops.update_index_on_tape_manual_new() {
+            match ops.update_index_on_tape_manual_new().await {
                 Ok(()) => {
                     println!("✅ LTFS index updated on tape successfully");
                     Ok(())
