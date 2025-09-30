@@ -4,11 +4,13 @@ pub mod read_operations;
 pub mod format_operations;
 pub mod write_operations;
 pub mod partition_manager;
+pub mod capacity_manager;
 
 pub use self::core::*;
 // 选择性导出避免重名冲突
 pub use self::format_operations::{MkltfsParams, MkltfsProgressCallback, MkltfsFinishCallback, MkltfsErrorCallback};
 pub use self::partition_manager::*;
+pub use self::capacity_manager::*;
 
 use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::LtfsIndex;
@@ -194,7 +196,7 @@ pub struct WriteProgress {
     pub errors: Vec<String>,
 }
 
-/// Write options configuration
+/// Write options configuration (Enhanced for LTFSCopyGUI compatibility)
 #[derive(Debug, Clone)]
 pub struct WriteOptions {
     pub overwrite: bool,
@@ -211,6 +213,22 @@ pub struct WriteOptions {
     pub block_size: u32,
     pub buffer_size: usize,
     pub max_retry_attempts: u32,
+    
+    // New LTFSCopyGUI compatible options
+    pub goto_eod_on_write: bool,        // Go to End of Data on write
+    pub force_index: bool,              // Force index update
+    pub dedupe: bool,                   // Enable deduplication (SHA1-based)
+    pub preload_file_count: u32,        // Number of files to preload
+    pub ignore_volume_overflow: bool,   // Ignore volume overflow warnings
+    pub auto_clean_enabled: bool,       // Auto clean on write
+    pub power_policy_on_write: bool,    // Change power policy during write
+    
+    // Hash algorithm enables (for compatibility with LTFSCopyGUI settings)
+    pub hash_sha1_enabled: bool,
+    pub hash_md5_enabled: bool,
+    pub hash_blake3_enabled: bool,
+    pub hash_xxhash3_enabled: bool,
+    pub hash_xxhash128_enabled: bool,
 }
 
 impl Default for WriteOptions {
@@ -218,11 +236,11 @@ impl Default for WriteOptions {
         Self {
             overwrite: false,
             verify: false,
-            hash_on_write: false,
+            hash_on_write: true,
             skip_symlinks: false,
             parallel_add: true,
             speed_limit: None,
-            index_write_interval: 38_654_705_664, // 36GiB
+            index_write_interval: 38_654_705_664, // 36GiB (matching LTFSCopyGUI)
             excluded_extensions: vec![".xattr".to_string()],
             compression: false,
             verify_writes: true,
@@ -230,6 +248,22 @@ impl Default for WriteOptions {
             block_size: crate::scsi::block_sizes::LTO_BLOCK_SIZE,
             buffer_size: 1024 * 1024, // 1MB
             max_retry_attempts: 3,
+            
+            // LTFSCopyGUI compatible defaults
+            goto_eod_on_write: true,
+            force_index: false,
+            dedupe: false,
+            preload_file_count: 8,
+            ignore_volume_overflow: false,
+            auto_clean_enabled: false,
+            power_policy_on_write: false,
+            
+            // Hash algorithms (enable common ones by default)
+            hash_sha1_enabled: true,
+            hash_md5_enabled: true,
+            hash_blake3_enabled: false,
+            hash_xxhash3_enabled: false,
+            hash_xxhash128_enabled: false,
         }
     }
 }

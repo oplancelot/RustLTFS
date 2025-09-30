@@ -37,7 +37,12 @@ impl super::TapeOperations {
             Arc::new(crate::scsi::ScsiInterface::new()),
             self.offline_mode,
         );
-        partition_manager.detect_partition_strategy().await
+        
+        // 检测ExtraPartitionCount
+        let extra_partition_count = partition_manager.detect_extra_partition_count().await?;
+        
+        // 根据ExtraPartitionCount确定策略
+        Ok(partition_manager.determine_partition_strategy(extra_partition_count).await)
     }
     
     /// Read LTFS index from tape (优化版本：优先使用成功的策略)

@@ -293,7 +293,7 @@ async fn run(args: Cli) -> Result<()> {
                 if show_progress {
                     println!("\n📄 Writing file to tape...");
                 }
-                ops.write_file_to_tape(&source, &destination.to_string_lossy()).await?;
+                ops.write_file_to_tape_streaming(&source, &destination.to_string_lossy()).await.map(|_| ())?;
             }
             
             let write_duration = write_start.elapsed();
@@ -622,7 +622,7 @@ async fn run(args: Cli) -> Result<()> {
             let mut ops = tape_ops::TapeOperations::new(&device, skip_index);
             
             // Get space information
-            let space_info = ops.get_tape_space_info()?;
+            let space_info = ops.get_tape_capacity_info().await?;
             
             println!("📦 Tape Space Information:");
             println!("  Total Capacity: {} GB", space_info.total_capacity / (1024 * 1024 * 1024));

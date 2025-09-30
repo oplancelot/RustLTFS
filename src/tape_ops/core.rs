@@ -22,6 +22,8 @@ pub struct TapeOperations {
     pub(crate) modified: bool,   // 对应LTFSCopyGUI的Modified标志
     pub(crate) stop_flag: bool,  // 对应LTFSCopyGUI的StopFlag
     pub(crate) pause_flag: bool, // 对应LTFSCopyGUI的Pause
+    pub(crate) extra_partition_count: Option<u8>, // 对应LTFSCopyGUI的ExtraPartitionCount
+    pub(crate) max_extra_partition_allowed: u8,  // 对应LTFSCopyGUI的MaxExtraPartitionAllowed
 }
 
 impl TapeOperations {
@@ -44,6 +46,8 @@ impl TapeOperations {
             modified: false,
             stop_flag: false,
             pause_flag: false,
+            extra_partition_count: None, // Will be detected during initialization
+            max_extra_partition_allowed: 1, // LTO standard maximum
         }
     }
 
@@ -71,6 +75,70 @@ impl TapeOperations {
         } else {
             info!("Write operations resumed");
         }
+    }
+
+    /// 初始化分区检测 (精确对应LTFSCopyGUI的初始化逻辑)
+    /// 检测ExtraPartitionCount并设置分区策略
+    pub async fn initialize_partition_detection(&mut self) -> Result<()> {
+        info!("Initializing partition detection (LTFSCopyGUI compatible)");
+
+        if self.offline_mode {
+            info!("Offline mode: skipping partition detection");
+            self.extra_partition_count = Some(1); // Assume dual-partition in offline mode
+            return Ok(());
+        }
+
+        // 创建分区管理器
+        let partition_manager = self.create_partition_manager();
+
+        // 步骤1: 检测ExtraPartitionCount (对应LTFSCopyGUI的MODE SENSE检测)
+        match partition_manager.detect_extra_partition_count().await {
+            Ok(detected_count) => {
+                // 应用LTFSCopyGUI的验证逻辑
+                let validated_count = partition_manager.validate_extra_partition_count(
+                    detected_count,
+                    self.max_extra_partition_allowed,
+                );
+
+                self.extra_partition_count = Some(validated_count);
+                info!(
+                    "✅ ExtraPartitionCount initialized: {} (detected: {}, validated: {})",
+                    validated_count, detected_count, validated_count
+                );
+
+                // 设置modified状态 (对应LTFSCopyGUI的Modified = ExtraPartitionCount > 0)
+                self.modified = validated_count > 0;
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to detect ExtraPartitionCount: {}, defaulting to single partition",
+                    e
+                );
+                self.extra_partition_count = Some(0);
+                self.modified = false;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// 获取当前ExtraPartitionCount
+    pub fn get_extra_partition_count(&self) -> u8 {
+        self.extra_partition_count.unwrap_or(0)
+    }
+
+    /// 获取目标分区号 (对应LTFSCopyGUI的Math.Min分区映射)
+    pub fn get_target_partition(&self, logical_partition: u8) -> u8 {
+        let extra_partition_count = self.get_extra_partition_count();
+        std::cmp::min(extra_partition_count, logical_partition)
+    }
+
+    /// 创建分区管理器
+    pub fn create_partition_manager(&self) -> super::partition_manager::PartitionManager {
+        super::partition_manager::PartitionManager::new(
+            std::sync::Arc::new(crate::scsi::ScsiInterface::new()),
+            self.offline_mode,
+        )
     }
 
     /// Wait for device ready using TestUnitReady retry logic (对应LTFSCopyGUI的TestUnitReady重试逻辑)
@@ -199,12 +267,16 @@ impl TapeOperations {
             }
         }
 
+        // 初始化分区检测 (对应LTFSCopyGUI的MODE SENSE检测逻辑)
+        self.initialize_partition_detection().await?;
+
         // Set a default block size, can be updated later if needed
         self.block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE;
         self.partition_label = Some(LtfsPartitionLabel::default());
 
         // Note: LTFS index reading is available through the read_operations module
-        info!("Device opened successfully");
+        info!("Device opened successfully with ExtraPartitionCount = {}", 
+              self.get_extra_partition_count());
 
         Ok(())
     }
@@ -269,19 +341,6 @@ impl TapeOperations {
         })
     }
     
-    /// 获取磁带空间信息
-    pub fn get_tape_space_info(&self) -> Result<TapeSpaceInfo> {
-        info!("Getting tape space information");
-        
-        // 这里应该通过SCSI命令获取实际的磁带空间信息
-        // 暂时返回模拟数据
-        Ok(TapeSpaceInfo {
-            total_capacity: 2500 * 1024 * 1024 * 1024, // 2.5TB
-            used_space: 0,
-            available_space: 2500 * 1024 * 1024 * 1024,
-        })
-    }
-    
     /// 手动更新磁带索引
     pub async fn update_index_on_tape_manual_new(&mut self) -> Result<()> {
         info!("Manually updating index on tape");
@@ -294,6 +353,53 @@ impl TapeOperations {
         // 暂时返回成功
         warn!("Manual index update is not fully implemented yet");
         Ok(())
+    }
+
+    /// 刷新磁带容量信息（精确对应LTFSCopyGUI RefreshCapacity）
+    pub async fn refresh_capacity(&mut self) -> Result<super::capacity_manager::TapeCapacityInfo> {
+        info!("Refreshing tape capacity information (LTFSCopyGUI RefreshCapacity)");
+        
+        let mut capacity_manager = super::capacity_manager::CapacityManager::new(
+            std::sync::Arc::new(crate::scsi::ScsiInterface::new()),
+            self.offline_mode,
+        );
+        
+        let extra_partition_count = self.get_extra_partition_count();
+        capacity_manager.refresh_capacity(extra_partition_count).await
+    }
+
+    /// 读取错误率信息（对应LTFSCopyGUI ReadChanLRInfo）
+    pub async fn read_error_rate_info(&mut self) -> Result<f64> {
+        info!("Reading tape error rate information");
+        
+        let mut capacity_manager = super::capacity_manager::CapacityManager::new(
+            std::sync::Arc::new(crate::scsi::ScsiInterface::new()),
+            self.offline_mode,
+        );
+        
+        capacity_manager.read_error_rate_info().await
+    }
+
+    /// 获取磁带容量信息（简化版本，用于向后兼容）
+    pub async fn get_tape_capacity_info(&mut self) -> Result<TapeSpaceInfo> {
+        let capacity_info = self.refresh_capacity().await?;
+        
+        // 根据ExtraPartitionCount决定使用哪个分区的容量
+        let (used_space, total_capacity) = if self.get_extra_partition_count() > 0 {
+            // 多分区磁带：使用数据分区（P1）容量
+            let used_p1 = capacity_info.p1_maximum.saturating_sub(capacity_info.p1_remaining);
+            ((used_p1 << 20), (capacity_info.p1_maximum << 20)) // 转换为字节
+        } else {
+            // 单分区磁带：使用P0容量
+            let used_p0 = capacity_info.p0_maximum.saturating_sub(capacity_info.p0_remaining);
+            ((used_p0 << 20), (capacity_info.p0_maximum << 20)) // 转换为字节
+        };
+        
+        Ok(TapeSpaceInfo {
+            total_capacity,
+            used_space,
+            available_space: total_capacity.saturating_sub(used_space),
+        })
     }
 }
 

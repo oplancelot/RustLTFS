@@ -46,10 +46,20 @@ quick-xml = { version = "0.31", features = ["serialize"] }
 # 时间处理
 chrono = { version = "0.4", features = ["serde"] }
 
-# 哈希计算
+# 哈希计算 (支持 LTFSCopyGUI 的所有哈希类型)
 sha2 = "0.10"
 sha1 = "0.10"
 md5 = "0.7"
+blake3 = "1.5"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+hex = "0.4"
+
+# 并发和同步原语
+parking_lot = "0.12"
+crossbeam = "0.8"
+
+# 内存映射文件（用于大文件处理）
+memmap2 = "0.9"
 
 # 进度显示
 indicatif = "0.17"

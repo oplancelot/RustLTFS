@@ -73,45 +73,118 @@ impl PartitionManager {
         }
     }
 
-    /// 检测分区策略 (对应LTFSCopyGUI的ExtraPartitionCount检测逻辑)
-    pub async fn detect_partition_strategy(&self) -> Result<PartitionStrategy> {
-        info!("Detecting partition strategy using LTFSCopyGUI ExtraPartitionCount logic");
+    /// 检测ExtraPartitionCount (精确对应LTFSCopyGUI逻辑)
+    /// 使用MODE SENSE 0x11命令从磁带直接读取分区配置
+    pub async fn detect_extra_partition_count(&self) -> Result<u8> {
+        info!("Detecting ExtraPartitionCount using MODE SENSE 0x11 (LTFSCopyGUI exact logic)");
 
-        // 步骤1: 检查磁带是否支持多分区
-        match self.check_multi_partition_support().await {
-            Ok(has_multi_partition) => {
-                if !has_multi_partition {
-                    info!("Single-partition tape detected (ExtraPartitionCount = 0)");
-                    return Ok(PartitionStrategy::SinglePartitionFallback);
+        if self.offline_mode {
+            info!("Offline mode: assuming dual-partition (ExtraPartitionCount = 1)");
+            return Ok(1);
+        }
+
+        // 执行MODE SENSE 0x11命令 (对应LTFSCopyGUI的ModeSense(driveHandle, &H11))
+        match self.scsi.mode_sense_partition_info() {
+            Ok(mode_data) => {
+                // 精确匹配LTFSCopyGUI逻辑: If PModeData.Length >= 4 Then ExtraPartitionCount = PModeData(3)
+                if mode_data.len() >= 4 {
+                    let extra_partition_count = mode_data[3];
+                    info!(
+                        "✅ ExtraPartitionCount detected from MODE SENSE: {}",
+                        extra_partition_count
+                    );
+                    
+                    // 应用LTFSCopyGUI的验证逻辑: Math.Min(1, value)
+                    let validated_count = std::cmp::min(1, extra_partition_count);
+                    
+                    if validated_count != extra_partition_count {
+                        warn!(
+                            "ExtraPartitionCount limited from {} to {} (Math.Min validation)",
+                            extra_partition_count, validated_count
+                        );
+                    }
+                    
+                    Ok(validated_count)
+                } else {
+                    warn!(
+                        "MODE SENSE data too short ({} bytes), defaulting to single partition",
+                        mode_data.len()
+                    );
+                    Ok(0)
                 }
             }
             Err(e) => {
                 warn!(
-                    "Failed to check multi-partition support: {}, assuming multi-partition",
+                    "MODE SENSE 0x11 failed: {}, defaulting to single partition",
                     e
                 );
+                Ok(0)
             }
         }
+    }
 
-        // 步骤2: 检查索引位置指示符
-        match self.check_index_location_from_volume_label().await {
-            Ok(location) => {
-                if location.partition.to_lowercase() == "b" {
-                    info!("Volume label indicates index in data partition (partition B)");
-                    return Ok(PartitionStrategy::IndexFromDataPartition);
-                }
+    /// 根据ExtraPartitionCount确定分区策略 (对应LTFSCopyGUI的策略选择)
+    pub async fn determine_partition_strategy(&self, extra_partition_count: u8) -> PartitionStrategy {
+        info!(
+            "Determining partition strategy based on ExtraPartitionCount = {}",
+            extra_partition_count
+        );
+
+        match extra_partition_count {
+            0 => {
+                info!("Single-partition strategy (ExtraPartitionCount = 0)");
+                PartitionStrategy::SinglePartitionFallback
             }
-            Err(e) => {
-                debug!(
-                    "Could not determine index location from volume label: {}",
-                    e
+            1 => {
+                info!("Dual-partition strategy (ExtraPartitionCount = 1)");
+                PartitionStrategy::StandardMultiPartition
+            }
+            _ => {
+                warn!(
+                    "Unexpected ExtraPartitionCount value: {}, using dual-partition strategy",
+                    extra_partition_count
                 );
+                PartitionStrategy::StandardMultiPartition
             }
         }
+    }
 
-        // 步骤3: 默认使用标准多分区策略
-        info!("Using standard multi-partition strategy (index: partition A, data: partition B)");
-        Ok(PartitionStrategy::StandardMultiPartition)
+    /// 分区号映射 (精确对应LTFSCopyGUI的Math.Min逻辑)
+    /// 对应: Math.Min(ExtraPartitionCount, partition)
+    pub fn map_partition_number(&self, logical_partition: u8, extra_partition_count: u8) -> u8 {
+        let physical_partition = std::cmp::min(extra_partition_count, logical_partition);
+        
+        debug!(
+            "Partition mapping: logical={} -> physical={} (ExtraPartitionCount={})",
+            logical_partition, physical_partition, extra_partition_count
+        );
+        
+        physical_partition
+    }
+
+    /// 验证和标准化ExtraPartitionCount值 (对应LTFSCopyGUI的双重Math.Min验证)
+    /// 对应: Math.Min(1, value) 和 Math.Min(value, MaxExtraPartitionAllowed)
+    pub fn validate_extra_partition_count(&self, value: u8, max_allowed: u8) -> u8 {
+        // 第一层验证: Math.Min(1, value)
+        let step1 = std::cmp::min(1, value);
+        
+        // 第二层验证: Math.Min(step1, MaxExtraPartitionAllowed)
+        let final_value = std::cmp::min(step1, max_allowed);
+        
+        if final_value != value {
+            warn!(
+                "ExtraPartitionCount normalized: {} -> {} (limits: max=1, max_allowed={})",
+                value, final_value, max_allowed
+            );
+        }
+        
+        final_value
+    }
+
+    /// 获取目标分区号用于定位操作 (对应LTFSCopyGUI的分区选择逻辑)
+    /// 对应: Math.Min(ExtraPartitionCount, IndexPartition) 和 Math.Min(ExtraPartitionCount, ext.partition)
+    pub fn get_target_partition(&self, logical_partition: u8, extra_partition_count: u8) -> u8 {
+        self.map_partition_number(logical_partition, extra_partition_count)
     }
 
     /// 检查磁带多分区支持 (对应LTFSCopyGUI的ExtraPartitionCount检测)
@@ -772,13 +845,6 @@ impl PartitionManager {
 
 /// 为TapeOperations实现分区管理功能
 impl crate::tape_ops::TapeOperations {
-    /// 创建分区管理器
-    pub fn create_partition_manager(&self) -> PartitionManager {
-        PartitionManager::new(
-            Arc::new(ScsiInterface::new()), // 创建新的SCSI接口实例
-            self.offline_mode,
-        )
-    }
 
     /// 检测分区大小
     pub async fn detect_partition_sizes(&self) -> Result<PartitionInfo> {
