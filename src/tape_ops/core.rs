@@ -78,9 +78,9 @@ impl TapeOperations {
     }
 
     /// 初始化分区检测 (精确对应LTFSCopyGUI的初始化逻辑)
-    /// 检测ExtraPartitionCount并设置分区策略
+    /// 检测ExtraPartitionCount并设置分区策略 - 修复版本：直接使用已打开的SCSI设备
     pub async fn initialize_partition_detection(&mut self) -> Result<()> {
-        info!("Initializing partition detection (LTFSCopyGUI compatible)");
+        info!("Initializing partition detection (LTFSCopyGUI compatible) - using opened SCSI device");
 
         if self.offline_mode {
             info!("Offline mode: skipping partition detection");
@@ -88,30 +88,50 @@ impl TapeOperations {
             return Ok(());
         }
 
-        // 创建分区管理器
-        let partition_manager = self.create_partition_manager();
-
-        // 步骤1: 检测ExtraPartitionCount (对应LTFSCopyGUI的MODE SENSE检测)
-        match partition_manager.detect_extra_partition_count().await {
-            Ok(detected_count) => {
-                // 应用LTFSCopyGUI的验证逻辑
-                let validated_count = partition_manager.validate_extra_partition_count(
-                    detected_count,
-                    self.max_extra_partition_allowed,
-                );
-
-                self.extra_partition_count = Some(validated_count);
-                info!(
-                    "✅ ExtraPartitionCount initialized: {} (detected: {}, validated: {})",
-                    validated_count, detected_count, validated_count
-                );
-
-                // 设置modified状态 (对应LTFSCopyGUI的Modified = ExtraPartitionCount > 0)
-                self.modified = validated_count > 0;
+        // 直接使用已打开的self.scsi进行MODE SENSE检测 (对应LTFSCopyGUI的MODE SENSE检测)
+        info!("🔧 Using opened SCSI device for MODE SENSE (fixing device handle inconsistency)");
+        
+        match self.scsi.mode_sense_partition_info() {
+            Ok(mode_data) => {
+                // 精确匹配LTFSCopyGUI逻辑: If PModeData.Length >= 4 Then ExtraPartitionCount = PModeData(3)
+                if mode_data.len() >= 4 {
+                    let detected_count = mode_data[3];
+                    info!(
+                        "✅ ExtraPartitionCount detected from MODE SENSE: {}",
+                        detected_count
+                    );
+                    
+                    // 应用LTFSCopyGUI的验证逻辑: Math.Min(1, value)
+                    let validated_count = std::cmp::min(1, detected_count);
+                    let final_count = std::cmp::min(validated_count, self.max_extra_partition_allowed);
+                    
+                    if final_count != detected_count {
+                        warn!(
+                            "ExtraPartitionCount limited from {} to {} (Math.Min validation)",
+                            detected_count, final_count
+                        );
+                    }
+                    
+                    self.extra_partition_count = Some(final_count);
+                    info!(
+                        "✅ ExtraPartitionCount initialized: {} (detected: {}, validated: {})",
+                        final_count, detected_count, final_count
+                    );
+                    
+                    // 设置modified状态 (对应LTFSCopyGUI的Modified = ExtraPartitionCount > 0)
+                    self.modified = final_count > 0;
+                } else {
+                    warn!(
+                        "MODE SENSE data too short ({} bytes), defaulting to single partition",
+                        mode_data.len()
+                    );
+                    self.extra_partition_count = Some(0);
+                    self.modified = false;
+                }
             }
             Err(e) => {
                 warn!(
-                    "Failed to detect ExtraPartitionCount: {}, defaulting to single partition",
+                    "MODE SENSE 0x11 failed: {}, defaulting to single partition",
                     e
                 );
                 self.extra_partition_count = Some(0);
@@ -133,7 +153,7 @@ impl TapeOperations {
         std::cmp::min(extra_partition_count, logical_partition)
     }
 
-    /// 创建分区管理器
+    /// 创建分区管理器 (注意：此方法创建新的SCSI实例，仅用于离线模式)
     pub fn create_partition_manager(&self) -> super::partition_manager::PartitionManager {
         super::partition_manager::PartitionManager::new(
             std::sync::Arc::new(crate::scsi::ScsiInterface::new()),
