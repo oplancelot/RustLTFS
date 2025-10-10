@@ -1102,9 +1102,8 @@ impl TapeOperations {
             },
         };
 
-        // Add file to appropriate directory (simplified - should handle path parsing)
-        // For now, add to root directory
-        current_index.root_directory.contents.files.push(new_file);
+        // Parse target path and add file to appropriate directory
+        self.add_file_to_target_directory(&mut current_index, new_file, target_path)?;
 
         // Update index metadata
         current_index.generationnumber += 1;
@@ -1179,8 +1178,8 @@ impl TapeOperations {
             extended_attributes: None,
         };
 
-        // Add file to root directory (simplified - should handle path parsing)
-        current_index.root_directory.contents.files.push(new_file);
+        // Parse target path and add file to appropriate directory  
+        self.add_file_to_target_directory(&mut current_index, new_file, target_path)?;
 
         // Update index metadata
         current_index.generationnumber += 1;
@@ -1871,5 +1870,99 @@ impl TapeOperations {
                 },
             },
         }
+    }
+
+    /// Add file to target directory, creating directories as needed
+    fn add_file_to_target_directory(
+        &self, 
+        index: &mut LtfsIndex, 
+        file: crate::ltfs_index::File, 
+        target_path: &str
+    ) -> Result<()> {
+        debug!("Adding file '{}' to target path '{}'", file.name, target_path);
+        
+        // Normalize target path
+        let normalized_path = target_path.trim_start_matches('/').trim_end_matches('/');
+        
+        if normalized_path.is_empty() {
+            // Add to root directory
+            debug!("Adding file '{}' to root directory", file.name);
+            index.root_directory.contents.files.push(file);
+            return Ok(());
+        }
+        
+        // Split path into components
+        let path_parts: Vec<&str> = normalized_path.split('/').collect();
+        debug!("Target path components: {:?}", path_parts);
+        
+        // Navigate to target directory, creating directories as needed
+        let target_dir = self.ensure_directory_path_exists(index, &path_parts)?;
+        
+        // Add file to target directory
+        let file_name = file.name.clone(); // Clone name before move
+        target_dir.contents.files.push(file);
+        debug!("File '{}' added to directory '{}'", file_name, normalized_path);
+        
+        Ok(())
+    }
+    
+    /// Ensure directory path exists, creating directories as needed
+    fn ensure_directory_path_exists<'a>(
+        &self,
+        index: &'a mut LtfsIndex,
+        path_parts: &[&str],
+    ) -> Result<&'a mut crate::ltfs_index::Directory> {
+        if path_parts.is_empty() {
+            return Ok(&mut index.root_directory);
+        }
+        
+        let mut current_dir = &mut index.root_directory;
+        
+        for (i, part) in path_parts.iter().enumerate() {
+            debug!("Processing directory part: '{}' (level {})", part, i);
+            
+            // Find existing directory or create new one
+            let dir_index = current_dir.contents.directories
+                .iter()
+                .position(|d| d.name == *part);
+                
+            match dir_index {
+                Some(index) => {
+                    debug!("Found existing directory: '{}'", part);
+                    // Directory exists, continue navigation
+                    current_dir = &mut current_dir.contents.directories[index];
+                }
+                None => {
+                    debug!("Creating new directory: '{}'", part);
+                    // Create new directory
+                    let now = chrono::Utc::now().to_rfc3339();
+                    let new_uid = index.highestfileuid.unwrap_or(0) + 1;
+                    
+                    let new_directory = crate::ltfs_index::Directory {
+                        name: part.to_string(),
+                        uid: new_uid,
+                        creation_time: now.clone(),
+                        change_time: now.clone(),
+                        modify_time: now.clone(),
+                        access_time: now.clone(),
+                        backup_time: now,
+                        read_only: false,
+                        contents: crate::ltfs_index::DirectoryContents {
+                            files: Vec::new(),
+                            directories: Vec::new(),
+                        },
+                    };
+                    
+                    current_dir.contents.directories.push(new_directory);
+                    index.highestfileuid = Some(new_uid);
+                    
+                    // Navigate to newly created directory
+                    let last_index = current_dir.contents.directories.len() - 1;
+                    current_dir = &mut current_dir.contents.directories[last_index];
+                }
+            }
+        }
+        
+        Ok(current_dir)
     }
 }
