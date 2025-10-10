@@ -1430,7 +1430,10 @@ impl super::TapeOperations {
                     info!("✅ Strategy 0 succeeded - latest index read from data partition EOD (LTFSCopyGUI priority)");
                     return Ok(xml_content);
                 }
-                Err(e) => debug!("Strategy 0 (data partition EOD priority) failed: {}", e),
+                Err(e) => {
+                    warn!("Strategy 0 (data partition EOD priority) failed: {}", e);
+                    info!("EOD strategy failure details: {}", e);
+                }
             }
         } else {
             // 单分区磁带：按照LTFSCopyGUI逻辑，从主分区EOD读取最新索引
@@ -1439,7 +1442,10 @@ impl super::TapeOperations {
                     info!("✅ Strategy 0 succeeded - latest index read from partition 0 EOD (single partition)");
                     return Ok(xml_content);
                 }
-                Err(e) => debug!("Strategy 0 (partition 0 EOD) failed: {}", e),
+                Err(e) => {
+                    warn!("Strategy 0 (partition 0 EOD) failed: {}", e);
+                    info!("Single partition EOD strategy failure details: {}", e);
+                }
             }
         }
 
@@ -1796,8 +1802,22 @@ impl super::TapeOperations {
 
         // Step 1: 定位到数据分区EOD (对应LTFSCopyGUI: TapeUtils.Locate(driveHandle, 0UL, DataPartition, TapeUtils.LocateDestType.EOD))
         info!("Locating to data partition {} EOD", data_partition);
-        self.scsi.locate_block(data_partition, 0)?;
-        self.scsi.space(crate::scsi::SpaceType::EndOfData, 0)?;
+        
+        match self.scsi.locate_block(data_partition, 0) {
+            Ok(()) => info!("Successfully positioned to data partition {}, block 0", data_partition),
+            Err(e) => {
+                warn!("Failed to locate to data partition {}, block 0: {}", data_partition, e);
+                return Err(RustLtfsError::ltfs_index(format!("Cannot position to data partition: {}", e)));
+            }
+        }
+        
+        match self.scsi.space(crate::scsi::SpaceType::EndOfData, 0) {
+            Ok(()) => info!("Successfully spaced to End of Data in partition {}", data_partition),
+            Err(e) => {
+                warn!("Failed to space to End of Data in partition {}: {}", data_partition, e);
+                return Err(RustLtfsError::ltfs_index(format!("Cannot space to EOD: {}", e)));
+            }
+        }
 
         let eod_position = self.scsi.read_position()?;
         info!("Data partition EOD position: partition={}, block={}, file_number={}", 
