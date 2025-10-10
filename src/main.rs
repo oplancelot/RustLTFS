@@ -326,7 +326,7 @@ async fn run(args: Cli) -> Result<()> {
                 }
                 info!("Auto updating LTFS index...");
                 
-                match ops.update_index_on_tape().await {
+                match ops.update_index_on_tape_with_options_dual_partition(false).await {
                     Ok(_) => {
                         if progress {
                             println!("✅ Index updated successfully");

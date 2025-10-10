@@ -40,7 +40,7 @@ impl TapeOperations {
                     volumelockstate: None,
                     highestfileuid: Some(1),
                     root_directory: crate::ltfs_index::Directory {
-                        name: ".".to_string(),
+                        name: "".to_string(),
                         uid: 1,
                         creation_time: now.clone(),
                         change_time: now.clone(),
