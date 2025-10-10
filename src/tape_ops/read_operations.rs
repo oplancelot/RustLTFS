@@ -261,6 +261,21 @@ impl super::TapeOperations {
         }
     }
 
+    /// 同步版本：在当前位置尝试读取索引（使用动态block size）
+    fn try_read_index_at_current_position_with_filemarks(&self) -> Result<String> {
+        // 获取动态blocksize (对应LTFSCopyGUI的plabel.blocksize)
+        let block_size = self
+            .partition_label
+            .as_ref()
+            .map(|plabel| plabel.blocksize as usize)
+            .unwrap_or(crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize);
+
+        debug!("Using dynamic blocksize: {} bytes for index reading", block_size);
+
+        // 直接使用当前TapeOperations的read_to_file_mark方法
+        self.read_to_file_mark_with_temp_file(block_size)
+    }
+
     /// Find current LTFS index location from volume label
     fn find_current_index_location(&self) -> Result<IndexLocation> {
         debug!("Finding current index location from volume label");
@@ -1244,7 +1259,7 @@ impl super::TapeOperations {
             );
 
             match self.scsi.locate_block(index_partition, block) {
-                Ok(()) => match self.try_read_index_at_current_position_sync() {
+                Ok(()) => match self.try_read_index_at_current_position_with_filemarks() {
                     Ok(xml_content) => {
                         if !xml_content.trim().is_empty()
                             && xml_content.contains("<ltfsindex")
@@ -1319,7 +1334,7 @@ impl super::TapeOperations {
             debug!("Trying data partition block {}", block);
 
             match self.scsi.locate_block(data_partition, block) {
-                Ok(()) => match self.try_read_index_at_current_position_sync() {
+                Ok(()) => match self.try_read_index_at_current_position_with_filemarks() {
                     Ok(xml_content) => {
                         if xml_content.contains("<ltfsindex")
                             && xml_content.contains("</ltfsindex>")
@@ -1349,7 +1364,7 @@ impl super::TapeOperations {
             debug!("Extended search: trying block {}", block);
 
             match self.scsi.locate_block(0, block) {
-                Ok(()) => match self.try_read_index_at_current_position_sync() {
+                Ok(()) => match self.try_read_index_at_current_position_with_filemarks() {
                     Ok(xml_content) => {
                         if xml_content.contains("<ltfsindex")
                             && xml_content.contains("</ltfsindex>")
@@ -1405,17 +1420,26 @@ impl super::TapeOperations {
         let partition_count = self.detect_partition_count()?;
         let index_partition = if partition_count > 1 { 0 } else { 0 };
 
-        // 策略0 (最高优先级): 按照LTFSCopyGUI逻辑优先读取数据分区索引  
-        info!("Strategy 0 (Highest Priority): Reading from data partition first (LTFSCopyGUI logic)");
+        // 策略0 (最高优先级): 按照LTFSCopyGUI逻辑优先读取数据分区EOD最新索引  
+        info!("Strategy 0 (Highest Priority): Reading latest index from data partition EOD (LTFSCopyGUI logic)");
         
         if partition_count > 1 {
-            // 多分区磁带：优先尝试读取数据分区最新索引，匹配LTFSCopyGUI的"读取数据区索引"
-            match self.try_read_from_data_partition_async().await {
+            // 多分区磁带：按照LTFSCopyGUI的"读取数据区索引"逻辑，优先从数据分区EOD读取最新索引
+            match self.try_read_latest_index_from_data_partition_eod().await {
                 Ok(xml_content) => {
-                    info!("✅ Strategy 0 succeeded - index read from data partition (LTFSCopyGUI priority)");
+                    info!("✅ Strategy 0 succeeded - latest index read from data partition EOD (LTFSCopyGUI priority)");
                     return Ok(xml_content);
                 }
-                Err(e) => debug!("Strategy 0 (data partition priority) failed: {}", e),
+                Err(e) => debug!("Strategy 0 (data partition EOD priority) failed: {}", e),
+            }
+        } else {
+            // 单分区磁带：按照LTFSCopyGUI逻辑，从主分区EOD读取最新索引
+            match self.try_read_latest_index_from_eod(0).await {
+                Ok(xml_content) => {
+                    info!("✅ Strategy 0 succeeded - latest index read from partition 0 EOD (single partition)");
+                    return Ok(xml_content);
+                }
+                Err(e) => debug!("Strategy 0 (partition 0 EOD) failed: {}", e),
             }
         }
 
@@ -1430,7 +1454,7 @@ impl super::TapeOperations {
             );
 
             match self.scsi.locate_block(index_partition, block) {
-                Ok(()) => match self.try_read_index_at_current_position_sync() {
+                Ok(()) => match self.try_read_index_at_current_position_with_filemarks() {
                     Ok(xml_content) => {
                         if !xml_content.trim().is_empty()
                             && xml_content.contains("<ltfsindex")
@@ -1566,7 +1590,7 @@ impl super::TapeOperations {
                                     match self.scsi.space(crate::scsi::SpaceType::FileMarks, 1) {
                                         Ok(_) => {
                                             // 现在应该在最后的索引位置，尝试读取
-                                            match self.try_read_index_at_current_position_sync() {
+                                            match self.try_read_index_at_current_position_with_filemarks() {
                                                 Ok(xml_content) => {
                                                     if xml_content.contains("<ltfsindex") && xml_content.contains("</ltfsindex>") {
                                                         info!("✅ Found valid index at data partition EOD-1");
@@ -1591,13 +1615,14 @@ impl super::TapeOperations {
 
         // 回退策略：搜索数据分区的一些常见索引位置
         info!("EOD strategy failed, trying common data partition locations");
-        let search_blocks = vec![10000, 5000, 2000, 1000]; // 数据分区的常见索引位置
+        // 修复：添加小块号，覆盖新写入的索引位置 
+        let search_blocks = vec![50, 100, 500, 1000, 2000, 5000, 10000]; // 从小到大搜索
 
         for &block in &search_blocks {
             debug!("Trying data partition block {}", block);
 
             match self.scsi.locate_block(data_partition, block) {
-                Ok(()) => match self.try_read_index_at_current_position_sync() {
+                Ok(()) => match self.try_read_index_at_current_position_with_filemarks() {
                     Ok(xml_content) => {
                         if xml_content.contains("<ltfsindex")
                             && xml_content.contains("</ltfsindex>")
@@ -1627,7 +1652,7 @@ impl super::TapeOperations {
             debug!("Extended search: trying block {}", block);
 
             match self.scsi.locate_block(0, block) {
-                Ok(()) => match self.try_read_index_at_current_position_sync() {
+                Ok(()) => match self.try_read_index_at_current_position_with_filemarks() {
                     Ok(xml_content) => {
                         if xml_content.contains("<ltfsindex")
                             && xml_content.contains("</ltfsindex>")
@@ -1664,7 +1689,7 @@ impl super::TapeOperations {
             {
                 Ok(()) => {
                     // 尝试读取当前位置的数据
-                    match self.try_read_index_at_current_position_sync() {
+                    match self.try_read_index_at_current_position_with_filemarks() {
                         Ok(xml_content) => {
                             if self.is_valid_ltfs_index(&xml_content) {
                                 info!(
@@ -1720,7 +1745,7 @@ impl super::TapeOperations {
         self.scsi.locate_block(0, block)?;
         
         // 尝试读取索引
-        self.try_read_index_at_current_position_sync()
+        self.try_read_index_at_current_position_with_filemarks()
     }
     
     /// 优化的并行策略搜索
@@ -1742,7 +1767,7 @@ impl super::TapeOperations {
         // 快速串行搜索优先位置（避免并行磁带操作的复杂性）
         for &block in &priority_locations {
             if let Ok(()) = self.scsi.locate_block(0, block) {
-                if let Ok(xml_content) = self.try_read_index_at_current_position_sync() {
+                if let Ok(xml_content) = self.try_read_index_at_current_position_with_filemarks() {
                     if xml_content.contains("<ltfsindex") && xml_content.contains("</ltfsindex>") {
                         info!("✅ Found index at priority location: block {}", block);
                         return Ok((xml_content, block));
@@ -1760,5 +1785,138 @@ impl super::TapeOperations {
             }
             Err(e) => Err(e)
         }
+    }
+
+    /// 按照LTFSCopyGUI逻辑从数据分区EOD读取最新索引
+    /// 对应VB.NET读取数据区索引ToolStripMenuItem_Click的核心逻辑
+    async fn try_read_latest_index_from_data_partition_eod(&mut self) -> Result<String> {
+        info!("Reading latest index from data partition EOD (matching LTFSCopyGUI 读取数据区索引)");
+
+        let data_partition = 1; // 数据分区
+
+        // Step 1: 定位到数据分区EOD (对应LTFSCopyGUI: TapeUtils.Locate(driveHandle, 0UL, DataPartition, TapeUtils.LocateDestType.EOD))
+        info!("Locating to data partition {} EOD", data_partition);
+        self.scsi.locate_block(data_partition, 0)?;
+        self.scsi.space(crate::scsi::SpaceType::EndOfData, 0)?;
+
+        let eod_position = self.scsi.read_position()?;
+        info!("Data partition EOD position: partition={}, block={}, file_number={}", 
+              eod_position.partition, eod_position.block_number, eod_position.file_number);
+
+        // Step 2: 检查 FileNumber，确保有足够的 FileMark (对应LTFSCopyGUI: If FM <= 1 Then)
+        if eod_position.file_number <= 1 {
+            return Err(RustLtfsError::ltfs_index(
+                "Insufficient file marks in data partition for index reading".to_string()
+            ));
+        }
+
+        // Step 3: 定位到最后一个FileMark之前 (对应LTFSCopyGUI: TapeUtils.Locate(handle:=driveHandle, BlockAddress:=FM - 1, Partition:=DataPartition, DestType:=TapeUtils.LocateDestType.FileMark))
+        let target_filemark = eod_position.file_number - 1;
+        info!("Locating to FileMark {} in data partition", target_filemark);
+        
+        match self.scsi.locate_to_filemark(target_filemark, data_partition) {
+            Ok(()) => {
+                info!("Successfully positioned to FileMark {}", target_filemark);
+                
+                // Step 4: 跳过FileMark并读取索引内容 (对应LTFSCopyGUI: TapeUtils.ReadFileMark + TapeUtils.ReadToFileMark)
+                match self.scsi.space(crate::scsi::SpaceType::FileMarks, 1) {
+                    Ok(_) => {
+                        info!("Skipped FileMark, now reading latest index content");
+                        let position_after_fm = self.scsi.read_position()?;
+                        info!("Position after FileMark: partition={}, block={}", 
+                              position_after_fm.partition, position_after_fm.block_number);
+                        
+                        // 读取索引内容
+                        match self.try_read_index_at_current_position_with_filemarks() {
+                            Ok(xml_content) => {
+                                if xml_content.contains("<ltfsindex") && xml_content.contains("</ltfsindex>") {
+                                    info!("✅ Successfully read latest index from data partition EOD at FileMark {}", target_filemark);
+                                    return Ok(xml_content);
+                                } else {
+                                    warn!("Content at data partition EOD FileMark {} is not valid LTFS index", target_filemark);
+                                }
+                            }
+                            Err(e) => {
+                                debug!("Failed to read content at data partition EOD FileMark {}: {}", target_filemark, e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Failed to skip FileMark {}: {}", target_filemark, e);
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("Failed to locate to FileMark {} in data partition: {}", target_filemark, e);
+            }
+        }
+
+        Err(RustLtfsError::ltfs_index(
+            "No valid latest index found at data partition EOD".to_string()
+        ))
+    }
+
+    /// 按照LTFSCopyGUI逻辑从指定分区EOD读取最新索引
+    /// 对应单分区磁带的索引读取逻辑
+    async fn try_read_latest_index_from_eod(&mut self, partition: u8) -> Result<String> {
+        info!("Reading latest index from partition {} EOD (single partition logic)", partition);
+
+        // Step 1: 定位到指定分区EOD
+        info!("Locating to partition {} EOD", partition);
+        self.scsi.locate_block(partition, 0)?;
+        self.scsi.space(crate::scsi::SpaceType::EndOfData, 0)?;
+
+        let eod_position = self.scsi.read_position()?;
+        info!("Partition {} EOD position: partition={}, block={}, file_number={}", 
+              partition, eod_position.partition, eod_position.block_number, eod_position.file_number);
+
+        // Step 2: 检查 FileNumber，确保有足够的 FileMark
+        if eod_position.file_number <= 1 {
+            return Err(RustLtfsError::ltfs_index(
+                format!("Insufficient file marks in partition {} for index reading", partition)
+            ));
+        }
+
+        // Step 3: 定位到最后一个FileMark之前
+        let target_filemark = eod_position.file_number - 1;
+        info!("Locating to FileMark {} in partition {}", target_filemark, partition);
+        
+        match self.scsi.locate_to_filemark(target_filemark, partition) {
+            Ok(()) => {
+                info!("Successfully positioned to FileMark {} in partition {}", target_filemark, partition);
+                
+                // Step 4: 跳过FileMark并读取索引内容
+                match self.scsi.space(crate::scsi::SpaceType::FileMarks, 1) {
+                    Ok(_) => {
+                        info!("Skipped FileMark, now reading latest index content");
+                        
+                        // 读取索引内容
+                        match self.try_read_index_at_current_position_with_filemarks() {
+                            Ok(xml_content) => {
+                                if xml_content.contains("<ltfsindex") && xml_content.contains("</ltfsindex>") {
+                                    info!("✅ Successfully read latest index from partition {} EOD at FileMark {}", partition, target_filemark);
+                                    return Ok(xml_content);
+                                } else {
+                                    warn!("Content at partition {} EOD FileMark {} is not valid LTFS index", partition, target_filemark);
+                                }
+                            }
+                            Err(e) => {
+                                debug!("Failed to read content at partition {} EOD FileMark {}: {}", partition, target_filemark, e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Failed to skip FileMark {} in partition {}: {}", target_filemark, partition, e);
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("Failed to locate to FileMark {} in partition {}: {}", target_filemark, partition, e);
+            }
+        }
+
+        Err(RustLtfsError::ltfs_index(
+            format!("No valid latest index found at partition {} EOD", partition)
+        ))
     }
 }
