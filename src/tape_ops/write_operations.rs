@@ -775,9 +775,17 @@ impl TapeOperations {
         
         if self.write_progress.total_bytes_unindexed >= self.write_options.index_write_interval ||
            should_force_index {
-            info!("Index write interval reached or force_index enabled (auto-force: {}), updating index...", 
-                  should_force_index && !self.write_options.force_index);
+            info!("Index write triggered: interval_reached={}, should_force={}, total_unindexed={}, files_processed={}", 
+                  self.write_progress.total_bytes_unindexed >= self.write_options.index_write_interval,
+                  should_force_index && !self.write_options.force_index,
+                  self.write_progress.total_bytes_unindexed,
+                  self.write_progress.current_files_processed);
             self.update_index_on_tape_with_options_dual_partition(should_force_index).await?;
+        } else {
+            info!("Index write skipped: total_unindexed={}, interval={}, files_processed={}", 
+                  self.write_progress.total_bytes_unindexed,
+                  self.write_options.index_write_interval,
+                  self.write_progress.current_files_processed);
         }
         
         Ok(WriteResult {
