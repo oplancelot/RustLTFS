@@ -1117,12 +1117,12 @@ impl TapeOperations {
         };
 
         // Parse target path and add file to appropriate directory
-        debug!("Before adding file: root directory has {} files, {} directories", 
+        info!("Before adding file: root directory has {} files, {} directories", 
                current_index.root_directory.contents.files.len(),
                current_index.root_directory.contents.directories.len());
-        debug!("Adding file '{}' to target path: '{}'", new_file.name, target_path);
+        info!("Adding file '{}' to target path: '{}'", new_file.name, target_path);
         self.add_file_to_target_directory(&mut current_index, new_file, target_path)?;
-        debug!("After adding file: root directory has {} files, {} directories", 
+        info!("After adding file: root directory has {} files, {} directories", 
                current_index.root_directory.contents.files.len(),
                current_index.root_directory.contents.directories.len());
 
@@ -1900,33 +1900,33 @@ impl TapeOperations {
         file: crate::ltfs_index::File, 
         target_path: &str
     ) -> Result<()> {
-        debug!("Adding file '{}' to target path '{}'", file.name, target_path);
+        info!("Adding file '{}' to target path '{}'", file.name, target_path);
         
         // Normalize target path
         let normalized_path = target_path.trim_start_matches('/').trim_end_matches('/');
-        debug!("Normalized path: '{}'", normalized_path);
+        info!("Normalized path: '{}'", normalized_path);
         
         if normalized_path.is_empty() {
             // Add to root directory
-            debug!("Adding file '{}' to root directory", file.name);
+            info!("Adding file '{}' to root directory", file.name);
             index.root_directory.contents.files.push(file);
-            debug!("Root directory now has {} files", index.root_directory.contents.files.len());
+            info!("Root directory now has {} files", index.root_directory.contents.files.len());
             return Ok(());
         }
         
         // Split path into components
         let path_parts: Vec<&str> = normalized_path.split('/').collect();
-        debug!("Target path components: {:?}", path_parts);
+        info!("Target path components: {:?}", path_parts);
         
         // Navigate to target directory, creating directories as needed
-        debug!("Finding/creating target directory path...");
+        info!("Finding/creating target directory path...");
         let target_dir = self.ensure_directory_path_exists(index, &path_parts)?;
-        debug!("Target directory found/created, adding file...");
+        info!("Target directory found/created, adding file...");
         
         // Add file to target directory
         let file_name = file.name.clone(); // Clone name before move
         target_dir.contents.files.push(file);
-        debug!("File '{}' added to directory '{}', directory now has {} files", 
+        info!("File '{}' added to directory '{}', directory now has {} files", 
                file_name, normalized_path, target_dir.contents.files.len());
         
         Ok(())
@@ -1938,19 +1938,19 @@ impl TapeOperations {
         index: &'a mut LtfsIndex,
         path_parts: &[&str],
     ) -> Result<&'a mut crate::ltfs_index::Directory> {
-        debug!("ensure_directory_path_exists called with path_parts: {:?}", path_parts);
+        info!("ensure_directory_path_exists called with path_parts: {:?}", path_parts);
         
         if path_parts.is_empty() {
-            debug!("Path parts empty, returning root directory");
+            info!("Path parts empty, returning root directory");
             return Ok(&mut index.root_directory);
         }
         
         let mut current_dir = &mut index.root_directory;
-        debug!("Starting at root directory with {} subdirectories", current_dir.contents.directories.len());
+        info!("Starting at root directory with {} subdirectories", current_dir.contents.directories.len());
         
         for (i, part) in path_parts.iter().enumerate() {
-            debug!("Processing directory part: '{}' (level {})", part, i);
-            debug!("Current directory has {} subdirectories", current_dir.contents.directories.len());
+            info!("Processing directory part: '{}' (level {})", part, i);
+            info!("Current directory has {} subdirectories", current_dir.contents.directories.len());
             
             // Find existing directory or create new one
             let dir_index = current_dir.contents.directories
@@ -1959,16 +1959,16 @@ impl TapeOperations {
                 
             match dir_index {
                 Some(index) => {
-                    debug!("Found existing directory: '{}' at index {}", part, index);
+                    info!("Found existing directory: '{}' at index {}", part, index);
                     // Directory exists, continue navigation
                     current_dir = &mut current_dir.contents.directories[index];
                 }
                 None => {
-                    debug!("Creating new directory: '{}'", part);
+                    info!("Creating new directory: '{}'", part);
                     // Create new directory
                     let now = chrono::Utc::now().to_rfc3339();
                     let new_uid = index.highestfileuid.unwrap_or(0) + 1;
-                    debug!("New directory UID: {}", new_uid);
+                    info!("New directory UID: {}", new_uid);
                     
                     let new_directory = crate::ltfs_index::Directory {
                         name: part.to_string(),
@@ -1987,18 +1987,18 @@ impl TapeOperations {
                     
                     current_dir.contents.directories.push(new_directory);
                     index.highestfileuid = Some(new_uid);
-                    debug!("Directory '{}' created and added, current directory now has {} subdirectories", 
+                    info!("Directory '{}' created and added, current directory now has {} subdirectories", 
                            part, current_dir.contents.directories.len());
                     
                     // Navigate to newly created directory
                     let last_index = current_dir.contents.directories.len() - 1;
                     current_dir = &mut current_dir.contents.directories[last_index];
-                    debug!("Navigated to newly created directory '{}'", part);
+                    info!("Navigated to newly created directory '{}'", part);
                 }
             }
         }
         
-        debug!("Final target directory reached, has {} files, {} subdirectories", 
+        info!("Final target directory reached, has {} files, {} subdirectories", 
                current_dir.contents.files.len(), current_dir.contents.directories.len());
         Ok(current_dir)
     }
