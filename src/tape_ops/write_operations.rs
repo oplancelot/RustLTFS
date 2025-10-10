@@ -771,7 +771,7 @@ impl TapeOperations {
         if self.write_progress.total_bytes_unindexed >= self.write_options.index_write_interval ||
            self.write_options.force_index {
             info!("Index write interval reached or force_index enabled, updating index...");
-            self.update_index_on_tape_with_options(self.write_options.force_index).await?;
+            self.update_index_on_tape_with_options_dual_partition(self.write_options.force_index).await?;
         }
         
         Ok(WriteResult {
@@ -1027,8 +1027,8 @@ impl TapeOperations {
         let new_uid = current_index.highestfileuid.unwrap_or(0) + 1;
 
         let extent = crate::ltfs_index::FileExtent {
-            // 强制使用数据分区，按照LTFSCopyGUI逻辑文件应该写入数据分区b
-            partition: "b".to_string(),
+            // 使用实际写入位置的分区信息，而不是硬编码
+            partition: if write_position.partition == 0 { "a".to_string() } else { "b".to_string() },
             start_block: write_position.block_number,
             byte_count: file_size,
             file_offset: 0,
@@ -1153,8 +1153,8 @@ impl TapeOperations {
         let new_uid = current_index.highestfileuid.unwrap_or(0) + 1;
 
         let extent = crate::ltfs_index::FileExtent {
-            // 强制使用数据分区，按照LTFSCopyGUI逻辑文件应该写入数据分区b
-            partition: "b".to_string(),
+            // 使用实际写入位置的分区信息，而不是硬编码
+            partition: if write_position.partition == 0 { "a".to_string() } else { "b".to_string() },
             start_block: write_position.block_number,
             byte_count: file_size,
             file_offset: 0,
