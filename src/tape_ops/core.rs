@@ -153,7 +153,9 @@ impl TapeOperations {
         std::cmp::min(extra_partition_count, logical_partition)
     }
 
-    /// 创建分区管理器 (注意：此方法创建新的SCSI实例，仅用于离线模式)
+    /// 创建分区管理器 (已废弃：使用直接SCSI方法替代，仅保留以防向后兼容)
+    #[deprecated(note = "Use direct SCSI methods instead to avoid device handle inconsistency")]
+    #[allow(dead_code)]
     pub fn create_partition_manager(&self) -> super::partition_manager::PartitionManager {
         super::partition_manager::PartitionManager::new(
             std::sync::Arc::new(crate::scsi::ScsiInterface::new()),

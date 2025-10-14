@@ -1,7 +1,6 @@
 use crate::error::{Result, RustLtfsError};
-use crate::scsi::{MediaType, MamAttributeFormat};
+use crate::scsi::{MamAttributeFormat, MediaType};
 use super::partition_manager::LtfsPartitionLabel;
-use std::path::Path;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 use chrono;

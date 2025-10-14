@@ -3,8 +3,6 @@
 /// This module provides caching, batching, and performance enhancement
 /// features for LTFS tape operations.
 
-use crate::error::{Result, RustLtfsError};
-use crate::ltfs_index::{LtfsIndex, File, FileExtent};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};

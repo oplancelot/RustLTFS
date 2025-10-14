@@ -1,13 +1,12 @@
 use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::LtfsIndex;
-use crate::scsi::{MediaType, ScsiInterface};
-use std::path::{Path, PathBuf};
+use crate::scsi::MediaType;
+use std::path::Path;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
-use uuid::Uuid;
+use tracing::{debug, info, warn};
 
 // 导入partition_manager中的类型
-use super::partition_manager::{IndexLocation, PartitionStrategy, LtfsPartitionLabel, PartitionInfo};
+use super::partition_manager::{IndexLocation, PartitionStrategy};
 
 // LtfsPartitionLabel 在 format_operations.rs 中定义
 // 通过模块重新导出使用

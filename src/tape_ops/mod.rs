@@ -10,8 +10,6 @@ pub mod dual_partition_index;
 pub use self::core::*;
 // 选择性导出避免重名冲突
 pub use self::format_operations::{MkltfsParams, MkltfsProgressCallback, MkltfsFinishCallback, MkltfsErrorCallback};
-pub use self::partition_manager::*;
-pub use self::capacity_manager::*;
 
 use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::LtfsIndex;

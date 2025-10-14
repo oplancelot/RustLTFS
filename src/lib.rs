@@ -17,7 +17,7 @@ pub mod utils;
 
 // Re-export key types for easier use
 pub use error::{Result, RustLtfsError};
-pub use ltfs::{create_ltfs_access, LtfsDirectAccess, TapeCapacity};
+pub use ltfs::LtfsDirectAccess;
 pub use ltfs_index::{DirectoryEntry, File, FileExtent, LtfsIndex, PathType};
 pub use scsi::{
     locate_block, locate_to_eod, locate_to_filemark, locate_with_drive_type, locate_with_type,

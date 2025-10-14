@@ -2,9 +2,8 @@ use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::LtfsIndex;
 use crate::scsi::{MediaType, ScsiInterface};
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use chrono;
-use uuid::Uuid;
 
 /// LTFS分区标签结构 (对应LTFSCopyGUI的ltfslabel)
 #[derive(Debug, Clone)]
@@ -934,40 +933,112 @@ impl crate::tape_ops::TapeOperations {
         Ok(has_multi_partition)
     }
 
-    /// 验证分区配置
+    /// 验证分区配置 - 修复版本：直接使用已打开的SCSI设备
     pub async fn validate_partition_configuration(&self) -> Result<bool> {
-        let partition_manager = self.create_partition_manager();
-        partition_manager.validate_partition_configuration().await
+        info!("🔧 Validating partition configuration using opened SCSI device");
+        
+        let partition_info = self.detect_partition_sizes().await?;
+        
+        if partition_info.has_multi_partition {
+            // 验证多分区配置
+            if partition_info.partition_0_size == 0 || partition_info.partition_1_size == 0 {
+                warn!("Invalid multi-partition configuration: zero-sized partition detected");
+                return Ok(false);
+            }
+            
+            info!("Multi-partition configuration validated: p0={}GB, p1={}GB", 
+                  partition_info.partition_0_size / 1_000_000_000,
+                  partition_info.partition_1_size / 1_000_000_000);
+            Ok(true)
+        } else {
+            // 单分区配置
+            info!("Single partition configuration validated: {}GB", 
+                  partition_info.partition_0_size / 1_000_000_000);
+            Ok(true)
+        }
     }
 
-    /// 获取分区大小
+    /// 获取分区大小 - 修复版本：直接使用已打开的SCSI设备
     pub async fn get_partition_sizes(&self) -> Result<(u64, u64)> {
-        let partition_manager = self.create_partition_manager();
-        partition_manager.get_partition_sizes().await
+        info!("🔧 Getting partition sizes using opened SCSI device");
+        
+        let partition_info = self.detect_partition_sizes().await?;
+        Ok((partition_info.partition_0_size, partition_info.partition_1_size))
     }
 
-    /// 分区健康检查
+    /// 分区健康检查 - 修复版本：直接使用已打开的SCSI设备
     pub async fn partition_health_check(&self) -> Result<bool> {
-        let partition_manager = self.create_partition_manager();
-        partition_manager.partition_health_check().await
+        info!("🔧 Performing partition health check using opened SCSI device");
+
+        if self.offline_mode {
+            info!("Offline mode: simulating partition health check");
+            return Ok(true);
+        }
+
+        // 检查是否能成功访问所有分区
+        let partition_info = self.detect_partition_sizes().await?;
+        
+        // 测试分区0访问
+        match self.scsi.locate_block(0, 0) {
+            Ok(()) => debug!("Partition 0 access: OK"),
+            Err(e) => {
+                warn!("Partition 0 access failed: {}", e);
+                return Ok(false);
+            }
+        }
+
+        // 如果是多分区磁带，测试分区1访问
+        if partition_info.has_multi_partition {
+            match self.scsi.locate_block(1, 0) {
+                Ok(()) => {
+                    debug!("Partition 1 access: OK");
+                    // 返回分区0
+                    self.scsi.locate_block(0, 0)?;
+                }
+                Err(e) => {
+                    warn!("Partition 1 access failed: {}", e);
+                    return Ok(false);
+                }
+            }
+        }
+
+        info!("Partition health check passed");
+        Ok(true)
     }
 
-    /// 切换到指定分区
+    /// 切换到指定分区 - 修复版本：直接使用已打开的SCSI设备
     pub fn switch_to_partition(&self, partition: u8) -> Result<()> {
-        let partition_manager = self.create_partition_manager();
-        partition_manager.switch_to_partition(partition)
+        info!("🔧 Switching to partition {} using opened SCSI device", partition);
+
+        if self.offline_mode {
+            info!("Offline mode: simulating partition switch");
+            return Ok(());
+        }
+
+        self.scsi.locate_block(partition, 0)?;
+        info!("Successfully switched to partition {}", partition);
+        Ok(())
     }
 
-    /// 定位到指定分区的指定块
+    /// 定位到指定分区的指定块 - 修复版本：直接使用已打开的SCSI设备
     pub fn position_to_partition(&self, partition: u8, block: u64) -> Result<()> {
-        let partition_manager = self.create_partition_manager();
-        partition_manager.position_to_partition(partition, block)
+        info!("🔧 Positioning to partition {}, block {} using opened SCSI device", partition, block);
+
+        if self.offline_mode {
+            info!("Offline mode: simulating partition positioning");
+            return Ok(());
+        }
+
+        self.scsi.locate_block(partition, block)?;
+        info!("Successfully positioned to partition {}, block {}", partition, block);
+        Ok(())
     }
 
-    /// 获取分区信息
+    /// 获取分区信息 - 修复版本：直接使用已打开的SCSI设备
     pub async fn get_partition_info(&self) -> Result<PartitionInfo> {
-        let partition_manager = self.create_partition_manager();
-        partition_manager.get_partition_info().await
+        info!("🔧 Getting partition info using opened SCSI device");
+        
+        self.detect_partition_sizes().await
     }
 
     /// 从指定位置读取索引

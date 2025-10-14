@@ -1,17 +1,13 @@
 use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::LtfsIndex;
 use super::{
-    TapeOperations, FileWriteEntry, WriteProgress, WriteOptions, WriteResult,
-    TapeCapacityInfo, CleaningStatus, EncryptionStatus
+    TapeOperations, FileWriteEntry, WriteProgress, WriteOptions, WriteResult
 };
 use std::path::Path;
 use std::collections::HashMap;
-use std::sync::Arc;
-use parking_lot::Mutex;
 use tracing::{debug, error, info, warn};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, BufReader};
+use tokio::io::{AsyncReadExt, BufReader};
 use tokio::fs::File;
-use std::io::SeekFrom;
 
 /// LTFSCopyGUI compatible hash calculator
 /// Corresponds to VB.NET CheckSumBlockwiseCalculator
