@@ -28,6 +28,7 @@ pub struct LtfsIndex {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Location {
     pub partition: String,
+    #[serde(alias = "startBlock", alias = "start_block", alias = "block")]
     pub startblock: u64,
 }
 
@@ -96,7 +97,7 @@ pub struct File {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileExtent {
     pub partition: String,
-    #[serde(rename = "startblock")]
+    #[serde(rename = "startblock", alias = "startBlock", alias = "start_block", alias = "block")]
     pub start_block: u64,
     #[serde(rename = "bytecount")]
     pub byte_count: u64,
@@ -168,12 +169,24 @@ impl LtfsIndex {
 
         Self::validate_xml_structure(xml_content)?;
 
+        // 添加XML结构调试信息
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            Self::debug_xml_structure(xml_content);
+        }
+
         let index: LtfsIndex = quick_xml::de::from_str(xml_content).map_err(|e| {
-            crate::error::RustLtfsError::parse(format!(
+            // 添加详细的解析错误信息
+            let error_msg = format!(
                 "Failed to parse LTFS index XML: {} (XML size: {} bytes)",
                 e,
                 xml_content.len()
-            ))
+            );
+            
+            // 输出XML的前1000个字符用于调试
+            let preview = &xml_content[..std::cmp::min(1000, xml_content.len())];
+            warn!("XML parsing failed. Content preview:\n{}", preview);
+            
+            crate::error::RustLtfsError::parse(error_msg)
         })?;
 
         // Post-validation of parsed index
@@ -217,6 +230,38 @@ impl LtfsIndex {
 
         // Fallback to standard parsing
         Self::from_xml(xml_content)
+    }
+
+    /// Debug XML structure to understand format issues
+    fn debug_xml_structure(xml_content: &str) {
+        debug!("Analyzing LTFS XML structure for compatibility debugging");
+        
+        // 查找location标签
+        if let Some(location_start) = xml_content.find("<location") {
+            let location_end = xml_content[location_start..]
+                .find("</location>")
+                .unwrap_or(200);
+            let location_section = &xml_content[location_start..location_start + location_end + 11];
+            debug!("Found location section: {}", location_section);
+        }
+        
+        // 查找extent标签
+        if let Some(extent_start) = xml_content.find("<extent") {
+            let extent_end = xml_content[extent_start..]
+                .find("/>")
+                .or_else(|| xml_content[extent_start..].find("</extent>"))
+                .unwrap_or(200);
+            let extent_section = &xml_content[extent_start..extent_start + extent_end + 2];
+            debug!("Found extent section: {}", extent_section);
+        }
+        
+        // 查找所有可能的startblock字段变体
+        let startblock_variants = ["startblock", "startBlock", "start_block", "block"];
+        for variant in &startblock_variants {
+            if xml_content.contains(variant) {
+                debug!("Found field variant '{}' in XML", variant);
+            }
+        }
     }
 
     /// Validate XML structure before parsing
