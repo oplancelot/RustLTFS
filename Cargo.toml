@@ -67,6 +67,9 @@ indicatif = "0.17"
 # 文件处理
 walkdir = "2.3"
 
+# 系统目录获取
+dirs = "5.0"
+
 # Windows 系统 API
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = [

@@ -1777,18 +1777,102 @@ impl super::TapeOperations {
 
     // === 性能优化方法 ===
     
-    /// 获取缓存的索引位置 - 基于测试结果的智能缓存
+    /// 获取缓存的索引位置 - 智能持久化缓存机制
     fn get_cached_index_location(&self) -> Option<u64> {
-        // 基于实际测试结果：block 50 成功找到索引
-        // TODO: 未来可以从配置文件或持久化存储中读取
-        Some(50) // 测试证实的成功位置
+        // 构建缓存文件路径
+        let cache_path = self.get_cache_file_path();
+        
+        // 尝试从缓存文件读取成功位置
+        match std::fs::read_to_string(&cache_path) {
+            Ok(content) => {
+                // 解析缓存内容：格式为 "device_path:block_number:timestamp"
+                for line in content.lines() {
+                    let parts: Vec<&str> = line.split(':').collect();
+                    if parts.len() >= 3 {
+                        // 检查设备路径是否匹配
+                        if parts[0] == self.device_path {
+                            if let Ok(cached_location) = parts[1].parse::<u64>() {
+                                // 检查缓存时间戳是否在有效期内 (24小时)
+                                if let Ok(timestamp) = parts[2].parse::<i64>() {
+                                    let current_time = chrono::Utc::now().timestamp();
+                                    let cache_validity_hours = 24;
+                                    
+                                    if current_time - timestamp < cache_validity_hours * 3600 {
+                                        debug!("✅ Found valid cached index location: block {} for device {}", 
+                                               cached_location, self.device_path);
+                                        return Some(cached_location);
+                                    } else {
+                                        debug!("⏰ Cached location expired for device {}", self.device_path);
+                                    }
+                                } 
+                            }
+                            break;
+                        }
+                    }
+                }
+                debug!("❌ No valid cached location found for device {}", self.device_path);
+                None
+            }
+            Err(_) => {
+                debug!("📝 No cache file found, will create on first success");
+                None
+            }
+        }
     }
     
-    /// 缓存成功的索引位置
+    /// 缓存成功的索引位置 - 持久化实现
     fn cache_successful_location(&self, location: u64) {
-        // 实际实现中可以保存到配置文件或内存缓存
-        info!("📋 Caching successful index location: block {} (for future optimization)", location);
-        // TODO: 实现持久化缓存机制
+        info!("📋 Caching successful index location: block {} for device {}", location, self.device_path);
+        
+        let cache_path = self.get_cache_file_path();
+        let timestamp = chrono::Utc::now().timestamp();
+        let cache_entry = format!("{}:{}:{}\n", self.device_path, location, timestamp);
+        
+        // 创建缓存目录
+        if let Some(parent) = cache_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                debug!("Failed to create cache directory: {}", e);
+                return;
+            }
+        }
+        
+        // 读取现有缓存文件（如果存在）
+        let existing_content = std::fs::read_to_string(&cache_path).unwrap_or_default();
+        let mut new_content = String::new();
+        
+        // 过滤掉当前设备的旧缓存条目
+        for line in existing_content.lines() {
+            let parts: Vec<&str> = line.split(':').collect();
+            if parts.len() >= 1 && parts[0] != self.device_path {
+                new_content.push_str(line);
+                new_content.push('\n');
+            }
+        }
+        
+        // 添加新的缓存条目
+        new_content.push_str(&cache_entry);
+        
+        // 写入缓存文件
+        match std::fs::write(&cache_path, new_content) {
+            Ok(()) => {
+                debug!("✅ Successfully cached index location to {:?}", cache_path);
+            }
+            Err(e) => {
+                debug!("❌ Failed to write cache file: {}", e);
+            }
+        }
+    }
+    
+    /// 获取缓存文件路径
+    fn get_cache_file_path(&self) -> std::path::PathBuf {
+        // 使用系统临时目录或用户配置目录
+        let cache_dir = if let Some(config_dir) = dirs::config_dir() {
+            config_dir.join("rustltfs")
+        } else {
+            std::env::temp_dir().join("rustltfs")
+        };
+        
+        cache_dir.join("index_location_cache.txt")
     }
     
     /// 优化的并行策略搜索 - 基于测试结果优化
