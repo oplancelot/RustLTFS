@@ -235,8 +235,6 @@ impl TapeOperations {
 
     /// Write XML content to tape
     async fn write_xml_to_tape(&mut self, xml_content: &str) -> Result<()> {
-        use tokio::io::AsyncWriteExt;
-        
         // Convert XML to bytes
         let xml_bytes = xml_content.as_bytes();
         let block_size = self.block_size as usize;

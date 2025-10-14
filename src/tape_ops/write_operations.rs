@@ -1,7 +1,7 @@
 use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::LtfsIndex;
 use super::{
-    TapeOperations, FileWriteEntry, WriteProgress, WriteOptions, WriteResult
+    TapeOperations, FileWriteEntry, WriteOptions, WriteResult
 };
 use std::path::Path;
 use std::collections::HashMap;
