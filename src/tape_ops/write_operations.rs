@@ -3,6 +3,7 @@ use crate::ltfs_index::LtfsIndex;
 use super::{
     TapeOperations, FileWriteEntry, WriteOptions, WriteResult
 };
+use super::deduplication::{DeduplicationManager, TapeLocation, create_deduplication_manager};
 use std::path::Path;
 use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
@@ -626,6 +627,55 @@ impl TapeOperations {
         } else {
             None
         };
+
+        // === 去重检查逻辑（对应LTFSCopyGUI的DuplicateCheck） ===
+        // TODO: 暂时禁用去重功能，优先修复分区映射问题
+        /*
+        let mut duplicate_detected = false;
+        let mut duplicate_info = None;
+        
+        // 如果启用了去重功能，先快速计算文件哈希进行重复检查
+        if self.write_options.dedupe {
+            if let Some(ref dedup_manager) = self.dedup_manager {
+                info!("执行去重检查：{:?}", source_path);
+                
+                // 快速计算文件哈希（只计算主要哈希算法）
+                let quick_hashes = self.calculate_file_hashes(source_path).await?;
+                
+                // 检查是否存在重复文件
+                if let Some(duplicates) = dedup_manager.check_file_exists(&quick_hashes) {
+                    duplicate_detected = true;
+                    duplicate_info = Some(duplicates);
+                    
+                    info!("🔍 检测到重复文件：{:?}，已存在 {} 个副本", 
+                          source_path, duplicates.len());
+                    
+                    // 根据策略决定是否跳过写入
+                    if self.write_options.skip_duplicates {
+                        info!("⏭️ 跳过重复文件写入：{:?}", source_path);
+                        
+                        // 更新统计信息
+                        self.write_progress.current_files_processed += 1;
+                        
+                        return Ok(WriteResult {
+                            position: crate::scsi::TapePosition {
+                                partition: 1,
+                                block_number: 0,
+                                file_number: 0,
+                                set_number: 0,
+                                end_of_data: false,
+                                beginning_of_partition: false,
+                            },
+                            blocks_written: 0,
+                            bytes_written: 0,
+                        });
+                    } else {
+                        info!("📝 仍然写入重复文件（去重策略允许）");
+                    }
+                }
+            }
+        }
+        */
 
         // Write statistics
         let mut total_blocks_written = 0u32;

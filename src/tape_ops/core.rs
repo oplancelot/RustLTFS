@@ -170,6 +170,9 @@ pub struct TapeOperations {
     pub(crate) operation_semaphore: Option<Arc<Semaphore>>,    // 并发控制信号量
     pub(crate) memory_usage_tracker: Arc<Mutex<u64>>,         // 内存使用跟踪器
     pub(crate) speed_limiter: Option<SpeedLimiter>,           // 速度限制器
+    
+    // === 去重和哈希管理（对应LTFSCopyGUI的重复检测） ===
+    pub(crate) dedup_manager: Option<super::deduplication::DeduplicationManager>, // 去重管理器
 }
 
 impl TapeOperations {
@@ -204,6 +207,9 @@ impl TapeOperations {
             operation_semaphore: Some(Arc::new(Semaphore::new(max_concurrent))),
             memory_usage_tracker: Arc::new(Mutex::new(0)),
             speed_limiter: None,
+            
+            // 去重管理器初始化（稍后通过configure_deduplication配置）
+            dedup_manager: None,
         }
     }
 
@@ -595,6 +601,44 @@ impl TapeOperations {
         self.write_options = options;
     }
 
+    /// Configure deduplication functionality (对应LTFSCopyGUI的去重配置)
+    pub fn configure_deduplication(&mut self, database_path: Option<std::path::PathBuf>) -> Result<()> {
+        use super::deduplication::create_deduplication_manager;
+        
+        if self.write_options.dedupe {
+            let db_path = database_path.unwrap_or_else(|| {
+                // 默认在当前目录创建去重数据库
+                std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    .join(format!("ltfs_dedup_{}.db", self.device_path.replace([':', '\\', '/'], "_")))
+            });
+
+            let manager = create_deduplication_manager(&self.write_options, &db_path)?;
+            self.dedup_manager = Some(manager);
+            
+            info!("去重功能已配置，数据库路径: {:?}", db_path);
+        } else {
+            self.dedup_manager = None;
+            info!("去重功能已禁用");
+        }
+        
+        Ok(())
+    }
+
+    /// Get deduplication statistics (对应LTFSCopyGUI的重复文件统计)
+    pub fn get_deduplication_stats(&self) -> Option<super::deduplication::DuplicateStats> {
+        self.dedup_manager.as_ref().map(|manager| manager.get_stats())
+    }
+
+    /// Save deduplication database (对应LTFSCopyGUI的数据库保存)
+    pub fn save_deduplication_database(&mut self) -> Result<()> {
+        if let Some(ref mut manager) = self.dedup_manager {
+            manager.save_database()?;
+            info!("去重数据库已保存");
+        }
+        Ok(())
+    }
+
     /// Get current write progress
     pub fn get_write_progress(&self) -> &WriteProgress {
         &self.write_progress
@@ -686,10 +730,42 @@ impl TapeOperations {
         self.extra_partition_count.unwrap_or(0)
     }
 
-    /// 获取目标分区号 (对应LTFSCopyGUI的Math.Min分区映射)
+    /// 获取目标分区号 (正确的LTFS分区映射逻辑)
+    /// 修复关键Bug：之前的Math.Min逻辑导致数据写入错误分区
     pub fn get_target_partition(&self, logical_partition: u8) -> u8 {
         let extra_partition_count = self.get_extra_partition_count();
-        std::cmp::min(extra_partition_count, logical_partition)
+        
+        debug!("Computing target partition: logical={}, ExtraPartitionCount={}", 
+               logical_partition, extra_partition_count);
+        
+        match extra_partition_count {
+            0 => {
+                // 单分区磁带：所有数据和索引都在分区0
+                debug!("Single-partition tape: all data goes to partition 0");
+                0
+            }
+            1 => {
+                // 双分区磁带：分区0=索引分区，分区1=数据分区
+                match logical_partition {
+                    0 => {
+                        debug!("Dual-partition tape: index data goes to partition 0 (index partition)");
+                        0  // 索引分区
+                    }
+                    1 => {
+                        debug!("Dual-partition tape: file data goes to partition 1 (data partition)");
+                        1  // 数据分区
+                    }
+                    _ => {
+                        warn!("Unexpected logical partition {}, defaulting to data partition", logical_partition);
+                        1
+                    }
+                }
+            }
+            _ => {
+                warn!("Unexpected ExtraPartitionCount {}, using dual-partition logic", extra_partition_count);
+                if logical_partition == 0 { 0 } else { 1 }
+            }
+        }
     }
 
     /// 创建分区管理器 (已废弃：使用直接SCSI方法替代，仅保留以防向后兼容)

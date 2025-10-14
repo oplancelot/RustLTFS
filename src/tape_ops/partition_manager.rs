@@ -148,13 +148,43 @@ impl PartitionManager {
         }
     }
 
-    /// 分区号映射 (精确对应LTFSCopyGUI的Math.Min逻辑)
-    /// 对应: Math.Min(ExtraPartitionCount, partition)
+    /// 分区号映射 (修复版本：正确的LTFS分区布局)
+    /// 之前的Math.Min逻辑导致数据写入错误分区，现已修复
     pub fn map_partition_number(&self, logical_partition: u8, extra_partition_count: u8) -> u8 {
-        let physical_partition = std::cmp::min(extra_partition_count, logical_partition);
+        debug!("Computing partition mapping: logical={}, ExtraPartitionCount={}", 
+               logical_partition, extra_partition_count);
+        
+        let physical_partition = match extra_partition_count {
+            0 => {
+                // 单分区磁带：所有数据和索引都在分区0
+                debug!("Single-partition tape: mapping logical {} to physical 0", logical_partition);
+                0
+            }
+            1 => {
+                // 双分区磁带：分区0=索引分区，分区1=数据分区
+                match logical_partition {
+                    0 => {
+                        debug!("Dual-partition tape: index partition (logical 0 -> physical 0)");
+                        0  // 索引分区
+                    }
+                    1 => {
+                        debug!("Dual-partition tape: data partition (logical 1 -> physical 1)");
+                        1  // 数据分区
+                    }
+                    _ => {
+                        warn!("Unexpected logical partition {}, defaulting to data partition", logical_partition);
+                        1
+                    }
+                }
+            }
+            _ => {
+                warn!("Unexpected ExtraPartitionCount {}, using dual-partition logic", extra_partition_count);
+                if logical_partition == 0 { 0 } else { 1 }
+            }
+        };
         
         debug!(
-            "Partition mapping: logical={} -> physical={} (ExtraPartitionCount={})",
+            "Partition mapping result: logical={} -> physical={} (ExtraPartitionCount={})",
             logical_partition, physical_partition, extra_partition_count
         );
         
