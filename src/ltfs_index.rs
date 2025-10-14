@@ -167,23 +167,26 @@ impl LtfsIndex {
     pub fn from_xml(xml_content: &str) -> Result<Self> {
         debug!("Parsing LTFS index XML, length: {}", xml_content.len());
 
-        Self::validate_xml_structure(xml_content)?;
+        // 首先提取纯LTFS索引部分（跳过可能的ltfslabel部分）
+        let index_xml = Self::extract_ltfs_index_section(xml_content)?;
+        
+        Self::validate_xml_structure(&index_xml)?;
 
         // 添加XML结构调试信息
         if tracing::enabled!(tracing::Level::DEBUG) {
-            Self::debug_xml_structure(xml_content);
+            Self::debug_xml_structure(&index_xml);
         }
 
-        let index: LtfsIndex = quick_xml::de::from_str(xml_content).map_err(|e| {
+        let index: LtfsIndex = quick_xml::de::from_str(&index_xml).map_err(|e| {
             // 添加详细的解析错误信息
             let error_msg = format!(
                 "Failed to parse LTFS index XML: {} (XML size: {} bytes)",
                 e,
-                xml_content.len()
+                index_xml.len()
             );
             
             // 输出XML的前1000个字符用于调试
-            let preview = &xml_content[..std::cmp::min(1000, xml_content.len())];
+            let preview = &index_xml[..std::cmp::min(1000, index_xml.len())];
             warn!("XML parsing failed. Content preview:\n{}", preview);
             
             crate::error::RustLtfsError::parse(error_msg)
@@ -230,6 +233,46 @@ impl LtfsIndex {
 
         // Fallback to standard parsing
         Self::from_xml(xml_content)
+    }
+
+    /// Extract LTFS index section from combined XML content 
+    /// (separates ltfsindex from ltfslabel if both are present)
+    fn extract_ltfs_index_section(xml_content: &str) -> Result<String> {
+        debug!("Extracting LTFS index section from XML content");
+        
+        // 查找ltfsindex标签的开始和结束位置
+        if let Some(index_start) = xml_content.find("<ltfsindex") {
+            if let Some(index_end) = xml_content.find("</ltfsindex>") {
+                let start_pos = index_start;
+                let end_pos = index_end + "</ltfsindex>".len();
+                
+                // 提取ltfsindex部分
+                let mut index_section = xml_content[start_pos..end_pos].to_string();
+                
+                // 确保有XML声明
+                if !index_section.trim_start().starts_with("<?xml") {
+                    index_section = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{}", index_section);
+                }
+                
+                info!(
+                    "Successfully extracted LTFS index section: {} bytes (from {} bytes total)",
+                    index_section.len(),
+                    xml_content.len()
+                );
+                
+                return Ok(index_section);
+            }
+        }
+        
+        // 如果没有找到ltfsindex标签，可能整个内容就是索引
+        if xml_content.contains("<ltfsindex") {
+            debug!("XML content appears to be pure LTFS index format");
+            return Ok(xml_content.to_string());
+        }
+        
+        Err(crate::error::RustLtfsError::parse(
+            "No LTFS index section found in XML content".to_string()
+        ))
     }
 
     /// Debug XML structure to understand format issues
