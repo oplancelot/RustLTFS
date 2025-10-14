@@ -1463,13 +1463,15 @@ impl crate::tape_ops::TapeOperations {
         let mut total_bytes_read = 0u64;
         let mut blocks_read = 0;
         let max_blocks = 200; // 对应LTFSCopyGUI的固定限制
+        let mut consecutive_errors = 0;
+        const MAX_CONSECUTIVE_ERRORS: u32 = 3;
 
         info!(
-            "Starting ReadToFileMark with blocksize {}, max {} blocks",
+            "Starting ReadToFileMark with blocksize {}, max {} blocks (enhanced SCSI error handling)",
             block_size, max_blocks
         );
 
-        // 精准模仿LTFSCopyGUI的ReadToFileMark循环
+        // 精准模仿LTFSCopyGUI的ReadToFileMark循环 + 增强错误处理
         loop {
             // 安全限制 - 防止无限读取（对应LTFSCopyGUI逻辑）
             if blocks_read >= max_blocks {
@@ -1479,9 +1481,10 @@ impl crate::tape_ops::TapeOperations {
 
             let mut buffer = vec![0u8; block_size];
 
-            // 执行SCSI READ命令 (对应ScsiRead调用)
+            // 执行SCSI READ命令 (对应ScsiRead调用) + 增强错误处理
             match self.scsi.read_blocks(1, &mut buffer) {
                 Ok(blocks_read_count) => {
+                    consecutive_errors = 0; // 重置错误计数器
                     debug!("SCSI read returned: {} blocks", blocks_read_count);
 
                     // 对应: If bytesRead = 0 Then Exit Do
@@ -1515,28 +1518,47 @@ impl crate::tape_ops::TapeOperations {
                     );
                 }
                 Err(e) => {
-                    debug!("SCSI read error after {} blocks: {}", blocks_read, e);
-                    // 如果没有读取任何数据就失败，返回错误
-                    if blocks_read == 0 {
-                        return Err(RustLtfsError::ltfs_index(
-                            "No data could be read from tape".to_string(),
-                        ));
+                    consecutive_errors += 1;
+                    warn!("SCSI read error #{} after {} blocks: {}", consecutive_errors, blocks_read, e);
+                    
+                    // 增强的SCSI错误分类和恢复
+                    let error_handled = self.handle_scsi_read_error(&e, blocks_read, consecutive_errors)?;
+                    
+                    if !error_handled {
+                        // 如果没有读取任何数据就失败，返回错误
+                        if blocks_read == 0 {
+                            return Err(RustLtfsError::ltfs_index(format!(
+                                "No data could be read from tape after {} consecutive errors: {}",
+                                consecutive_errors, e
+                            )));
+                        }
+                        // 如果已经读取了一些数据，就停止并尝试解析
+                        break;
                     }
-                    // 如果已经读取了一些数据，就停止并尝试解析
-                    break;
+                    
+                    // 如果连续错误过多，停止尝试
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                        warn!("Too many consecutive SCSI errors ({}), stopping read operation", consecutive_errors);
+                        if blocks_read == 0 {
+                            return Err(RustLtfsError::scsi(format!(
+                                "Failed to read any data after {} consecutive SCSI errors", consecutive_errors
+                            )));
+                        }
+                        break;
+                    }
                 }
             }
         }
 
         temp_file.flush()?;
-        drop(temp_file); // 确保文件关闭
+        drop(temp_file);
 
         info!(
             "ReadToFileMark completed: {} blocks read, {} total bytes",
             blocks_read, total_bytes_read
         );
 
-        // 从临时文件读取并清理 (对应FromSchFile的处理)
+        // 读取并清理临时文件
         let xml_content = std::fs::read_to_string(&temp_path)?;
 
         // 清理临时文件
@@ -1544,18 +1566,107 @@ impl crate::tape_ops::TapeOperations {
             warn!("Failed to remove temporary file {:?}: {}", temp_path, e);
         }
 
+        // 清理XML内容
+        let cleaned_xml = xml_content.replace('\0', "").trim().to_string();
+
+        if cleaned_xml.is_empty() {
+            return Err(RustLtfsError::ltfs_index("Cleaned XML is empty".to_string()));
+        }
+
+        debug!(
+            "Extracted XML content: {} bytes (after cleanup)",
+            cleaned_xml.len()
+        );
+        Ok(cleaned_xml)
+    }
+
+    /// 增强的SCSI读取错误处理
+    /// 返回true表示错误已处理，可以继续；返回false表示应该停止
+    fn handle_scsi_read_error(&self, error: &RustLtfsError, blocks_read: u32, error_count: u32) -> Result<bool> {
+        let error_str = error.to_string();
+        
+        // 错误分类和处理策略
+        if error_str.contains("Direct block read operation failed") {
+            debug!("Detected direct block read failure - possibly reached end of data or file mark");
+            
+            // 如果已经读取了一些数据，这可能是正常的文件结束
+            if blocks_read > 0 {
+                info!("Block read failure after {} blocks - likely reached end of index data", blocks_read);
+                return Ok(false); // 正常结束
+            } else {
+                warn!("Block read failure on first block - may indicate positioning or hardware issue");
+                return Ok(error_count <= 2); // 允许重试前2次
+            }
+        }
+        
+        if error_str.contains("Device not ready") || error_str.contains("Unit attention") {
+            warn!("Device status issue detected - attempting recovery");
+            
+            // 尝试设备状态恢复
+            match self.scsi.test_unit_ready() {
+                Ok(_) => {
+                    info!("Device status recovered, can continue reading");
+                    return Ok(true);
+                }
+                Err(e) => {
+                    warn!("Device status recovery failed: {}", e);
+                    return Ok(error_count <= 1); // 仅重试一次
+                }
+            }
+        }
+        
+        if error_str.contains("Medium error") || error_str.contains("Unrecovered read error") {
+            warn!("Medium/read error detected - this may indicate tape defect or wear");
+            
+            // 对于介质错误，如果已有数据就停止，否则尝试一次
+            if blocks_read > 10 {
+                info!("Medium error after reading {} blocks - stopping to preserve data", blocks_read);
+                return Ok(false);
+            } else {
+                warn!("Early medium error - attempting one retry");
+                return Ok(error_count <= 1);
+            }
+        }
+        
+        if error_str.contains("Illegal request") || error_str.contains("Invalid field") {
+            warn!("SCSI command error detected - likely programming issue");
+            return Ok(false); // 不重试命令错误
+        }
+        
+        if error_str.contains("Hardware error") || error_str.contains("Communication failure") {
+            warn!("Hardware/communication error - attempting limited retry");
+            return Ok(error_count <= 1); // 有限重试
+        }
+        
+        // 未知错误的保守处理
+        debug!("Unknown SCSI error type: {} - attempting conservative retry", error_str);
+        Ok(error_count <= 2) // 允许有限重试
+    }
+
+    /// 支持高级搜索的索引读取方法 (对应LTFSCopyGUI高级功能)
+    pub fn try_read_index_at_current_position_advanced_sync(&self) -> Result<String> {
+        let block_size = self
+            .partition_label
+            .as_ref()
+            .map(|plabel| plabel.blocksize as usize)
+            .unwrap_or(crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize);
+
+        debug!("Advanced index reading with dynamic blocksize: {}", block_size);
+
+        // 读取并清理临时文件
+        let xml_content = self.read_to_file_mark_with_temp_file(block_size)?;
+
+        // 清理临时文件已在read_to_file_mark_with_temp_file中处理
+
         // 清理XML内容（对应VB的Replace和Trim）
         let cleaned_xml = xml_content.replace('\0', "").trim().to_string();
 
         if cleaned_xml.is_empty() {
-            debug!(
-                "No LTFS index data found after reading {} blocks (blocksize: {})",
-                blocks_read, block_size
-            );
+            debug!("No LTFS index data found");
             return Err(RustLtfsError::ltfs_index("Index XML is empty".to_string()));
         } else {
             info!(
-                "ReadToFileMark extracted {} bytes of index data",
+                "Advanced index reading extracted {} bytes of index data",
                 cleaned_xml.len()
             );
         }
