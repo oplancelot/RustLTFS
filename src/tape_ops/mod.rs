@@ -40,6 +40,21 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+/// Enhanced tape format analysis result (对应增强版VOL1验证)
+#[derive(Debug, Clone, PartialEq)]
+pub enum TapeFormatAnalysis {
+    /// 空白磁带（全零或无数据）
+    BlankTape,
+    /// 传统磁带格式（ANSI、IBM等）
+    LegacyTape(String),
+    /// VOL1标签损坏或不可识别
+    CorruptedLabel,
+    /// 未知格式
+    UnknownFormat,
+    /// 可能是LTFS但VOL1非标准
+    PossibleLTFS,
+}
+
 /// LTFS格式化状态枚举（基于LTFSCopyGUI的检测策略）
 #[derive(Debug, Clone, PartialEq)]
 pub enum LtfsFormatStatus {
