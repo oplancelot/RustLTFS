@@ -4,6 +4,16 @@ use crate::ltfs_index::LtfsIndex;
 use super::TapeOperations;
 use tracing::{debug, info};
 
+/// Generate LTFS-compatible Z-format timestamp (matching LTFSCopyGUI XML format)
+fn format_ltfs_timestamp(datetime: chrono::DateTime<chrono::Utc>) -> String {
+    format!("{}Z", datetime.format("%Y-%m-%dT%H:%M:%S%.9f"))
+}
+
+/// Get current timestamp in LTFS-compatible format
+fn get_current_ltfs_timestamp() -> String {
+    format_ltfs_timestamp(chrono::Utc::now())
+}
+
 impl TapeOperations {
     /// Update index on tape with force option (corresponds to VB.NET WriteCurrentIndex + RefreshIndexPartition)
     pub async fn update_index_on_tape_with_options_dual_partition(&mut self, force_index: bool) -> Result<()> {
@@ -22,7 +32,7 @@ impl TapeOperations {
             None => {
                 // Create new index if none exists - inline creation
                 use uuid::Uuid;
-                let now = chrono::Utc::now().to_rfc3339();
+                let now = get_current_ltfs_timestamp();
                 let volume_uuid = Uuid::new_v4();
 
                 LtfsIndex {
@@ -136,7 +146,7 @@ impl TapeOperations {
 
         // Update index metadata (对应LTFSCopyGUI的索引元数据更新)
         current_index.generationnumber += 1;
-        current_index.updatetime = chrono::Utc::now().to_rfc3339();
+        current_index.updatetime = get_current_ltfs_timestamp();
         current_index.location.partition = "b".to_string(); // Data partition
         
         // Set previous generation location

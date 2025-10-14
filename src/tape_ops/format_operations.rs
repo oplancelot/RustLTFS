@@ -5,6 +5,16 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 use chrono;
 
+/// Generate LTFS-compatible Z-format timestamp (matching LTFSCopyGUI XML format)
+fn format_ltfs_timestamp(datetime: chrono::DateTime<chrono::Utc>) -> String {
+    format!("{}Z", datetime.format("%Y-%m-%dT%H:%M:%S%.9f"))
+}
+
+/// Get current timestamp in LTFS-compatible format
+fn get_current_ltfs_timestamp() -> String {
+    format_ltfs_timestamp(chrono::Utc::now())
+}
+
 /// MKLTFS参数结构 (对应LTFSCopyGUI的MKLTFS_Param类)
 #[derive(Debug, Clone)]
 pub struct MkltfsParams {
@@ -612,7 +622,7 @@ impl super::TapeOperations {
         // 更新分区标签中的UUID
         if let Some(ref mut label) = self.partition_label {
             label.volume_uuid = uuid;
-            label.format_time = chrono::Utc::now().to_rfc3339();
+            label.format_time = get_current_ltfs_timestamp();
         }
 
         info!("Volume labels written successfully");
@@ -638,7 +648,7 @@ impl super::TapeOperations {
         let mut label = LtfsPartitionLabel::default();
         label.blocksize = params.block_length;
         label.volume_uuid = Uuid::new_v4().to_string();
-        label.format_time = chrono::Utc::now().to_rfc3339();
+        label.format_time = get_current_ltfs_timestamp();
 
         self.partition_label = Some(label);
 
@@ -795,7 +805,7 @@ impl super::TapeOperations {
         // 查找LTFS标识
         if buffer.windows(4).any(|w| w == b"LTFS") {
             label.volume_uuid = "detected-ltfs-volume".to_string();
-            label.format_time = chrono::Utc::now().to_rfc3339();
+            label.format_time = get_current_ltfs_timestamp();
             Ok(label)
         } else {
             Err(RustLtfsError::ltfs_index("No LTFS partition label found".to_string()))

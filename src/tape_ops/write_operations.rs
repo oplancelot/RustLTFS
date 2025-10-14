@@ -9,6 +9,23 @@ use tracing::{debug, error, info, warn};
 use tokio::io::{AsyncReadExt, BufReader};
 use tokio::fs::File;
 
+/// Generate LTFS-compatible Z-format timestamp (matching LTFSCopyGUI XML format)
+/// Converts RFC3339 format with +00:00 to Z format for XML compatibility
+fn format_ltfs_timestamp(datetime: chrono::DateTime<chrono::Utc>) -> String {
+    format!("{}Z", datetime.format("%Y-%m-%dT%H:%M:%S%.9f"))
+}
+
+/// Get current timestamp in LTFS-compatible format
+fn get_current_ltfs_timestamp() -> String {
+    format_ltfs_timestamp(chrono::Utc::now())
+}
+
+/// Convert system time to LTFS-compatible timestamp
+fn system_time_to_ltfs_timestamp(time: std::time::SystemTime) -> String {
+    let dt: chrono::DateTime<chrono::Utc> = time.into();
+    format_ltfs_timestamp(dt)
+}
+
 /// LTFSCopyGUI compatible hash calculator
 /// Corresponds to VB.NET CheckSumBlockwiseCalculator
 pub struct CheckSumBlockwiseCalculator {
@@ -1039,7 +1056,7 @@ impl TapeOperations {
             .unwrap_or("unknown")
             .to_string();
 
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = get_current_ltfs_timestamp();
         let new_uid = current_index.highestfileuid.unwrap_or(0) + 1;
 
         let extent = crate::ltfs_index::FileExtent {
@@ -1058,26 +1075,17 @@ impl TapeOperations {
 
         let creation_time = metadata
             .created()
-            .map(|t| {
-                let dt: chrono::DateTime<chrono::Utc> = t.into();
-                dt.to_rfc3339()
-            })
+            .map(|t| system_time_to_ltfs_timestamp(t))
             .unwrap_or_else(|_| now.clone());
 
         let modify_time = metadata
             .modified()
-            .map(|t| {
-                let dt: chrono::DateTime<chrono::Utc> = t.into();
-                dt.to_rfc3339()
-            })
+            .map(|t| system_time_to_ltfs_timestamp(t))
             .unwrap_or_else(|_| now.clone());
 
         let access_time = metadata
             .accessed()
-            .map(|t| {
-                let dt: chrono::DateTime<chrono::Utc> = t.into();
-                dt.to_rfc3339()
-            })
+            .map(|t| system_time_to_ltfs_timestamp(t))
             .unwrap_or_else(|_| now.clone());
 
         let new_file = crate::ltfs_index::File {
@@ -1130,7 +1138,7 @@ impl TapeOperations {
 
         // Update index metadata
         current_index.generationnumber += 1;
-        current_index.updatetime = chrono::Utc::now().to_rfc3339();
+        current_index.updatetime = get_current_ltfs_timestamp();
         current_index.highestfileuid = Some(new_uid);
 
         // Update internal index
@@ -1171,7 +1179,7 @@ impl TapeOperations {
             .unwrap_or("unknown")
             .to_string();
 
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = get_current_ltfs_timestamp();
         let new_uid = current_index.highestfileuid.unwrap_or(0) + 1;
 
         let extent = crate::ltfs_index::FileExtent {
@@ -1206,7 +1214,7 @@ impl TapeOperations {
 
         // Update index metadata
         current_index.generationnumber += 1;
-        current_index.updatetime = chrono::Utc::now().to_rfc3339();
+        current_index.updatetime = get_current_ltfs_timestamp();
         current_index.highestfileuid = Some(new_uid);
 
         // Update internal index
@@ -1233,31 +1241,22 @@ impl TapeOperations {
             RustLtfsError::file_operation(format!("Cannot get directory metadata: {}", e))
         })?;
 
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = get_current_ltfs_timestamp();
         let new_uid = current_index.highestfileuid.unwrap_or(0) + 1;
 
         let creation_time = metadata
             .created()
-            .map(|t| {
-                let dt: chrono::DateTime<chrono::Utc> = t.into();
-                dt.to_rfc3339()
-            })
+            .map(|t| system_time_to_ltfs_timestamp(t))
             .unwrap_or_else(|_| now.clone());
 
         let modify_time = metadata
             .modified()
-            .map(|t| {
-                let dt: chrono::DateTime<chrono::Utc> = t.into();
-                dt.to_rfc3339()
-            })
+            .map(|t| system_time_to_ltfs_timestamp(t))
             .unwrap_or_else(|_| now.clone());
 
         let access_time = metadata
             .accessed()
-            .map(|t| {
-                let dt: chrono::DateTime<chrono::Utc> = t.into();
-                dt.to_rfc3339()
-            })
+            .map(|t| system_time_to_ltfs_timestamp(t))
             .unwrap_or_else(|_| now.clone());
 
         let new_directory = crate::ltfs_index::Directory {
@@ -1284,7 +1283,7 @@ impl TapeOperations {
 
         // Update index metadata
         current_index.generationnumber += 1;
-        current_index.updatetime = chrono::Utc::now().to_rfc3339();
+        current_index.updatetime = get_current_ltfs_timestamp();
         current_index.highestfileuid = Some(new_uid);
 
         // Update internal index
@@ -1400,7 +1399,7 @@ impl TapeOperations {
 
         // Update index metadata (corresponding to LTFSCopyGUI's index metadata update)
         current_index.generationnumber += 1;
-        current_index.updatetime = chrono::Utc::now().to_rfc3339();
+        current_index.updatetime = get_current_ltfs_timestamp();
         current_index.location.partition = "b".to_string(); // Data partition
 
         // Store previous generation location if exists
@@ -1881,7 +1880,7 @@ impl TapeOperations {
     fn create_new_ltfs_index(&self) -> LtfsIndex {
         use uuid::Uuid;
 
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = get_current_ltfs_timestamp();
         let volume_uuid = Uuid::new_v4();
 
         LtfsIndex {
@@ -1988,7 +1987,7 @@ impl TapeOperations {
                 None => {
                     info!("Creating new directory: '{}'", part);
                     // Create new directory
-                    let now = chrono::Utc::now().to_rfc3339();
+                    let now = get_current_ltfs_timestamp();
                     let new_uid = index.highestfileuid.unwrap_or(0) + 1;
                     info!("New directory UID: {}", new_uid);
                     
