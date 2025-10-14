@@ -2,7 +2,6 @@ use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::LtfsIndex;
 use crate::scsi::MediaType;
 use std::path::Path;
-use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 // 导入partition_manager中的类型
@@ -13,35 +12,72 @@ use super::partition_manager::{IndexLocation, PartitionStrategy};
 
 /// TapeOperations读取操作实现
 impl super::TapeOperations {
-    /// 验证并处理索引 - 委托给partition_manager
+    /// 验证并处理索引 - 增强版本：添加详细调试信息
     pub async fn validate_and_process_index(&mut self, xml_content: &str) -> Result<bool> {
+        info!("🔍 Validating index content: {} bytes", xml_content.len());
+        
         // 基本验证XML格式
         if !xml_content.contains("<ltfsindex") || !xml_content.contains("</ltfsindex>") {
+            warn!("❌ Basic XML validation failed - missing LTFS index tags");
+            debug!("Content preview: {}", &xml_content[..std::cmp::min(200, xml_content.len())]);
             return Ok(false);
         }
+        
+        info!("✅ Basic XML validation passed - LTFS index tags found");
         
         // 解析并设置索引
         match crate::ltfs_index::LtfsIndex::from_xml(xml_content) {
             Ok(index) => {
+                info!("✅ XML parsing successful - setting index");
+                info!("   Volume UUID: {}", index.volumeuuid);
+                info!("   Generation: {}", index.generationnumber);
+                info!("   Files count: {}", self.count_files_in_directory(&index.root_directory));
                 self.index = Some(index);
                 Ok(true)
             }
-            Err(_) => Ok(false),
+            Err(e) => {
+                warn!("❌ XML parsing failed: {}", e);
+                debug!("Failed XML content preview: {}", &xml_content[..std::cmp::min(500, xml_content.len())]);
+                Ok(false)
+            }
         }
     }
     
-    /// 检测分区策略 - 委托给partition_manager
+    /// 计算目录中的文件数量
+    fn count_files_in_directory(&self, dir: &crate::ltfs_index::Directory) -> usize {
+        let mut count = dir.contents.files.len();
+        for subdir in &dir.contents.directories {
+            count += self.count_files_in_directory(subdir);
+        }
+        count
+    }
+    
+    /// 检测分区策略 - 修复版本：直接使用已打开的SCSI设备
     pub async fn detect_partition_strategy(&self) -> Result<PartitionStrategy> {
-        let partition_manager = crate::tape_ops::partition_manager::PartitionManager::new(
-            Arc::new(crate::scsi::ScsiInterface::new()),
-            self.offline_mode,
-        );
+        info!("🔧 Detecting partition strategy using opened SCSI device (fixing device handle inconsistency)");
         
-        // 检测ExtraPartitionCount
-        let extra_partition_count = partition_manager.detect_extra_partition_count().await?;
+        // 直接使用已初始化的ExtraPartitionCount，避免创建新的PartitionManager实例
+        let extra_partition_count = self.get_extra_partition_count();
         
-        // 根据ExtraPartitionCount确定策略
-        Ok(partition_manager.determine_partition_strategy(extra_partition_count).await)
+        info!("Determining partition strategy based on ExtraPartitionCount = {}", extra_partition_count);
+
+        match extra_partition_count {
+            0 => {
+                info!("Single-partition strategy (ExtraPartitionCount = 0)");
+                Ok(PartitionStrategy::SinglePartitionFallback)
+            }
+            1 => {
+                info!("Dual-partition strategy (ExtraPartitionCount = 1)");
+                Ok(PartitionStrategy::StandardMultiPartition)
+            }
+            _ => {
+                warn!(
+                    "Unexpected ExtraPartitionCount value: {}, using dual-partition strategy",
+                    extra_partition_count
+                );
+                Ok(PartitionStrategy::StandardMultiPartition)
+            }
+        }
     }
     
     /// Read LTFS index from tape (优化版本：优先使用成功的策略)
@@ -82,11 +118,14 @@ impl super::TapeOperations {
         // 优化的并行策略搜索
         match self.try_optimized_parallel_strategies().await {
             Ok((xml_content, successful_location)) => {
+                info!("🎯 Processing index content from successful location: block {}", successful_location);
                 if self.validate_and_process_index(&xml_content).await? {
                     // 缓存成功的位置供下次使用
                     self.cache_successful_location(successful_location);
                     info!("✅ Optimized strategy succeeded - index loaded successfully");
                     return Ok(());
+                } else {
+                    warn!("❌ Index validation failed despite successful XML parsing");
                 }
             }
             Err(e) => {
