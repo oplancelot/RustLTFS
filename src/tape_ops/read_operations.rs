@@ -56,10 +56,19 @@ impl super::TapeOperations {
         // 快速缓存检查 - 如果知道上次成功的位置，直接尝试
         if let Some(cached_location) = self.get_cached_index_location() {
             info!("🚀 Fast path: Trying cached successful location first");
-            if let Ok(xml_content) = self.try_read_index_at_location(cached_location).await {
-                if self.validate_and_process_index(&xml_content).await? {
-                    info!("✅ Fast path succeeded - index found at cached location");
-                    return Ok(());
+            
+            // 定位到缓存位置并尝试智能读取
+            if let Ok(()) = self.scsi.locate_block(0, cached_location) {
+                match self.try_read_index_intelligently(cached_location) {
+                    Ok(xml_content) => {
+                        if self.validate_and_process_index(&xml_content).await? {
+                            info!("✅ Fast path succeeded - index found at cached location (intelligent read)");
+                            return Ok(());
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Intelligent read at cached location failed: {}", e);
+                    }
                 }
             }
             info!("Cached location failed, proceeding with optimized search");
@@ -1729,53 +1738,53 @@ impl super::TapeOperations {
 
     // === 性能优化方法 ===
     
-    /// 获取缓存的索引位置
+    /// 获取缓存的索引位置 - 基于测试结果的智能缓存
     fn get_cached_index_location(&self) -> Option<u64> {
-        // 简单的静态缓存实现，实际应用中可以使用更复杂的缓存策略
-        // 根据日志，上次成功的位置是 block 1000
-        Some(1000)  // 临时硬编码，后续可以实现动态缓存
+        // 基于实际测试结果：block 50 成功找到索引
+        // TODO: 未来可以从配置文件或持久化存储中读取
+        Some(50) // 测试证实的成功位置
     }
     
     /// 缓存成功的索引位置
     fn cache_successful_location(&self, location: u64) {
         // 实际实现中可以保存到配置文件或内存缓存
-        info!("Caching successful index location: block {}", location);
+        info!("📋 Caching successful index location: block {} (for future optimization)", location);
+        // TODO: 实现持久化缓存机制
     }
     
-    /// 尝试在指定位置读取索引
-    async fn try_read_index_at_location(&self, block: u64) -> Result<String> {
-        debug!("Trying to read index at cached location: block {}", block);
-        
-        // 定位到指定块
-        self.scsi.locate_block(0, block)?;
-        
-        // 尝试读取索引
-        self.try_read_index_at_current_position_with_filemarks()
-    }
-    
-    /// 优化的并行策略搜索
+    /// 优化的并行策略搜索 - 基于测试结果优化
     async fn try_optimized_parallel_strategies(&mut self) -> Result<(String, u64)> {
-        info!("🚀 Starting optimized parallel index search strategies");
+        info!("🚀 Starting optimized index search with intelligent strategies");
         
-        // 基于日志分析的最可能位置列表（按优先级排序）
+        // 基于实际测试结果的优化位置列表
         let priority_locations = vec![
-            1000,  // 上次成功位置
+            50,    // 测试中成功的位置 - 最高优先级
+            1000,  // 原有的成功位置
             5,     // 标准LTFS位置  
             3,     // 常见位置
             1,     // 起始位置
-            10, 15, 20,  // 其他常见位置
-            100, 200, 500,  // 中间位置
+            100, 200, 500,  // 中等距离位置
+            2000, 5000,     // 较远位置
         ];
         
-        info!("Trying {} priority locations in optimized order", priority_locations.len());
+        info!("Trying {} priority locations with block 50 as highest priority", priority_locations.len());
         
-        // 快速串行搜索优先位置（避免并行磁带操作的复杂性）
+        // 串行搜索优先位置（避免并行磁带操作的复杂性）
         for &block in &priority_locations {
             if let Ok(()) = self.scsi.locate_block(0, block) {
-                if let Ok(xml_content) = self.try_read_index_at_current_position_with_filemarks() {
-                    if xml_content.contains("<ltfsindex") && xml_content.contains("</ltfsindex>") {
-                        info!("✅ Found index at priority location: block {}", block);
-                        return Ok((xml_content, block));
+                debug!("🎯 Testing priority location: block {}", block);
+                
+                // 使用智能读取方法
+                match self.try_read_index_intelligently(block) {
+                    Ok(xml_content) => {
+                        if xml_content.contains("<ltfsindex") && xml_content.contains("</ltfsindex>") {
+                            info!("✅ Found index at priority location: block {} (intelligent read)", block);
+                            self.cache_successful_location(block);
+                            return Ok((xml_content, block));
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Intelligent read failed at block {}: {}", block, e);
                     }
                 }
             }
@@ -1790,6 +1799,187 @@ impl super::TapeOperations {
             }
             Err(e) => Err(e)
         }
+    }
+
+    /// 智能索引读取 - 在指定位置使用优化方法
+    fn try_read_index_intelligently(&self, block: u64) -> Result<String> {
+        info!("🎯 Trying intelligent index read at block {}", block);
+        
+        // 获取动态blocksize 
+        let block_size = self
+            .partition_label
+            .as_ref()
+            .map(|plabel| plabel.blocksize as usize)
+            .unwrap_or(crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize);
+
+        debug!("Using blocksize {} bytes for intelligent read", block_size);
+
+        // 使用智能读取方法
+        self.read_index_intelligently_with_partitions(block_size)
+    }
+    
+    /// 智能索引读取方法 - 高效版本
+    /// 解决260MB数据获取12KB索引的效率问题
+    pub fn read_index_intelligently(&self, block_size: usize) -> Result<String> {
+        info!("🚀 Starting intelligent index reading (optimized for efficiency)");
+        
+        // Phase 1: 快速预验证 - 读取前几个块检测索引标记
+        const PREVIEW_BLOCKS: usize = 2; // 只读取2个块进行预验证
+        let preview_size = block_size * PREVIEW_BLOCKS;
+        let mut preview_buffer = vec![0u8; preview_size];
+        
+        info!("Phase 1: Quick preview - reading {} blocks ({} bytes) for validation", 
+              PREVIEW_BLOCKS, preview_size);
+        
+        match self.scsi.read_blocks(PREVIEW_BLOCKS as u32, &mut preview_buffer) {
+            Ok(blocks_read) => {
+                if blocks_read == 0 {
+                    debug!("Preview read returned 0 blocks - no data at current position");
+                    return Err(RustLtfsError::ltfs_index("No data at current position".to_string()));
+                }
+                
+                // 转换为字符串进行快速检测
+                let preview_text = String::from_utf8_lossy(&preview_buffer);
+                
+                // 检测LTFS索引标记
+                if !preview_text.contains("<ltfsindex") {
+                    debug!("❌ Preview validation failed - no <ltfsindex> found in first {} blocks", PREVIEW_BLOCKS);
+                    return Err(RustLtfsError::ltfs_index("No LTFS index marker found in preview".to_string()));
+                }
+                
+                info!("✅ Preview validation passed - LTFS index detected, proceeding with full read");
+            }
+            Err(e) => {
+                debug!("Preview read failed: {}", e);
+                return Err(RustLtfsError::ltfs_index(format!("Preview read failed: {}", e)));
+            }
+        }
+        
+        // Phase 2: 智能完整读取 - 既然检测到索引，进行优化的完整读取
+        info!("Phase 2: Intelligent full read with early termination");
+        
+        // 创建临时文件
+        let temp_dir = std::env::temp_dir();
+        let temp_filename = format!(
+            "LTFSIndex_Smart_{}.tmp",
+            chrono::Utc::now().format("%Y%m%d_%H%M%S")
+        );
+        let temp_path = temp_dir.join(temp_filename);
+        info!("Creating temporary index file: {:?}", temp_path);
+        
+        let mut temp_file = std::fs::File::create(&temp_path)?;
+        
+        // 首先写入已经读取的预览数据
+        use std::io::Write;
+        temp_file.write_all(&preview_buffer)?;
+        
+        let mut total_bytes_read = preview_size as u64;
+        let mut blocks_read = PREVIEW_BLOCKS;
+        let max_blocks = 50; // 减少最大限制从200到50
+        let mut consecutive_zero_blocks = 0;
+        const MAX_CONSECUTIVE_ZEROS: usize = 3; // 连续3个零块就停止
+        
+        info!("Continuing read from block {} with max {} total blocks", 
+              blocks_read + 1, max_blocks);
+        
+        // 继续读取剩余数据
+        loop {
+            if blocks_read >= max_blocks {
+                info!("Reached intelligent block limit ({}), stopping", max_blocks);
+                break;
+            }
+            
+            let mut buffer = vec![0u8; block_size];
+            
+            match self.scsi.read_blocks(1, &mut buffer) {
+                Ok(read_count) => {
+                    if read_count == 0 {
+                        info!("✅ Reached file mark (read_count = 0), stopping");
+                        break;
+                    }
+                    
+                    // 检测零块（可能表示数据结束）
+                    let is_zero_block = buffer.iter().all(|&b| b == 0);
+                    if is_zero_block {
+                        consecutive_zero_blocks += 1;
+                        debug!("Zero block detected ({}/{})", consecutive_zero_blocks, MAX_CONSECUTIVE_ZEROS);
+                        
+                        if consecutive_zero_blocks >= MAX_CONSECUTIVE_ZEROS {
+                            info!("✅ Detected {} consecutive zero blocks, stopping read (likely end of data)", 
+                                  consecutive_zero_blocks);
+                            break;
+                        }
+                    } else {
+                        consecutive_zero_blocks = 0; // 重置零块计数器
+                        
+                        // 检测索引结束标记
+                        let text_chunk = String::from_utf8_lossy(&buffer);
+                        if text_chunk.contains("</ltfsindex>") {
+                            // 找到索引结束，写入这最后一块然后停止
+                            temp_file.write_all(&buffer)?;
+                            total_bytes_read += block_size as u64;
+                            blocks_read += 1;
+                            info!("✅ Found </ltfsindex> marker, index complete after {} blocks", blocks_read);
+                            break;
+                        }
+                    }
+                    
+                    temp_file.write_all(&buffer)?;
+                    total_bytes_read += block_size as u64;
+                    blocks_read += 1;
+                    
+                    // 每10个块报告一次进度
+                    if blocks_read % 10 == 0 {
+                        debug!("Read {} blocks, {} bytes so far", blocks_read, total_bytes_read);
+                    }
+                }
+                Err(e) => {
+                    debug!("SCSI read error after {} blocks: {}", blocks_read, e);
+                    if blocks_read <= PREVIEW_BLOCKS {
+                        return Err(RustLtfsError::ltfs_index(
+                            "Failed to read beyond preview data".to_string(),
+                        ));
+                    }
+                    // 已经有一些数据，尝试解析
+                    break;
+                }
+            }
+        }
+        
+        temp_file.flush()?;
+        drop(temp_file);
+        
+        info!("🎯 Intelligent read completed: {} blocks read, {} total bytes (vs old method: ~13MB)", 
+              blocks_read, total_bytes_read);
+        
+        // 读取并清理临时文件
+        let xml_content = std::fs::read_to_string(&temp_path)?;
+        
+        // 清理临时文件
+        if let Err(e) = std::fs::remove_file(&temp_path) {
+            warn!("Failed to remove temporary file {:?}: {}", temp_path, e);
+        }
+        
+        // 清理XML内容
+        let cleaned_xml = xml_content.replace('\0', "").trim().to_string();
+        
+        if cleaned_xml.is_empty() {
+            return Err(RustLtfsError::ltfs_index("Cleaned XML is empty".to_string()));
+        }
+        
+        // 验证XML完整性
+        if !cleaned_xml.contains("<ltfsindex") || !cleaned_xml.contains("</ltfsindex>") {
+            return Err(RustLtfsError::ltfs_index("Incomplete LTFS index XML".to_string()));
+        }
+        
+        info!("✅ Intelligent read extracted {} bytes of valid index data", cleaned_xml.len());
+        Ok(cleaned_xml)
+    }
+
+    /// 智能索引读取方法 - 直接使用当前TapeOperations的实现
+    fn read_index_intelligently_with_partitions(&self, block_size: usize) -> Result<String> {
+        // 直接使用当前TapeOperations实例的智能读取实现
+        self.read_index_intelligently(block_size)
     }
 
     /// 按照LTFSCopyGUI逻辑从数据分区EOD读取最新索引
