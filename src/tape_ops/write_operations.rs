@@ -638,6 +638,9 @@ impl TapeOperations {
                 calc.process_final_block();
             }
             
+            // Apply performance controls before write (对应LTFSCopyGUI的性能控制)
+            self.apply_performance_controls(self.block_size as u64).await?;
+            
             // Write to tape
             let blocks_written = self.scsi.write_blocks(1, &buffer)?;
             
@@ -694,6 +697,9 @@ impl TapeOperations {
                 if let Some(speed_limit_mbps) = self.write_options.speed_limit {
                     self.apply_speed_limit(self.block_size as u64, speed_limit_mbps).await;
                 }
+                
+                // Apply comprehensive performance controls (对应LTFSCopyGUI的全面性能控制)
+                self.apply_performance_controls(bytes_read as u64).await?;
                 
                 // Write block to tape
                 let blocks_written = self.scsi.write_blocks(1, &buffer)?;
@@ -1442,6 +1448,9 @@ impl TapeOperations {
         // Copy index content to buffer (rest will be zero-padded)
         buffer[..index_content.len()].copy_from_slice(&index_content);
 
+        // Apply performance controls for index write (对应LTFSCopyGUI的索引写入性能控制)
+        self.apply_performance_controls(index_content.len() as u64).await?;
+
         // Write index blocks to tape
         let blocks_written = self.scsi.write_blocks(blocks_needed as u32, &buffer)?;
 
@@ -1681,6 +1690,9 @@ impl TapeOperations {
         // Get position before writing for extent information
         let write_position = self.scsi.read_position()?;
 
+        // Apply performance controls before large write (对应LTFSCopyGUI的性能控制)
+        self.apply_performance_controls(file_size).await?;
+
         // Write file data blocks
         let blocks_written = self.scsi.write_blocks(blocks_needed as u32, &buffer)?;
 
@@ -1821,17 +1833,31 @@ impl TapeOperations {
         Ok(true)
     }
 
-    /// Apply speed limiting (对应LTFSCopyGUI的SpeedLimit功能)
+    /// Enhanced apply speed limiting with intelligent control (对应LTFSCopyGUI的SpeedLimit功能增强版)
     async fn apply_speed_limit(&mut self, bytes_to_write: u64, speed_limit_mbps: u32) {
-        let speed_limit_bytes_per_sec = (speed_limit_mbps as u64) * 1024 * 1024;
-        let expected_duration = bytes_to_write * 1000 / speed_limit_bytes_per_sec; // in milliseconds
+        // 使用新的智能速度控制系统
+        if let Some(ref mut speed_limiter) = self.speed_limiter {
+            let delay = speed_limiter.apply_rate_limit(bytes_to_write).await;
+            if delay > std::time::Duration::ZERO {
+                debug!(
+                    "Intelligent speed limiting: delaying {}ms for {} bytes",
+                    delay.as_millis(),
+                    bytes_to_write
+                );
+                tokio::time::sleep(delay).await;
+            }
+        } else {
+            // 回退到原始的简单速度限制
+            let speed_limit_bytes_per_sec = (speed_limit_mbps as u64) * 1024 * 1024;
+            let expected_duration = bytes_to_write * 1000 / speed_limit_bytes_per_sec; // in milliseconds
 
-        if expected_duration > 0 {
-            debug!(
-                "Speed limiting: waiting {}ms for {} bytes at {} MiB/s",
-                expected_duration, bytes_to_write, speed_limit_mbps
-            );
-            tokio::time::sleep(tokio::time::Duration::from_millis(expected_duration)).await;
+            if expected_duration > 0 {
+                debug!(
+                    "Basic speed limiting: waiting {}ms for {} bytes at {} MiB/s",
+                    expected_duration, bytes_to_write, speed_limit_mbps
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(expected_duration)).await;
+            }
         }
     }
 

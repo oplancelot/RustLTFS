@@ -49,6 +49,9 @@ pub enum RustLtfsError {
     #[error("Operation cancelled: {0}")]
     OperationCancelled(String),
     
+    #[error("Resource exhausted: {0}")]
+    ResourceExhausted(String),
+    
     #[error("Generic error: {0}")]
     Generic(#[from] anyhow::Error),
 }
@@ -108,6 +111,10 @@ impl RustLtfsError {
     
     pub fn operation_cancelled<T: Into<String>>(msg: T) -> Self {
         Self::OperationCancelled(msg.into())
+    }
+    
+    pub fn resource_exhausted<T: Into<String>>(msg: T) -> Self {
+        Self::ResourceExhausted(msg.into())
     }
 }
 
