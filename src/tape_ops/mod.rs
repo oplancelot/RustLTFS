@@ -6,6 +6,7 @@ pub mod write_operations;
 pub mod partition_manager;
 pub mod capacity_manager;
 pub mod dual_partition_index;
+pub mod deduplication;
 
 pub use self::core::*;
 // 选择性导出避免重名冲突
@@ -208,6 +209,8 @@ pub struct WriteProgress {
     pub total_bytes: u64,
     pub current_file: String,
     pub errors: Vec<String>,
+    pub duplicates_skipped: u64,  // 添加：跳过的重复文件数
+    pub space_saved: u64,         // 添加：通过跳过重复文件节省的空间
 }
 
 /// Write options configuration (Enhanced for LTFSCopyGUI compatibility)
@@ -232,6 +235,7 @@ pub struct WriteOptions {
     pub goto_eod_on_write: bool,        // Go to End of Data on write
     pub force_index: bool,              // Force index update
     pub dedupe: bool,                   // Enable deduplication (SHA1-based)
+    pub skip_duplicates: bool,          // Skip writing duplicate files (对应LTFSCopyGUI的跳过重复文件)
     pub preload_file_count: u32,        // Number of files to preload
     pub ignore_volume_overflow: bool,   // Ignore volume overflow warnings
     pub auto_clean_enabled: bool,       // Auto clean on write
@@ -241,8 +245,11 @@ pub struct WriteOptions {
     pub hash_sha1_enabled: bool,
     pub hash_md5_enabled: bool,
     pub hash_blake3_enabled: bool,
+    pub hash_sha256_enabled: bool,
     pub hash_xxhash3_enabled: bool,
     pub hash_xxhash128_enabled: bool,
+    pub extended_hashing: bool,         // Enable extended hashing algorithms
+    pub compatibility_mode: bool,       // MD5 compatibility mode
 }
 
 impl Default for WriteOptions {
@@ -267,6 +274,7 @@ impl Default for WriteOptions {
             goto_eod_on_write: true,
             force_index: false,
             dedupe: false,
+            skip_duplicates: true, // 默认跳过重复文件以节省空间
             preload_file_count: 8,
             ignore_volume_overflow: false,
             auto_clean_enabled: false,
@@ -276,8 +284,11 @@ impl Default for WriteOptions {
             hash_sha1_enabled: true,
             hash_md5_enabled: true,
             hash_blake3_enabled: false,
+            hash_sha256_enabled: true,
             hash_xxhash3_enabled: false,
             hash_xxhash128_enabled: false,
+            extended_hashing: false,
+            compatibility_mode: true, // 默认启用MD5兼容模式
         }
     }
 }

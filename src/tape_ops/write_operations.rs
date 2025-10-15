@@ -3,7 +3,6 @@ use crate::ltfs_index::LtfsIndex;
 use super::{
     TapeOperations, FileWriteEntry, WriteOptions, WriteResult
 };
-use super::deduplication::{DeduplicationManager, TapeLocation, create_deduplication_manager};
 use std::path::Path;
 use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
@@ -606,13 +605,13 @@ impl TapeOperations {
         }
 
         // Locate to write position
-        let write_state = self.locate_to_write_position().await?;
+        let mut write_state = self.locate_to_write_position().await?;
         
         // Get write start position
         let write_start_position = self.scsi.read_position()?;
         
         // Open file and create buffered reader
-        let mut file = File::open(source_path).await.map_err(|e| {
+        let file = File::open(source_path).await.map_err(|e| {
             RustLtfsError::file_operation(format!("Unable to open file: {}", e))
         })?;
         
@@ -629,13 +628,8 @@ impl TapeOperations {
         };
 
         // === 去重检查逻辑（对应LTFSCopyGUI的DuplicateCheck） ===
-        // TODO: 暂时禁用去重功能，优先修复分区映射问题
-        /*
         let mut duplicate_detected = false;
-        let mut duplicate_info = None;
-        
-        // 如果启用了去重功能，先快速计算文件哈希进行重复检查
-        if self.write_options.dedupe {
+        let duplicate_count = if self.write_options.dedupe {
             if let Some(ref dedup_manager) = self.dedup_manager {
                 info!("执行去重检查：{:?}", source_path);
                 
@@ -645,10 +639,10 @@ impl TapeOperations {
                 // 检查是否存在重复文件
                 if let Some(duplicates) = dedup_manager.check_file_exists(&quick_hashes) {
                     duplicate_detected = true;
-                    duplicate_info = Some(duplicates);
+                    let dup_count = duplicates.len();
                     
                     info!("🔍 检测到重复文件：{:?}，已存在 {} 个副本", 
-                          source_path, duplicates.len());
+                          source_path, dup_count);
                     
                     // 根据策略决定是否跳过写入
                     if self.write_options.skip_duplicates {
@@ -656,6 +650,8 @@ impl TapeOperations {
                         
                         // 更新统计信息
                         self.write_progress.current_files_processed += 1;
+                        self.write_progress.duplicates_skipped += 1;
+                        self.write_progress.space_saved += file_size;
                         
                         return Ok(WriteResult {
                             position: crate::scsi::TapePosition {
@@ -672,10 +668,17 @@ impl TapeOperations {
                     } else {
                         info!("📝 仍然写入重复文件（去重策略允许）");
                     }
+                    
+                    dup_count
+                } else {
+                    0
                 }
+            } else {
+                0
             }
-        }
-        */
+        } else {
+            0
+        };
 
         // Write statistics
         let mut total_blocks_written = 0u32;
@@ -814,7 +817,7 @@ impl TapeOperations {
         );
         
         // Update LTFS index with computed hashes
-        if let Some(hash_calc) = hash_calculator {
+        if let Some(hash_calc) = &hash_calculator {
             let hashes = hash_calc.get_enabled_hashes(&self.write_options);
             self.update_index_for_file_write_enhanced(
                 source_path,
@@ -835,6 +838,30 @@ impl TapeOperations {
         // Update progress counters
         self.write_progress.current_files_processed += 1;
         self.write_progress.total_bytes_unindexed += file_size;
+        
+        // 注册文件到去重数据库（如果启用）
+        if !duplicate_detected && self.write_options.dedupe {
+            if let (Some(ref mut dedup_manager), Some(ref hash_calc)) = (&mut self.dedup_manager, &hash_calculator) {
+                let hashes = hash_calc.get_enabled_hashes(&self.write_options);
+                let tape_location = super::deduplication::TapeLocation {
+                    partition: write_start_position.partition,
+                    start_block: write_start_position.block_number,
+                    file_uid: 0, // UID will be set when updating index
+                };
+                
+                if let Err(e) = dedup_manager.register_file(
+                    &source_path.to_string_lossy(),
+                    file_size,
+                    &hashes,
+                    Some(tape_location),
+                ) {
+                    warn!("Failed to register file to deduplication database: {}", e);
+                }
+            }
+        }
+        
+        // 记录重复文件统计信息（用于日志记录）
+        debug!("Duplicate count for tracking: {}", duplicate_count);
         
         // Check if index update is needed based on interval, force_index option, or small file scenario
         // For testing and small files, we automatically force index write when total unindexed data is small
