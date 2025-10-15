@@ -317,7 +317,7 @@ impl CheckSumBlockwiseCalculator {
         
         self.sha1_hasher.update(data);
         self.md5_hasher.consume(data);
-        self.sha256_hasher.update(data);
+        Sha256Digest::update(&mut self.sha256_hasher, data);
         
         if let Some(ref mut hasher) = self.blake3_hasher {
             hasher.update(data);
@@ -605,7 +605,7 @@ impl TapeOperations {
         }
 
         // Locate to write position
-        let mut write_state = self.locate_to_write_position().await?;
+        let _write_state = self.locate_to_write_position().await?;
         
         // Get write start position
         let write_start_position = self.scsi.read_position()?;
