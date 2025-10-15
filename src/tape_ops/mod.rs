@@ -7,6 +7,7 @@ pub mod partition_manager;
 pub mod capacity_manager;
 pub mod dual_partition_index;
 pub mod deduplication;
+pub mod device_management;
 
 pub use self::core::*;
 // 选择性导出避免重名冲突

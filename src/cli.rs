@@ -14,6 +14,21 @@ pub enum ExportFormat {
     Batch,
 }
 
+/// 报告类型选项
+#[derive(Debug, Clone, ValueEnum)]
+pub enum ReportType {
+    /// Summary report of all devices
+    Summary,
+    /// Detailed report for specific device
+    Detailed,
+    /// CSV inventory of all devices
+    Inventory,
+    /// Performance metrics report
+    Performance,
+    /// Health status report
+    Health,
+}
+
 #[derive(Parser)]
 #[command(name = "rustltfs")]
 #[command(about = "A Rust CLI tool for IBM tape direct read/write operations")]
@@ -177,27 +192,6 @@ pub enum Commands {
         output: Option<PathBuf>,
     },
 
-    /// Manage tape devices (list devices, show info, check status)
-    /// 
-    /// 统一的设备管理命令，支持列出设备、显示信息和检查状态
-    Device {
-        /// Tape device path (optional - if not provided, list all devices)
-        #[arg(value_name = "DEVICE")]
-        device: Option<String>,
-        
-        /// Show detailed information
-        #[arg(short, long)]
-        detailed: bool,
-        
-        /// Show device status information
-        #[arg(short, long)]
-        status: bool,
-        
-        /// Show device configuration info
-        #[arg(short, long)]
-        info: bool,
-    },
-
     /// Show tape space information (free/total)
     /// 
     /// 显示磁带的可用空间和总空间信息
@@ -313,6 +307,73 @@ pub enum Commands {
         /// Show detailed information during operation
         #[arg(short = 'd', long = "detailed")]
         detailed: bool,
+    },
+
+    /// Device management and monitoring commands
+    /// 
+    /// 磁带设备管理和监控功能，包括设备发现、状态检查和报告生成
+    Device {
+        #[command(subcommand)]
+        action: DeviceAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum DeviceAction {
+    /// Discover available tape devices
+    /// 
+    /// 扫描系统中可用的磁带设备
+    Discover {
+        /// Show detailed device information
+        #[arg(short = 'd', long = "detailed")]
+        detailed: bool,
+    },
+
+    /// Show device status and health information
+    /// 
+    /// 显示指定设备的详细状态和健康信息
+    Status {
+        /// Tape device path (e.g. \\.\TAPE0)
+        #[arg(value_name = "DEVICE")]
+        device: String,
+
+        /// Enable continuous monitoring mode
+        #[arg(short = 'm', long = "monitor")]
+        monitor: bool,
+
+        /// Monitoring interval in seconds (default: 30)
+        #[arg(short = 'i', long = "interval", default_value = "30")]
+        interval: u64,
+    },
+
+    /// Generate device reports
+    /// 
+    /// 生成设备状态报告和清单
+    Report {
+        /// Report type
+        #[arg(short = 't', long = "type", value_enum, default_value = "summary")]
+        report_type: ReportType,
+
+        /// Specific device to report on (optional)
+        #[arg(short = 'd', long = "device")]
+        device: Option<String>,
+
+        /// Output file path (optional, prints to stdout if not specified)
+        #[arg(short = 'o', long = "output")]
+        output: Option<PathBuf>,
+    },
+
+    /// Run health check on devices
+    /// 
+    /// 对指定设备执行健康检查
+    HealthCheck {
+        /// Tape device path (e.g. \\.\TAPE0), or 'all' for all devices
+        #[arg(value_name = "DEVICE")]
+        device: String,
+
+        /// Run comprehensive health check
+        #[arg(short = 'c', long = "comprehensive")]
+        comprehensive: bool,
     },
 }
 

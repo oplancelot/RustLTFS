@@ -1,9 +1,10 @@
 use crate::error::Result;
 use crate::scsi::{MediaType, check_tape_media};
-use tracing::{info, debug, error, warn};
+use tracing::{info, debug, error};
+use serde::{Serialize, Deserialize};
 
 /// Tape device information structure
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TapeDevice {
     pub path: String,
     pub vendor: String,
@@ -13,7 +14,7 @@ pub struct TapeDevice {
 }
 
 /// Tape status enumeration (based on new MediaType)
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TapeStatus {
     Ready,
     NotReady,
