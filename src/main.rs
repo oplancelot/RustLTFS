@@ -11,7 +11,7 @@ mod tape_ops;
 
 
 use crate::cli::{Cli, Commands};
-use crate::error::Result;
+use crate::error::{Result, RustLtfsError};
 use tracing::{info, error, warn};
 
 #[tokio::main]
@@ -585,32 +585,226 @@ async fn run(args: Cli) -> Result<()> {
             Ok(())
         }
         
-        Commands::Device { device, detailed, status, info } => {
-            match device {
-                Some(device_path) => {
-                    // 处理特定设备的信息请求
-                    if status {
-                        tracing::info!("Getting device status: {}", device_path);
-                        tape::get_device_status(device_path).await
-                    } else if info {
-                        tracing::info!("Getting device information: {}", device_path);
-                        tape::get_device_info(device_path).await
-                    } else {
-                        // 默认显示设备状态和信息
-                        tracing::info!("Getting comprehensive device info: {}", device_path);
-                        println!("📱 Device: {}", device_path);
-                        println!("\n🔧 Configuration Information:");
-                        if let Err(e) = tape::get_device_info(device_path.clone()).await {
-                            println!("❌ Failed to get device info: {}", e);
+        Commands::Device { action } => {
+            use crate::cli::{DeviceAction, ReportType};
+            use crate::tape_ops::device_management::{DeviceManager, DeviceReportGenerator};
+            use std::fs;
+            use std::time::Duration;
+
+            match action {
+                DeviceAction::Discover { detailed } => {
+                    info!("发现磁带设备...");
+                    let mut device_manager = DeviceManager::new();
+                    
+                    match device_manager.discover_devices().await {
+                        Ok(devices) => {
+                            if devices.is_empty() {
+                                println!("🔍 未发现任何磁带设备");
+                            } else {
+                                println!("🔍 发现 {} 个磁带设备:", devices.len());
+                                for device_path in devices {
+                                    println!("  📱 {}", device_path);
+                                    
+                                    if detailed {
+                                        if let Some(status) = device_manager.get_device_status(&device_path) {
+                                            println!("    厂商: {}", status.device_info.vendor);
+                                            println!("    型号: {}", status.device_info.model);
+                                            println!("    健康状态: {:?}", status.health_status);
+                                            println!("    在线状态: {}", if status.is_online { "在线" } else { "离线" });
+                                        }
+                                        println!();
+                                    }
+                                }
+                            }
                         }
-                        println!("\n📊 Status Information:");
-                        tape::get_device_status(device_path).await
+                        Err(e) => {
+                            error!("设备发现失败: {}", e);
+                            return Err(e);
+                        }
                     }
+                    Ok(())
                 }
-                None => {
-                    // 列出所有设备
-                    tracing::info!("Listing tape devices");
-                    tape::list_devices(detailed).await
+
+                DeviceAction::Status { device, monitor, interval } => {
+                    info!("获取设备状态: {}", device);
+                    let mut device_manager = DeviceManager::new();
+                    
+                    // 初始化设备
+                    if device_manager.discover_devices().await.is_err() {
+                        error!("无法发现设备");
+                        return Ok(());
+                    }
+
+                    if monitor {
+                        println!("📊 启动设备监控模式 (间隔: {}秒, 按Ctrl+C退出)", interval);
+                        device_manager.enable_auto_monitoring(Duration::from_secs(interval));
+                        
+                        loop {
+                            if let Err(e) = device_manager.update_device_status(&device).await {
+                                warn!("更新设备状态失败: {}", e);
+                            }
+                            
+                            if let Some(status) = device_manager.get_device_status(&device) {
+                                println!("\n=== 设备状态更新 {} ===", status.last_updated);
+                                println!("设备: {}", device);
+                                println!("健康状态: {:?}", status.health_status);
+                                println!("在线状态: {}", if status.is_online { "✅ 在线" } else { "❌ 离线" });
+                                
+                                if let Some(media) = &status.media_info {
+                                    let usage_percent = (media.used_capacity as f64 / media.total_capacity as f64) * 100.0;
+                                    println!("磁带使用率: {:.1}%", usage_percent);
+                                }
+                                
+                                if !status.recent_issues.is_empty() {
+                                    println!("⚠️  最近问题: {} 个", status.recent_issues.len());
+                                }
+                            }
+                            
+                            tokio::time::sleep(Duration::from_secs(interval)).await;
+                        }
+                    } else {
+                        // 单次状态查询
+                        if let Err(e) = device_manager.update_device_status(&device).await {
+                            error!("更新设备状态失败: {}", e);
+                        }
+                        
+                        if let Some(status) = device_manager.get_device_status(&device) {
+                            println!("📱 设备: {}", device);
+                            println!("厂商: {}", status.device_info.vendor);
+                            println!("型号: {}", status.device_info.model);
+                            println!("序列号: {}", status.device_info.serial);
+                            println!("健康状态: {:?}", status.health_status);
+                            println!("设备状态: {:?}", status.device_info.status);
+                            println!("在线状态: {}", if status.is_online { "✅ 在线" } else { "❌ 离线" });
+                            println!("最后更新: {}", status.last_updated);
+                        } else {
+                            error!("设备 {} 未找到", device);
+                        }
+                    }
+                    Ok(())
+                }
+
+                DeviceAction::Report { report_type, device, output } => {
+                    info!("生成设备报告...");
+                    let mut device_manager = DeviceManager::new();
+                    
+                    // 发现设备
+                    device_manager.discover_devices().await?;
+                    
+                    let report_generator = DeviceReportGenerator::new(device_manager);
+                    
+                    let report_content = match report_type {
+                        ReportType::Summary => report_generator.generate_summary_report(),
+                        ReportType::Detailed => {
+                            if let Some(device_path) = device {
+                                report_generator.generate_detailed_report(&device_path)?
+                            } else {
+                                return Err(RustLtfsError::parameter_validation("详细报告需要指定设备路径"));
+                            }
+                        }
+                        ReportType::Inventory => report_generator.generate_device_inventory_csv(),
+                        ReportType::Performance => {
+                            // TODO: 实现性能报告
+                            "性能报告功能开发中...".to_string()
+                        }
+                        ReportType::Health => {
+                            // TODO: 实现健康报告
+                            "健康报告功能开发中...".to_string()
+                        }
+                    };
+
+                    if let Some(output_path) = output {
+                        fs::write(&output_path, &report_content)?;
+                        println!("📄 报告已保存到: {:?}", output_path);
+                    } else {
+                        println!("{}", report_content);
+                    }
+                    Ok(())
+                }
+
+                DeviceAction::HealthCheck { device, comprehensive } => {
+                    info!("执行设备健康检查: {}", device);
+                    let mut device_manager = DeviceManager::new();
+                    
+                    if device == "all" {
+                        // 检查所有设备
+                        device_manager.discover_devices().await?;
+                        let devices: Vec<String> = device_manager.get_all_device_status().keys().cloned().collect();
+                        
+                        println!("🔍 对 {} 个设备执行健康检查...", devices.len());
+                        
+                        for device_path in devices {
+                            println!("\n📱 检查设备: {}", device_path);
+                            
+                            if let Err(e) = device_manager.update_device_status(&device_path).await {
+                                println!("❌ 健康检查失败: {}", e);
+                                continue;
+                            }
+                            
+                            if let Some(status) = device_manager.get_device_status(&device_path) {
+                                match status.health_status {
+                                    crate::tape_ops::device_management::DeviceHealth::Excellent => 
+                                        println!("✅ 健康状态: 优秀"),
+                                    crate::tape_ops::device_management::DeviceHealth::Good => 
+                                        println!("✅ 健康状态: 良好"),
+                                    crate::tape_ops::device_management::DeviceHealth::Fair => 
+                                        println!("⚠️  健康状态: 一般"),
+                                    crate::tape_ops::device_management::DeviceHealth::Poor => 
+                                        println!("⚠️  健康状态: 不佳"),
+                                    crate::tape_ops::device_management::DeviceHealth::Critical => 
+                                        println!("❌ 健康状态: 严重"),
+                                    crate::tape_ops::device_management::DeviceHealth::Unknown => 
+                                        println!("❓ 健康状态: 未知"),
+                                }
+                                
+                                if comprehensive && !status.recent_issues.is_empty() {
+                                    println!("   问题详情:");
+                                    for issue in &status.recent_issues {
+                                        println!("   - [{:?}] {}", issue.severity, issue.description);
+                                    }
+                                }
+                            }
+                        }
+                        Ok(())
+                    } else {
+                        // 检查单个设备
+                        device_manager.discover_devices().await?;
+                        
+                        if let Err(e) = device_manager.update_device_status(&device).await {
+                            error!("设备健康检查失败: {}", e);
+                            return Err(e);
+                        }
+                        
+                        if let Some(status) = device_manager.get_device_status(&device) {
+                            println!("📱 设备: {}", device);
+                            println!("健康状态: {:?}", status.health_status);
+                            
+                            if comprehensive {
+                                println!("详细健康信息:");
+                                let metrics = &status.performance_metrics;
+                                println!("  错误率: {:.2} ppm", metrics.error_rate_ppm);
+                                println!("  运行时间: {:.1} 小时", metrics.total_operation_hours);
+                                println!("  装载次数: {}", metrics.total_loads);
+                                
+                                if !status.recent_issues.is_empty() {
+                                    println!("  最近问题 ({} 个):", status.recent_issues.len());
+                                    for issue in &status.recent_issues {
+                                        println!("    - [{:?}] {}: {}", 
+                                            issue.severity, issue.timestamp, issue.description);
+                                        if let Some(action) = &issue.recommended_action {
+                                            println!("      建议: {}", action);
+                                        }
+                                    }
+                                } else {
+                                    println!("  ✅ 无问题记录");
+                                }
+                            }
+                            Ok(())
+                        } else {
+                            error!("设备 {} 未找到", device);
+                            Ok(())
+                        }
+                    }
                 }
             }
         }
