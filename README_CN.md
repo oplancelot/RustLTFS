@@ -147,35 +147,75 @@ rustltfs write src/example/README.md --tape TAPE0 /test/readme.md --skip-index
 rustltfs write src/example/drivers/ --tape TAPE0 /test/drivers/ --skip-index
 ```
 
-### 磁带设备管理
+### 磁带设备管理（企业级）
 
 ```cmd
-# 列出所有可用磁带设备
-rustltfs device
+# 设备发现和枚举
+rustltfs device discover                    # 发现所有可用磁带设备
+rustltfs device discover --detailed        # 发现设备并显示详细信息
 
-# 列出设备详细信息
-rustltfs device --detailed
+# 设备状态监控
+rustltfs device status TAPE0               # 查看设备状态
+rustltfs device status TAPE0 --monitor     # 持续监控设备状态
+rustltfs device status TAPE0 --monitor --interval 30  # 每30秒监控一次
 
-# 检查特定设备状态
-rustltfs device TAPE0 --status
+# 设备报告生成
+rustltfs device report --type summary      # 生成设备摘要报告
+rustltfs device report --type detailed --device TAPE0  # 生成详细设备报告
+rustltfs device report --type inventory    # 生成设备清单（CSV格式）
+rustltfs device report --type performance  # 生成性能报告
+rustltfs device report --type health       # 生成健康状态报告
 
-# 查看设备配置信息
-rustltfs device TAPE0 --info
+# 设备健康检查
+rustltfs device health-check TAPE0         # 检查单个设备健康状态
+rustltfs device health-check all           # 检查所有设备健康状态
+rustltfs device health-check TAPE0 --comprehensive  # 全面健康检查
 
-# 显示设备综合信息
-rustltfs device TAPE0 --detailed
+# 导出报告到文件
+rustltfs device report --type summary --output report.txt
+rustltfs device report --type inventory --output devices.csv
 ```
 
-### test
+### 高级LTFS操作
+
 ```cmd
-# 先检查设备列表
-rustltfs.exe device
+# LTFS磁带格式化（MKLTFS）
+rustltfs mkltfs --tape TAPE0                           # 基本格式化
+rustltfs mkltfs --tape TAPE0 --barcode ABC123L8        # 设置条形码
+rustltfs mkltfs --tape TAPE0 --label "MyTape" --partition 1  # 双分区格式化
+rustltfs mkltfs --tape TAPE0 --block-size 524288 --progress  # 自定义块大小
 
-# 然后检查特定设备状态
-rustltfs.exe device \\.\TAPE1 --status --detailed
+# 索引操作
+rustltfs read-index --tape TAPE0                       # 从磁带读取索引
+rustltfs read-index --tape TAPE0 --output index.schema # 保存索引到文件
+rustltfs read-data-index --tape TAPE0                  # 读取数据分区索引
+rustltfs update-index --tape TAPE0                     # 手动更新索引
 
-# 最后尝试读取索引
-rustltfs.exe read --tape \\.\TAPE1
+# 磁带空间管理
+rustltfs space --tape TAPE0                            # 查看磁带空间信息
+rustltfs space --tape TAPE0 --detailed                 # 详细空间分析
+```
+
+### 去重和性能优化
+
+```cmd
+# 启用文件去重（基于哈希）
+rustltfs write C:\data --tape TAPE0 /backup/data --dedupe --verify
+
+# 高级写入选项
+rustltfs write C:\data --tape TAPE0 /backup/data \
+    --parallel \                    # 并行处理
+    --speed-limit 100 \            # 限制速度为100MB/s
+    --index-interval 36 \          # 每36GB更新一次索引
+    --exclude .tmp,.log \          # 排除临时文件
+    --compression-level 2 \        # 启用压缩
+    --max-file-size 10 \          # 限制单文件大小（GB）
+    --checkpoint 1000 \           # 每1000个文件创建检查点
+    --progress                    # 显示进度
+
+# 数据验证和完整性检查
+rustltfs write C:\data --tape TAPE0 /backup/data --verify --hash-on-write
+rustltfs read --tape TAPE0 /backup/data C:\restore --verify
 ```
 ## 命令参数说明
 
@@ -260,7 +300,10 @@ rustltfs device TAPE0 --info
 ## 技术特性
 
 - **直接读写**: 无需挂载，直接通过 SCSI 命令访问磁带
-- **LTFS 兼容**: 完全兼容 IBM LTFS 格式
+- **LTFS 兼容**: 完全兼容 IBM LTFS 格式，与LTFSCopyGUI互操作
+- **企业级设备管理**: 设备发现、状态监控、健康评估、性能报告
+- **文件去重**: 基于SHA1/MD5/SHA256/Blake3/XxHash的智能去重系统
+- **双分区支持**: 正确处理LTFS双分区映射，数据写入数据分区
 - **离线模式**: 支持在无磁带设备时模拟操作和索引解析
 - **索引解析**: 可解析和导出 LTFS 索引文件为多种格式
 - **智能操作**: 自动识别文件/目录，提供相应操作
@@ -268,21 +311,29 @@ rustltfs device TAPE0 --info
 - **数据验证**: 支持读写后的数据完整性验证
 - **进度显示**: 大文件操作时显示进度条
 - **错误处理**: 详细的错误信息和恢复建议
+- **跨平台编译**: 支持Linux、Windows GNU、Windows MSVC编译
 
 ## 性能优化
 
 - 使用 64KB 块大小匹配 LTO 标准
-- 异步 I/O 提高传输效率
+- 异步 I/O 提高传输效率  
 - 智能缓存减少磁带寻址
 - 批量操作减少开销
+- 基于哈希的文件去重，节省磁带空间
+- 并行文件处理，提升写入速度
+- 可配置的索引更新间隔，减少磁带操作
+- 数据库持久化去重记录，避免重复计算
 
 ## 注意事项
 
 1. **权限要求**: 需要管理员权限才能发送 SCSI 命令
-2. **设备兼容性**: 支持 LTO-3 到 LTO-8 驱动器
+2. **设备兼容性**: 支持 LTO-3 到 LTO-9 驱动器
 3. **数据安全**: 建议总是使用 `--verify` 参数
 4. **容量限制**: 会自动检查磁带剩余空间
 5. **格式兼容**: 生成的磁带可与其他 LTFS 工具互操作
+6. **双分区磁带**: 自动检测并正确处理双分区LTFS格式
+7. **去重功能**: 启用去重时会创建本地数据库文件
+8. **设备监控**: 支持实时监控多个磁带设备的健康状态
 
 ## 故障排除
 
@@ -307,6 +358,26 @@ rustltfs device TAPE0 --info
    - 确保使用高质量 LTO 磁带
    - 避免频繁的小文件操作
    - 考虑批量打包后再写入
+   - 启用并行处理和去重功能
+
+5. **设备发现失败**
+   - 确认磁带驱动器已正确安装
+   - 检查设备驱动程序是否最新
+   - 使用 `rustltfs device discover --detailed` 获取详细信息
+
+6. **去重数据库错误**
+   - 删除损坏的去重数据库文件
+   - 重新运行写入操作以重建数据库
+
+## 更新日志
+
+### v0.1.0 (最新版本)
+- ✅ 修复关键分区映射问题，数据正确写入数据分区
+- ✅ 实现完整的文件去重系统（SHA1/MD5/SHA256/Blake3/XxHash）
+- ✅ 添加企业级设备管理和监控功能
+- ✅ 完整的CLI集成，支持设备发现、状态监控、报告生成
+- ✅ 跨平台编译支持（Linux/Windows GNU/MSVC）
+- ✅ 与LTFSCopyGUI达到同等功能水平
 
 ## 技术支持
 
