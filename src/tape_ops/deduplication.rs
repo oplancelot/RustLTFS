@@ -41,7 +41,6 @@ impl HashType {
     pub fn from_ltfs_key(key: &str) -> Option<Self> {
         match key {
             "ltfs.hash.sha1sum" => Some(HashType::Sha1),
-            "ltfs.hash.md5sum" => Some(HashType::Md5),
             "ltfs.hash.sha256sum" => Some(HashType::Sha256),
             "ltfs.hash.blake3sum" => Some(HashType::Blake3),
             "ltfs.hash.xxhash3sum" => Some(HashType::XxHash3),
@@ -62,18 +61,6 @@ impl HashType {
         match self {
             HashType::Sha1 => {
                 let mut hasher = Sha1::new();
-                loop {
-                    let bytes_read = reader.read(&mut buffer).map_err(|e| {
-                        RustLtfsError::file_operation(format!("读取文件错误: {}", e))
-                    })?;
-                    if bytes_read == 0 { break; }
-                    hasher.update(&buffer[..bytes_read]);
-                }
-                Ok(format!("{:x}", hasher.finalize()))
-            },
-            HashType::Md5 => {
-                use md5::Digest;
-                let mut hasher = Md5::new();
                 loop {
                     let bytes_read = reader.read(&mut buffer).map_err(|e| {
                         RustLtfsError::file_operation(format!("读取文件错误: {}", e))
@@ -134,7 +121,6 @@ impl HashType {
     pub fn display_name(&self) -> &'static str {
         match self {
             HashType::Sha1 => "SHA1",
-            HashType::Md5 => "MD5",
             HashType::Sha256 => "SHA256",
             HashType::Blake3 => "BLAKE3",
             HashType::XxHash3 => "XXHash3",
@@ -149,7 +135,6 @@ impl HashType {
             HashType::Sha256,  // 安全性高
             HashType::Blake3,  // 性能优秀
             HashType::XxHash3, // 超快速度
-            HashType::Md5,     // 兼容性
             HashType::XxHash128,
         ]
     }
@@ -204,10 +189,7 @@ impl HashManager {
 
         // 初始化所有哈希器
         let mut sha1_hasher = self.enabled_algorithms.contains(&HashType::Sha1).then(|| Sha1::new());
-        let mut md5_hasher = self.enabled_algorithms.contains(&HashType::Md5).then(|| {
-            use md5::Digest;
-            Md5::new()
-        });
+        // 移除了MD5支持以解决库兼容性问题
         let mut sha256_hasher = self.enabled_algorithms.contains(&HashType::Sha256).then(|| Sha256::new());
         let mut blake3_hasher = self.enabled_algorithms.contains(&HashType::Blake3).then(|| Blake3Hasher::new());
         let mut xxhash3_hasher = self.enabled_algorithms.contains(&HashType::XxHash3).then(|| XxHash64::default());
@@ -231,10 +213,6 @@ impl HashManager {
             rayon::join(
                 || {
                     if let Some(ref mut hasher) = sha1_hasher {
-                        hasher.update(chunk);
-                    }
-                    if let Some(ref mut hasher) = md5_hasher {
-                        use md5::Digest;
                         hasher.update(chunk);
                     }
                 },
@@ -265,10 +243,6 @@ impl HashManager {
         // 完成哈希计算并收集结果
         if let Some(hasher) = sha1_hasher {
             results.insert("ltfs.hash.sha1sum".to_string(), format!("{:x}", hasher.finalize()));
-        }
-        if let Some(hasher) = md5_hasher {
-            use md5::Digest;
-            results.insert("ltfs.hash.md5sum".to_string(), format!("{:x}", hasher.finalize()));
         }
         if let Some(hasher) = sha256_hasher {
             results.insert("ltfs.hash.sha256sum".to_string(), format!("{:x}", hasher.finalize()));
@@ -342,9 +316,7 @@ impl HashManager {
         if options.hash_sha1_enabled {
             algorithms.push(HashType::Sha1);
         }
-        if options.hash_md5_enabled || options.compatibility_mode {
-            algorithms.push(HashType::Md5);
-        }
+        // 暂时移除MD5支持
         if options.hash_sha256_enabled {
             algorithms.push(HashType::Sha256);
         }
@@ -587,7 +559,7 @@ impl DeduplicationDatabase {
         // 写入CSV头部
         writer.write_record(&[
             "file_path", "file_size", "last_modified", "first_seen", 
-            "sha1", "md5", "sha256", "blake3", "xxhash3", "xxhash128",
+            "sha1", "sha256", "blake3", "xxhash3", "xxhash128",
             "tape_partition", "tape_start_block", "tape_file_uid"
         ]).map_err(|e| {
             RustLtfsError::file_operation(format!("写入CSV头部失败: {}", e))
@@ -597,7 +569,6 @@ impl DeduplicationDatabase {
         for record in self.path_to_record.values() {
             let empty_string = String::new();
             let sha1 = record.hashes.get(&HashType::Sha1).unwrap_or(&empty_string);
-            let md5 = record.hashes.get(&HashType::Md5).unwrap_or(&empty_string);
             let sha256 = record.hashes.get(&HashType::Sha256).unwrap_or(&empty_string);
             let blake3 = record.hashes.get(&HashType::Blake3).unwrap_or(&empty_string);
             let xxhash3 = record.hashes.get(&HashType::XxHash3).unwrap_or(&empty_string);
@@ -614,7 +585,7 @@ impl DeduplicationDatabase {
                 &record.file_size.to_string(),
                 &record.last_modified.to_string(),
                 &record.first_seen,
-                sha1, md5, sha256, blake3, xxhash3, xxhash128,
+                sha1, sha256, blake3, xxhash3, xxhash128,
                 &partition, &start_block, &file_uid
             ]).map_err(|e| {
                 RustLtfsError::file_operation(format!("写入CSV记录失败: {}", e))
@@ -655,17 +626,16 @@ impl DeduplicationDatabase {
 
             let mut hashes = HashMap::new();
             if !record[4].is_empty() { hashes.insert(HashType::Sha1, record[4].to_string()); }
-            if !record[5].is_empty() { hashes.insert(HashType::Md5, record[5].to_string()); }
-            if !record[6].is_empty() { hashes.insert(HashType::Sha256, record[6].to_string()); }
-            if !record[7].is_empty() { hashes.insert(HashType::Blake3, record[7].to_string()); }
-            if !record[8].is_empty() { hashes.insert(HashType::XxHash3, record[8].to_string()); }
-            if !record[9].is_empty() { hashes.insert(HashType::XxHash128, record[9].to_string()); }
+            if !record[5].is_empty() { hashes.insert(HashType::Sha256, record[5].to_string()); }
+            if !record[6].is_empty() { hashes.insert(HashType::Blake3, record[6].to_string()); }
+            if !record[7].is_empty() { hashes.insert(HashType::XxHash3, record[7].to_string()); }
+            if !record[8].is_empty() { hashes.insert(HashType::XxHash128, record[8].to_string()); }
 
-            let tape_location = if !record[10].is_empty() && !record[11].is_empty() && !record[12].is_empty() {
+            let tape_location = if !record[9].is_empty() && !record[10].is_empty() && !record[11].is_empty() {
                 Some(TapeLocation {
-                    partition: record[10].parse().unwrap_or(0),
-                    start_block: record[11].parse().unwrap_or(0),
-                    file_uid: record[12].parse().unwrap_or(0),
+                    partition: record[9].parse().unwrap_or(0),
+                    start_block: record[10].parse().unwrap_or(0),
+                    file_uid: record[11].parse().unwrap_or(0),
                 })
             } else {
                 None
@@ -946,7 +916,6 @@ mod tests {
     #[test]
     fn test_hash_type_ltfs_keys() {
         assert_eq!(HashType::Sha1.ltfs_key(), "ltfs.hash.sha1sum");
-        assert_eq!(HashType::Md5.ltfs_key(), "ltfs.hash.md5sum");
         assert_eq!(HashType::Sha256.ltfs_key(), "ltfs.hash.sha256sum");
         assert_eq!(HashType::Blake3.ltfs_key(), "ltfs.hash.blake3sum");
         assert_eq!(HashType::XxHash3.ltfs_key(), "ltfs.hash.xxhash3sum");
