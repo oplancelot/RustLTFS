@@ -907,6 +907,21 @@ impl TapeOperations {
         // 初始化分区检测 (对应LTFSCopyGUI的MODE SENSE检测逻辑)
         self.initialize_partition_detection().await?;
 
+        // 尝试加载现有的LTFS索引 (确保写入操作能累积添加文件而非覆盖)
+        info!("Attempting to load existing LTFS index from tape...");
+        match self.read_index_from_tape().await {
+            Ok(()) => {
+                let file_count = self.index.as_ref()
+                    .map(|idx| idx.root_directory.contents.files.len())
+                    .unwrap_or(0);
+                info!("✅ Successfully loaded existing index with {} files", file_count);
+            }
+            Err(e) => {
+                info!("No existing index found or failed to load: {} - will create new index", e);
+                // 这是正常情况，对于新磁带或空磁带
+            }
+        }
+
         // Set a default block size, can be updated later if needed
         self.block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE;
         self.partition_label = Some(LtfsPartitionLabel::default());
