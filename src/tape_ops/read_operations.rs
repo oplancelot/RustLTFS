@@ -95,21 +95,105 @@ impl super::TapeOperations {
         // Step 1 (最高优先级): 直接使用LTFSCopyGUI兼容的EOD策略
         info!("Step 1 (Highest Priority): LTFSCopyGUI-compatible EOD positioning strategy");
         
-        // 首先尝试索引分区EOD定位（最符合LTFSCopyGUI逻辑）
-        match self.try_read_latest_index_from_eod(0).await {
-            Ok(xml_content) => {
-                if self.validate_and_process_index(&xml_content).await? {
-                    info!("✅ Step 1 succeeded - index read from index partition EOD (LTFSCopyGUI logic)");
-                    return Ok(());
+        // 检测分区策略并决定读取顺序
+        let extra_partition_count = self.get_extra_partition_count();
+        
+        if extra_partition_count > 0 {
+            // 双分区磁带：优先从数据分区（partition=1）读取最新索引（LTFSCopyGUI逻辑）
+            info!("Dual-partition detected, prioritizing data partition (partition 1) for latest index");
+            
+            match self.try_read_latest_index_from_data_partition_eod().await {
+                Ok(xml_content) => {
+                    if self.validate_and_process_index(&xml_content).await? {
+                        info!("✅ Step 1 succeeded - latest index read from data partition EOD (dual-partition priority)");
+                        return Ok(());
+                    }
+                }
+                Err(e) => {
+                    debug!("Data partition EOD strategy failed: {}", e);
                 }
             }
-            Err(e) => {
-                debug!("Index partition EOD strategy failed: {}", e);
+            
+            // 备用：尝试索引分区EOD定位
+            match self.try_read_latest_index_from_eod(0).await {
+                Ok(xml_content) => {
+                    if self.validate_and_process_index(&xml_content).await? {
+                        info!("✅ Step 1 succeeded - index read from index partition EOD (dual-partition fallback)");
+                        return Ok(());
+                    }
+                }
+                Err(e) => {
+                    debug!("Index partition EOD strategy failed: {}", e);
+                }
+            }
+        } else {
+            // 单分区磁带：从partition=0读取索引
+            info!("Single-partition detected, reading from partition 0");
+            
+            match self.try_read_latest_index_from_eod(0).await {
+                Ok(xml_content) => {
+                    if self.validate_and_process_index(&xml_content).await? {
+                        info!("✅ Step 1 succeeded - index read from partition 0 EOD (single-partition logic)");
+                        return Ok(());
+                    }
+                }
+                Err(e) => {
+                    debug!("Single-partition EOD strategy failed: {}", e);
+                }
             }
         }
 
-        // Step 2: 标准流程作为备用策略
-        info!("Step 2: Standard LTFS reading process as fallback");
+        // Step 2: 检查是否为无FileMark的磁带，提供特殊处理策略
+        info!("Step 2: Checking for tapes without FileMark structure");
+        
+        // 读取当前位置，检查file_number是否为0
+        match self.scsi.read_position() {
+            Ok(pos) => {
+                if pos.file_number == 0 {
+                    warn!("Detected tape without FileMark structure (file_number=0)");
+                    info!("Using direct block search strategy for tapes without FileMarks");
+                    
+                    // 对于没有FileMark的磁带，使用直接块搜索策略
+                    let search_blocks = if extra_partition_count > 0 {
+                        // 双分区磁带：搜索常见索引位置
+                        vec![6, 2, 5, 10, 20, 100, 1000]
+                    } else {
+                        // 单分区磁带：搜索常见位置
+                        vec![6, 50, 100, 200, 500, 1000, 2000]
+                    };
+                    
+                    for &block in &search_blocks {
+                        let partition = if extra_partition_count > 0 { 0 } else { 0 }; // 索引分区
+                        info!("Trying direct block search: partition {}, block {}", partition, block);
+                        
+                        match self.scsi.locate_block(partition, block) {
+                            Ok(()) => {
+                                match self.try_read_index_at_current_position_with_filemarks() {
+                                    Ok(xml_content) => {
+                                        if !xml_content.trim().is_empty() 
+                                            && xml_content.contains("<ltfsindex") 
+                                            && xml_content.contains("</ltfsindex>") {
+                                            if self.validate_and_process_index(&xml_content).await? {
+                                                info!("✅ Step 2 succeeded - index found via direct block search at p{}b{}", partition, block);
+                                                return Ok(());
+                                            }
+                                        }
+                                    }
+                                    Err(e) => debug!("Failed to read index at p{}b{}: {}", partition, block, e),
+                                }
+                            }
+                            Err(e) => debug!("Cannot position to p{}b{}: {}", partition, block, e),
+                        }
+                    }
+                    
+                    info!("Direct block search failed, trying extended search");
+                }
+            }
+            Err(e) => debug!("Failed to read position for FileMark detection: {}", e),
+        }
+
+        // Step 3: 标准流程作为备用策略
+        info!("Step 3: Standard LTFS reading process as fallback");
         
         // 定位到索引分区并读取VOL1标签
         self.scsi.locate_block(0, 0)?;
@@ -156,8 +240,8 @@ impl super::TapeOperations {
             }
         }
 
-        // Step 3: 最后的多分区策略回退
-        info!("Step 3: Final multi-partition strategy fallback");
+        // Step 4: 最后的多分区策略回退
+        info!("Step 4: Final multi-partition strategy fallback");
         
         let partition_strategy = self
             .detect_partition_strategy()

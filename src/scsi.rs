@@ -1260,9 +1260,18 @@ impl ScsiInterface {
             cdb[0] = scsi_commands::SPACE;
             cdb[1] = space_type as u8;
             
+            // Handle EndOfData specially - should use count=1 according to SCSI standards
+            let actual_count = match space_type {
+                SpaceType::EndOfData => {
+                    debug!("EndOfData operation: using standard count=1 for SCSI compliance");
+                    1  // SCSI standard requires count=1 for EndOfData positioning
+                }
+                _ => count
+            };
+            
             // Handle negative counts (reverse direction)
-            let abs_count = count.abs() as u32;
-            if count < 0 {
+            let abs_count = actual_count.abs() as u32;
+            if actual_count < 0 {
                 // Two's complement for negative values
                 let neg_count = (!abs_count + 1) & 0xFFFFFF; // 24-bit field
                 cdb[2] = ((neg_count >> 16) & 0xFF) as u8;
