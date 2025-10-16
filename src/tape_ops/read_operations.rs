@@ -1875,18 +1875,28 @@ impl super::TapeOperations {
             }
         }
 
-        // 策略1 (高优先级): 使用成功的扩展搜索策略 - 基于实际测试结果优化
-        info!("Strategy 1 (High Priority): Using proven extended search strategy");
-        match self.try_single_partition_extended_search_async().await {
+        // 策略1 (最高优先级): 标准LTFS读取策略 - 总是成功的策略
+        info!("Strategy 1 (Highest Priority): Standard LTFS reading strategy");
+        match self.try_standard_ltfs_reading().await {
             Ok(xml_content) => {
-                info!("✅ Strategy 1 succeeded - index found via proven extended search");
+                info!("✅ Strategy 1 succeeded - standard LTFS reading completed");
                 return Ok(xml_content);
             }
-            Err(e) => debug!("Strategy 1 (extended search) failed: {}", e),
+            Err(e) => debug!("Strategy 1 (standard LTFS reading) failed: {}", e),
         }
 
-        // 策略2 (次级优先): 搜索常见的索引位置 - 保留原有策略作为备用
-        info!("Strategy 2 (Secondary): Searching common index locations");
+        // 策略2 (高优先级): 使用成功的扩展搜索策略 - 作为备用策略
+        info!("Strategy 2 (High Priority): Using proven extended search strategy as backup");
+        match self.try_single_partition_extended_search_async().await {
+            Ok(xml_content) => {
+                info!("✅ Strategy 2 succeeded - index found via proven extended search");
+                return Ok(xml_content);
+            }
+            Err(e) => debug!("Strategy 2 (extended search) failed: {}", e),
+        }
+
+        // 策略3 (次级优先): 搜索常见的索引位置 - 保留原有策略作为备用
+        info!("Strategy 3 (Secondary): Searching common index locations");
         let common_locations = vec![10, 2, 5, 6, 20, 100]; // 将10放在最前面，因为日志显示在这里成功
 
         for &block in &common_locations {
@@ -1903,7 +1913,7 @@ impl super::TapeOperations {
                             && xml_content.contains("</ltfsindex>")
                         {
                             info!(
-                                "✅ Strategy 2 succeeded - found valid index at block {}",
+                                "✅ Strategy 3 succeeded - found valid index at block {}",
                                 block
                             );
                             return Ok(xml_content);
@@ -1937,8 +1947,8 @@ impl super::TapeOperations {
             Err(_) => debug!("Could not re-read VOL1 for blank detection"),
         }
 
-        // 策略3: 跳过VOL1验证，直接尝试读取LTFS标签和索引
-        info!("Strategy 3: Bypassing VOL1, attempting direct LTFS label reading");
+        // 策略4: 跳过VOL1验证，直接尝试读取LTFS标签和索引
+        info!("Strategy 4: Bypassing VOL1, attempting direct LTFS label reading");
 
         // 尝试读取LTFS标签 (block 1)
         match self.scsi.locate_block(index_partition, 1) {
@@ -1956,19 +1966,19 @@ impl super::TapeOperations {
 
                                 match self.read_index_from_specific_location(&index_location) {
                                     Ok(index_content) => {
-                                        info!("✅ Strategy 3 succeeded - index read from LTFS label location");
+                                        info!("✅ Strategy 4 succeeded - index read from LTFS label location");
                                         return Ok(index_content);
                                     }
-                                    Err(e) => debug!("Strategy 3 location read failed: {}", e),
+                                    Err(e) => debug!("Strategy 4 location read failed: {}", e),
                                 }
                             }
-                            Err(e) => debug!("Strategy 3 location parsing failed: {}", e),
+                            Err(e) => debug!("Strategy 4 location parsing failed: {}", e),
                         }
                     }
-                    Err(e) => debug!("Strategy 3 LTFS label read failed: {}", e),
+                    Err(e) => debug!("Strategy 4 LTFS label read failed: {}", e),
                 }
             }
-            Err(e) => debug!("Strategy 3 positioning failed: {}", e),
+            Err(e) => debug!("Strategy 4 positioning failed: {}", e),
         }
 
         // 所有策略都失败了
@@ -2620,6 +2630,65 @@ impl super::TapeOperations {
 
         Err(RustLtfsError::ltfs_index(
             format!("No valid latest index found at partition {} EOD", partition)
+        ))
+    }
+
+    /// 标准LTFS读取策略 - 基于成功的标准读取流程
+    async fn try_standard_ltfs_reading(&mut self) -> Result<String> {
+        info!("🔍 Starting standard LTFS reading strategy");
+        
+        // 定位到索引分区并读取VOL1标签
+        self.scsi.locate_block(0, 0)?;
+        let mut label_buffer = vec![0u8; crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize];
+        self.scsi.read_blocks(1, &mut label_buffer)?;
+
+        let vol1_valid = self.parse_vol1_label(&label_buffer)?;
+
+        if vol1_valid {
+            info!("VOL1 label validation passed, trying standard reading");
+
+            let partition_strategy = self.detect_partition_strategy().await?;
+
+            match partition_strategy {
+                super::partition_manager::PartitionStrategy::StandardMultiPartition => {
+                    // 使用ReadToFileMark方法读取整个索引文件
+                    match self.read_index_xml_from_tape_with_file_mark() {
+                        Ok(xml_content) => {
+                            if !xml_content.trim().is_empty() 
+                                && xml_content.contains("<ltfsindex") 
+                                && xml_content.contains("</ltfsindex>") {
+                                info!("✅ Standard LTFS reading strategy succeeded");
+                                return Ok(xml_content);
+                            }
+                        }
+                        Err(e) => debug!("Standard reading failed: {}", e),
+                    }
+                }
+                super::partition_manager::PartitionStrategy::SinglePartitionFallback => {
+                    // 单分区策略读取
+                    match self.try_single_partition_extended_search_async().await {
+                        Ok(xml_content) => {
+                            info!("✅ Standard LTFS reading (single partition) succeeded");
+                            return Ok(xml_content);
+                        }
+                        Err(e) => debug!("Single partition standard reading failed: {}", e),
+                    }
+                }
+                super::partition_manager::PartitionStrategy::IndexFromDataPartition => {
+                    // 数据分区索引策略
+                    match self.try_read_from_data_partition_async().await {
+                        Ok(xml_content) => {
+                            info!("✅ Standard LTFS reading (data partition) succeeded");
+                            return Ok(xml_content);
+                        }
+                        Err(e) => debug!("Data partition standard reading failed: {}", e),
+                    }
+                }
+            }
+        }
+
+        Err(RustLtfsError::ltfs_index(
+            "Standard LTFS reading strategy failed".to_string()
         ))
     }
 }
