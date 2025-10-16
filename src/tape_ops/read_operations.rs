@@ -113,7 +113,9 @@ impl super::TapeOperations {
 
         info!("=== Optimized LTFS Index Reading Process ===");
 
-        // Step 1 (Priority): 优先使用经过验证的成功策略
+        // Step 1 (Priority): 暂时屏蔽 - 直接跳到有效策略
+        // TODO: 移除无效的优先级搜索，因为测试显示它总是失败
+        /*
         info!("Step 1 (Priority): Trying proven successful strategies first");
         
         // 优化的并行策略搜索
@@ -133,8 +135,9 @@ impl super::TapeOperations {
                 debug!("Optimized strategies failed: {}", e);
             }
         }
+        */
 
-        // Step 2: 标准流程作为后备
+        // Step 2: 标准流程作为主要策略 (原后备策略)
         info!("Step 2: Fallback to standard LTFS reading process");
         
         // 定位到索引分区并读取VOL1标签
