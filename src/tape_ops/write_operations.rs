@@ -1405,11 +1405,16 @@ impl TapeOperations {
         }
 
         // Check if index exists and has modifications
-        let mut current_index = match &self.schema {
+        let mut current_index = match &self.index {
             Some(idx) => idx.clone(),
             None => {
-                // Create new index if none exists
-                self.create_new_ltfs_index()
+                match &self.schema {
+                    Some(schema_idx) => schema_idx.clone(),
+                    None => {
+                        // Create new index if none exists
+                        self.create_new_ltfs_index()
+                    }
+                }
             }
         };
 
