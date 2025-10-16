@@ -1218,7 +1218,7 @@ impl ScsiInterface {
             cdb[1] = 0x02; // Block address type
             if partition != 0 {
                 cdb[1] |= 0x01; // Change partition flag
-                cdb[3] = partition;
+                cdb[2] = partition; // Partition number goes in byte 2, not byte 3!
             }
             
             // Block address (64-bit, but only use lower 32 bits for now)

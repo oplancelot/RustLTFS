@@ -1498,6 +1498,14 @@ impl TapeOperations {
         );
 
         info!("Generating index XML...");
+        
+        // Debug: Print directory contents before serialization
+        info!("DEBUG: Root directory files count before XML generation: {}", 
+              current_index.root_directory.contents.files.len());
+        for (i, file) in current_index.root_directory.contents.files.iter().enumerate() {
+            info!("DEBUG: File {}: name='{}', uid={}, length={}", 
+                  i, file.name, file.uid, file.length);
+        }
 
         // Create temporary file for index (matching LTFSCopyGUI's temporary file approach)
         let temp_index_path = std::env::temp_dir().join(format!(
@@ -1507,6 +1515,10 @@ impl TapeOperations {
 
         // Serialize index to XML and save to temporary file
         let index_xml = current_index.to_xml()?;
+        
+        // Debug: Print first 500 chars of generated XML
+        info!("DEBUG: Generated XML (first 500 chars): {}", 
+              &index_xml.chars().take(500).collect::<String>());
         tokio::fs::write(&temp_index_path, index_xml)
             .await
             .map_err(|e| {
