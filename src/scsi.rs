@@ -1307,7 +1307,7 @@ impl ScsiInterface {
             let mut data_buffer = [0u8; 32];
             
             cdb[0] = scsi_commands::READ_POSITION;
-            cdb[1] = 0x00; // Short form
+            cdb[1] = 0x03; // Extended form (LTFSCopyGUI compatible: Reserved1 = 0x03)
             
             let result = self.scsi_io_control(
                 &cdb,
