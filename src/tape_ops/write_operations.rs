@@ -1468,7 +1468,8 @@ impl TapeOperations {
                 )));
             }
             
-            if current_index.location.startblock >= eod_position.block_number {
+            // Skip validation for first write (when both startblock and EOD are at beginning)
+            if current_index.location.startblock > 0 && current_index.location.startblock > eod_position.block_number {
                 return Err(RustLtfsError::tape_device(format!(
                     "Current position p{}b{} not allowed for index write, index at startblock {} (ExtraPartitionCount={})",
                     eod_position.partition, eod_position.block_number, current_index.location.startblock, extra_partition_count
