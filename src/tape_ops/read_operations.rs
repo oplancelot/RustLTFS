@@ -1898,9 +1898,9 @@ impl super::TapeOperations {
             Err(e) => debug!("Strategy 2 (extended search) failed: {}", e),
         }
 
-        // 策略3 (次级优先): 搜索常见的索引位置 - 保留原有策略作为备用
-        info!("Strategy 3 (Secondary): Searching common index locations");
-        let common_locations = vec![10, 2, 5, 6, 20, 100]; // 将10放在最前面，因为日志显示在这里成功
+        // 策略3 (次级优先): 搜索常见的索引位置 - 包含LTFSCopyGUI成功位置
+        info!("Strategy 3 (Secondary): Searching common index locations including LTFSCopyGUI-compatible positions");
+        let common_locations = vec![6, 10, 2, 5, 20, 100]; // 将block 6放在最前面，这是LTFSCopyGUI找到索引的位置
 
         for &block in &common_locations {
             debug!(
@@ -2081,9 +2081,10 @@ impl super::TapeOperations {
 
     /// 异步版本：单分区磁带的扩展搜索
     async fn try_single_partition_extended_search_async(&mut self) -> Result<String> {
-        info!("Performing extended search on single-partition tape");
+        info!("Performing extended search on single-partition tape with LTFSCopyGUI-compatible locations");
 
-        let extended_locations = vec![50, 200, 500, 1000, 2000];
+        // 包含小block号和大block号，确保覆盖LTFSCopyGUI找到的位置
+        let extended_locations = vec![6, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000];
 
         for &block in &extended_locations {
             debug!("Extended search: trying block {}", block);
@@ -2263,18 +2264,18 @@ impl super::TapeOperations {
     async fn try_optimized_parallel_strategies(&mut self) -> Result<(String, u64)> {
         info!("🚀 Starting optimized index search with intelligent strategies");
         
-        // 基于实际测试结果的优化位置列表
+        // 基于实际测试结果和LTFSCopyGUI兼容性的优化位置列表
         let priority_locations = vec![
-            50,    // 测试中成功的位置 - 最高优先级
+            6,     // LTFSCopyGUI找到索引的位置 - 最高优先级
+            50,    // 测试中成功的位置 - 高优先级
             1000,  // 原有的成功位置
-            5,     // 标准LTFS位置  
-            3,     // 常见位置
-            1,     // 起始位置
+            2, 5,  // 标准LTFS位置  
+            10, 20, // 常见位置
             100, 200, 500,  // 中等距离位置
             2000, 5000,     // 较远位置
         ];
         
-        info!("Trying {} priority locations with block 50 as highest priority", priority_locations.len());
+        info!("Trying {} priority locations with block 6 (LTFSCopyGUI-compatible) as highest priority", priority_locations.len());
         
         // 串行搜索优先位置（避免并行磁带操作的复杂性）
         for &block in &priority_locations {
@@ -2654,13 +2655,23 @@ impl super::TapeOperations {
 
             match partition_strategy {
                 super::partition_manager::PartitionStrategy::StandardMultiPartition => {
-                    // 使用ReadToFileMark方法读取整个索引文件
+                    // 首先尝试从索引分区EOD读取最新索引（LTFSCopyGUI逻辑）
+                    info!("Multi-partition: trying index partition EOD first (LTFSCopyGUI logic)");
+                    match self.try_read_latest_index_from_eod(0).await {
+                        Ok(xml_content) => {
+                            info!("✅ Standard LTFS reading (index partition EOD) succeeded");
+                            return Ok(xml_content);
+                        }
+                        Err(e) => debug!("Index partition EOD reading failed: {}", e),
+                    }
+                    
+                    // 备用：使用ReadToFileMark方法读取整个索引文件
                     match self.read_index_xml_from_tape_with_file_mark() {
                         Ok(xml_content) => {
                             if !xml_content.trim().is_empty() 
                                 && xml_content.contains("<ltfsindex") 
                                 && xml_content.contains("</ltfsindex>") {
-                                info!("✅ Standard LTFS reading strategy succeeded");
+                                info!("✅ Standard LTFS reading (ReadToFileMark) succeeded");
                                 return Ok(xml_content);
                             }
                         }
@@ -2668,10 +2679,19 @@ impl super::TapeOperations {
                     }
                 }
                 super::partition_manager::PartitionStrategy::SinglePartitionFallback => {
-                    // 单分区策略读取
+                    // 单分区策略：从partition 0 EOD读取最新索引
+                    match self.try_read_latest_index_from_eod(0).await {
+                        Ok(xml_content) => {
+                            info!("✅ Standard LTFS reading (single partition EOD) succeeded");
+                            return Ok(xml_content);
+                        }
+                        Err(e) => debug!("Single partition EOD reading failed: {}", e),
+                    }
+                    
+                    // 备用：单分区策略读取
                     match self.try_single_partition_extended_search_async().await {
                         Ok(xml_content) => {
-                            info!("✅ Standard LTFS reading (single partition) succeeded");
+                            info!("✅ Standard LTFS reading (single partition extended) succeeded");
                             return Ok(xml_content);
                         }
                         Err(e) => debug!("Single partition standard reading failed: {}", e),
@@ -2688,10 +2708,49 @@ impl super::TapeOperations {
                     }
                 }
             }
+        } else {
+            warn!("VOL1 label validation failed, trying fallback strategies");
+        }
+        
+        // VOL1验证失败或标准策略失败时的回退策略
+        info!("Trying fallback strategy: index partition EOD");
+        
+        // 首先尝试从索引分区EOD读取（不依赖VOL1验证）
+        match self.try_read_latest_index_from_eod(0).await {
+            Ok(xml_content) => {
+                info!("✅ Standard LTFS reading (fallback EOD) succeeded");
+                return Ok(xml_content);
+            }
+            Err(e) => debug!("Fallback EOD reading failed: {}", e),
+        }
+        
+        // 最后尝试：直接搜索已知位置（仅作为最后手段）
+        info!("Trying final fallback: direct location search");
+        let fallback_locations = vec![6, 2, 5, 10, 20, 100]; // block 6是LTFSCopyGUI找到索引的位置
+        
+        for &block in &fallback_locations {
+            info!("Trying final fallback location: partition 0, block {}", block);
+            
+            match self.scsi.locate_block(0, block) {
+                Ok(()) => {
+                    match self.try_read_index_at_current_position_with_filemarks() {
+                        Ok(xml_content) => {
+                            if !xml_content.trim().is_empty() 
+                                && xml_content.contains("<ltfsindex") 
+                                && xml_content.contains("</ltfsindex>") {
+                                info!("✅ Standard LTFS reading (final fallback) succeeded at block {}", block);
+                                return Ok(xml_content);
+                            }
+                        }
+                        Err(e) => debug!("Failed to read index at fallback block {}: {}", block, e),
+                    }
+                }
+                Err(e) => debug!("Cannot position to fallback block {}: {}", block, e),
+            }
         }
 
         Err(RustLtfsError::ltfs_index(
-            "Standard LTFS reading strategy failed".to_string()
+            "Standard LTFS reading strategy failed (including all fallbacks)".to_string()
         ))
     }
 }
