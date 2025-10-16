@@ -26,43 +26,54 @@ impl TapeOperations {
             return Ok(());
         }
 
-        // Check if index exists and has modifications
-        let mut current_index = match &self.schema {
-            Some(idx) => idx.clone(),
-            None => {
-                // Create new index if none exists - inline creation
-                use uuid::Uuid;
-                let now = get_current_ltfs_timestamp();
-                let volume_uuid = Uuid::new_v4();
+        // Check if index exists and has modifications  
+        // 优先使用 self.index (包含最新的文件状态)，回退到 self.schema
+        let mut current_index = match &self.index {
+            Some(idx) => {
+                info!("Using self.index with {} files", idx.root_directory.contents.files.len());
+                idx.clone()
+            },
+            None => match &self.schema {
+                Some(idx) => {
+                    info!("Fallback to self.schema with {} files", idx.root_directory.contents.files.len());
+                    idx.clone()
+                },
+                None => {
+                    info!("Creating new index (no existing index found)");
+                    // Create new index if none exists - inline creation
+                    use uuid::Uuid;
+                    let now = get_current_ltfs_timestamp();
+                    let volume_uuid = Uuid::new_v4();
 
-                LtfsIndex {
-                    version: "2.4.0".to_string(),
-                    creator: "RustLTFS".to_string(),
-                    volumeuuid: volume_uuid.to_string(),
-                    generationnumber: 1,
-                    updatetime: now.clone(),
-                    location: crate::ltfs_index::Location {
-                        partition: "b".to_string(), // Data partition
-                        startblock: 0,
-                    },
-                    previousgenerationlocation: None,
-                    allowpolicyupdate: Some(true),
-                    volumelockstate: None,
-                    highestfileuid: Some(1),
-                    root_directory: crate::ltfs_index::Directory {
-                        name: "".to_string(),
-                        uid: 1,
-                        creation_time: now.clone(),
-                        change_time: now.clone(),
-                        modify_time: now.clone(),
-                        access_time: now.clone(),
-                        backup_time: now.clone(),
-                        read_only: false,
-                        contents: crate::ltfs_index::DirectoryContents {
-                            files: Vec::new(),
-                            directories: Vec::new(),
+                    LtfsIndex {
+                        version: "2.4.0".to_string(),
+                        creator: "RustLTFS".to_string(),
+                        volumeuuid: volume_uuid.to_string(),
+                        generationnumber: 1,
+                        updatetime: now.clone(),
+                        location: crate::ltfs_index::Location {
+                            partition: "b".to_string(), // Data partition
+                            startblock: 0,
                         },
-                    },
+                        previousgenerationlocation: None,
+                        allowpolicyupdate: Some(true),
+                        volumelockstate: None,
+                        highestfileuid: Some(1),
+                        root_directory: crate::ltfs_index::Directory {
+                            name: "".to_string(),
+                            uid: 1,
+                            creation_time: now.clone(),
+                            change_time: now.clone(),
+                            modify_time: now.clone(),
+                            access_time: now.clone(),
+                            backup_time: now.clone(),
+                            read_only: false,
+                            contents: crate::ltfs_index::DirectoryContents {
+                                files: Vec::new(),
+                                directories: Vec::new(),
+                            },
+                        },
+                    }
                 }
             }
         };
@@ -174,6 +185,15 @@ impl TapeOperations {
 
         // Generate and write index XML
         info!("Generating index XML...");
+        
+        // Debug: Print directory contents before serialization
+        info!("DEBUG: Root directory files count before XML generation: {}", 
+              current_index.root_directory.contents.files.len());
+        for (i, file) in current_index.root_directory.contents.files.iter().enumerate() {
+            info!("DEBUG: File {}: name='{}', uid={}, length={}", 
+                  i, file.name, file.uid, file.length);
+        }
+        
         let index_xml = current_index.to_xml()?;
         
         info!("Writing index to tape...");
@@ -228,6 +248,15 @@ impl TapeOperations {
 
         // Generate and write index XML to index partition
         info!("Generating index XML for index partition...");
+        
+        // Debug: Print directory contents before index partition serialization
+        info!("DEBUG: Index partition - Root directory files count: {}", 
+              current_index.root_directory.contents.files.len());
+        for (i, file) in current_index.root_directory.contents.files.iter().enumerate() {
+            info!("DEBUG: Index partition File {}: name='{}', uid={}, length={}", 
+                  i, file.name, file.uid, file.length);
+        }
+        
         let index_xml = current_index.to_xml()?;
         
         info!("Writing index to index partition...");
