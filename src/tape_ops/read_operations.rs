@@ -81,64 +81,35 @@ impl super::TapeOperations {
         }
     }
     
-    /// Read LTFS index from tape (优化版本：优先使用成功的策略)
+    /// Read LTFS index from tape (优化版本：优先使用FileMark EOD定位策略)
     pub async fn read_index_from_tape(&mut self) -> Result<()> {
-        info!("Starting optimized LTFS index reading process...");
+        info!("Starting optimized LTFS index reading process with FileMark EOD positioning...");
 
         if self.offline_mode {
             info!("Offline mode: using dummy index for simulation");
             return Ok(());
         }
 
-        // 快速缓存检查 - 如果知道上次成功的位置，直接尝试
-        if let Some(cached_location) = self.get_cached_index_location() {
-            info!("🚀 Fast path: Trying cached successful location first");
-            
-            // 定位到缓存位置并尝试智能读取
-            if let Ok(()) = self.scsi.locate_block(0, cached_location) {
-                match self.try_read_index_intelligently(cached_location) {
-                    Ok(xml_content) => {
-                        if self.validate_and_process_index(&xml_content).await? {
-                            info!("✅ Fast path succeeded - index found at cached location (intelligent read)");
-                            return Ok(());
-                        }
-                    }
-                    Err(e) => {
-                        debug!("Intelligent read at cached location failed: {}", e);
-                    }
-                }
-            }
-            info!("Cached location failed, proceeding with optimized search");
-        }
+        info!("=== LTFSCopyGUI-Compatible LTFS Index Reading Process ===");
 
-        info!("=== Optimized LTFS Index Reading Process ===");
-
-        // Step 1 (Priority): 暂时屏蔽 - 直接跳到有效策略
-        // TODO: 移除无效的优先级搜索，因为测试显示它总是失败
-        /*
-        info!("Step 1 (Priority): Trying proven successful strategies first");
+        // Step 1 (最高优先级): 直接使用LTFSCopyGUI兼容的EOD策略
+        info!("Step 1 (Highest Priority): LTFSCopyGUI-compatible EOD positioning strategy");
         
-        // 优化的并行策略搜索
-        match self.try_optimized_parallel_strategies().await {
-            Ok((xml_content, successful_location)) => {
-                info!("🎯 Processing index content from successful location: block {}", successful_location);
+        // 首先尝试索引分区EOD定位（最符合LTFSCopyGUI逻辑）
+        match self.try_read_latest_index_from_eod(0).await {
+            Ok(xml_content) => {
                 if self.validate_and_process_index(&xml_content).await? {
-                    // 缓存成功的位置供下次使用
-                    self.cache_successful_location(successful_location);
-                    info!("✅ Optimized strategy succeeded - index loaded successfully");
+                    info!("✅ Step 1 succeeded - index read from index partition EOD (LTFSCopyGUI logic)");
                     return Ok(());
-                } else {
-                    warn!("❌ Index validation failed despite successful XML parsing");
                 }
             }
             Err(e) => {
-                debug!("Optimized strategies failed: {}", e);
+                debug!("Index partition EOD strategy failed: {}", e);
             }
         }
-        */
 
-        // Step 2: 标准流程作为主要策略 (原后备策略)
-        info!("Step 2: Fallback to standard LTFS reading process");
+        // Step 2: 标准流程作为备用策略
+        info!("Step 2: Standard LTFS reading process as fallback");
         
         // 定位到索引分区并读取VOL1标签
         self.scsi.locate_block(0, 0)?;
@@ -154,6 +125,17 @@ impl super::TapeOperations {
 
             match partition_strategy {
                 PartitionStrategy::StandardMultiPartition => {
+                    // 尝试数据分区EOD策略
+                    match self.try_read_latest_index_from_data_partition_eod().await {
+                        Ok(xml_content) => {
+                            if self.validate_and_process_index(&xml_content).await? {
+                                info!("✅ Standard reading (data partition EOD) succeeded");
+                                return Ok(());
+                            }
+                        }
+                        Err(e) => debug!("Data partition EOD reading failed: {}", e),
+                    }
+                    
                     // 使用ReadToFileMark方法读取整个索引文件
                     match self.read_index_xml_from_tape_with_file_mark() {
                         Ok(xml_content) => {
@@ -194,15 +176,16 @@ impl super::TapeOperations {
             PartitionStrategy::StandardMultiPartition => {
                 debug!("🔄 Trying standard multi-partition strategy without VOL1 validation");
 
-                let standard_locations = vec![6, 5, 2, 0];
+                // 最后尝试：有限的固定位置搜索（仅作为最后手段）
+                let standard_locations = vec![6, 5, 2, 0]; // block 6仍然保留以兼容特殊情况
 
                 for &block in &standard_locations {
-                    info!("Trying standard multi-partition at p0 block {}", block);
+                    info!("Trying final fallback at p0 block {}", block);
                     match self.scsi.locate_block(0, block) {
                         Ok(()) => match self.read_index_xml_from_tape_with_file_mark() {
                             Ok(xml_content) => {
                                 if self.validate_and_process_index(&xml_content).await? {
-                                    info!("✅ Successfully read index from p0 block {} (standard multi-partition)", block);
+                                    info!("✅ Successfully read index from p0 block {} (final fallback)", block);
                                     return Ok(());
                                 }
                             }
