@@ -123,7 +123,7 @@ impl TapeOperations {
         info!("End of data position: partition={}, block={}", 
               eod_position.partition, eod_position.block_number);
 
-        // LTFSCopyGUI validation logic
+        // Enhanced LTFSCopyGUI validation logic for first write scenarios
         let extra_partition_count = self.get_extra_partition_count();
         if extra_partition_count > 0 && current_index.location.partition != "b" && 
            eod_position.partition != data_partition {
@@ -133,11 +133,22 @@ impl TapeOperations {
             )));
         }
 
-        if extra_partition_count > 0 && current_index.location.startblock >= eod_position.block_number {
-            return Err(RustLtfsError::tape_device(format!(
-                "Current position p{}b{} not allowed for index write, index at startblock {}",
-                eod_position.partition, eod_position.block_number, current_index.location.startblock
-            )));
+        // Enhanced validation logic for first write scenarios
+        // 首次写入时，索引startblock可能为0，EOD位置也可能为0，这是正常情况
+        if extra_partition_count > 0 {
+            let is_first_write = current_index.generationnumber <= 1 && current_index.location.startblock == 0;
+            let is_eod_at_start = eod_position.block_number == 0;
+            
+            // 如果不是首次写入，或者EOD不在开始位置，才进行位置冲突检查
+            if !is_first_write && !is_eod_at_start && current_index.location.startblock >= eod_position.block_number {
+                return Err(RustLtfsError::tape_device(format!(
+                    "Current position p{}b{} not allowed for index write, index at startblock {}",
+                    eod_position.partition, eod_position.block_number, current_index.location.startblock
+                )));
+            }
+            
+            info!("Index write validation passed: first_write={}, eod_at_start={}, startblock={}, eod_block={}", 
+                  is_first_write, is_eod_at_start, current_index.location.startblock, eod_position.block_number);
         }
 
         // Write filemark before index (对应LTFSCopyGUI WriteFileMark)

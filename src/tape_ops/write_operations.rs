@@ -144,7 +144,7 @@ impl ScsiErrorHandler {
 
         // Check for volume overflow condition (matching LTFSCopyGUI logic)
         let sense_key = sense_data[2] & 0x0F;
-        let ili_bit = (sense_data[2] >> 5) & 0x01;  // ILI (Incorrect Length Indicator)
+        let _ili_bit = (sense_data[2] >> 5) & 0x01;  // ILI (Incorrect Length Indicator)
         let eom_bit = (sense_data[2] >> 6) & 0x01;  // EOM (End of Medium)
 
         // Volume overflow detection from LTFSCopyGUI:
@@ -342,7 +342,7 @@ impl CheckSumBlockwiseCalculator {
     /// Get SHA1 value
     pub fn sha1_value(&self) -> String {
         use sha1::Digest;
-        let mut hasher = self.sha1_hasher.clone();
+        let hasher = self.sha1_hasher.clone();
         format!("{:X}", hasher.finalize())
     }
 
@@ -354,7 +354,7 @@ impl CheckSumBlockwiseCalculator {
     /// Get SHA256 value
     pub fn sha256_value(&self) -> String {
         use sha2::Digest;
-        let mut hasher = self.sha256_hasher.clone();
+        let hasher = self.sha256_hasher.clone();
         format!("{:X}", hasher.finalize())
     }
 
@@ -1302,7 +1302,7 @@ impl TapeOperations {
     }
 
     /// Create directory entry in LTFS index (对应LTFSCopyGUI的目录创建逻辑)
-    fn create_directory_in_index(&mut self, source_dir: &Path, target_path: &str) -> Result<()> {
+    fn create_directory_in_index(&mut self, source_dir: &Path, _target_path: &str) -> Result<()> {
         let mut current_index = match &self.index {
             Some(index) => index.clone(),
             None => self.create_new_ltfs_index(),
@@ -1468,13 +1468,21 @@ impl TapeOperations {
                 )));
             }
             
-            // Skip validation for first write (when both startblock and EOD are at beginning)
-            if current_index.location.startblock > 0 && current_index.location.startblock > eod_position.block_number {
+            // Enhanced validation logic for first write scenarios
+            // 首次写入时，索引startblock可能为0，EOD位置也可能为0，这是正常情况
+            let is_first_write = current_index.generationnumber <= 1 && current_index.location.startblock == 0;
+            let is_eod_at_start = eod_position.block_number == 0;
+            
+            // 如果不是首次写入，或者EOD不在开始位置，才进行位置冲突检查
+            if !is_first_write && !is_eod_at_start && current_index.location.startblock >= eod_position.block_number {
                 return Err(RustLtfsError::tape_device(format!(
                     "Current position p{}b{} not allowed for index write, index at startblock {} (ExtraPartitionCount={})",
                     eod_position.partition, eod_position.block_number, current_index.location.startblock, extra_partition_count
                 )));
             }
+            
+            info!("Index write validation passed: first_write={}, eod_at_start={}, startblock={}, eod_block={}", 
+                  is_first_write, is_eod_at_start, current_index.location.startblock, eod_position.block_number);
         }
 
         // Write filemark before index (corresponding to LTFSCopyGUI's WriteFileMark)
@@ -1841,7 +1849,7 @@ impl TapeOperations {
     fn find_existing_file_in_index(
         &self,
         index: &LtfsIndex,
-        target_dir: &str,
+        _target_dir: &str,
         file_name: &str,
     ) -> Result<crate::ltfs_index::File> {
         // Parse target directory path and find the file
@@ -1958,7 +1966,7 @@ impl TapeOperations {
     /// Check if directory exists in LTFS index
     fn directory_exists_in_index(
         &self,
-        index: &LtfsIndex,
+        _index: &LtfsIndex,
         target_path: &str,
         dir_name: &str,
     ) -> Result<bool> {
