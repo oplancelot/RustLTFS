@@ -81,36 +81,36 @@ impl super::TapeOperations {
         }
     }
     
-    /// Read LTFS index from tape (优化版本：优先使用FileMark EOD定位策略)
+    /// Read LTFS index from tape (LTFS标准FileMark+3方法)
     pub async fn read_index_from_tape(&mut self) -> Result<()> {
-        info!("Starting optimized LTFS index reading process with FileMark EOD positioning...");
+        info!("Starting LTFS standard index reading process with FileMark+3 method...");
 
         if self.offline_mode {
             info!("Offline mode: using dummy index for simulation");
             return Ok(());
         }
 
-        info!("=== LTFSCopyGUI-Compatible LTFS Index Reading Process ===");
+        info!("=== LTFS Standard FileMark+3 Index Reading Process ===");
 
-        // Step 1 (最高优先级): 直接使用LTFSCopyGUI兼容的EOD策略
-        info!("Step 1 (Highest Priority): LTFSCopyGUI-compatible EOD positioning strategy");
+        // Step 1 (最高优先级): LTFS标准FileMark+3方法
+        info!("Step 1 (Highest Priority): LTFS standard FileMark+3 method");
         
         // 检测分区策略并决定读取顺序
         let extra_partition_count = self.get_extra_partition_count();
         
         if extra_partition_count > 0 {
-            // 双分区磁带：优先从数据分区（partition=1）读取最新索引（LTFSCopyGUI逻辑）
-            info!("Dual-partition detected, prioritizing data partition (partition 1) for latest index");
+            // 双分区磁带：使用LTFS标准FileMark+3方法从数据分区读取索引
+            info!("Dual-partition detected, using LTFS standard FileMark+3 method from data partition");
             
-            match self.try_read_latest_index_from_data_partition_eod().await {
+            match self.search_index_copies_in_data_partition() {
                 Ok(xml_content) => {
                     if self.validate_and_process_index(&xml_content).await? {
-                        info!("✅ Step 1 succeeded - latest index read from data partition EOD (dual-partition priority)");
+                        info!("✅ Step 1 succeeded - LTFS index read using FileMark+3 method (dual-partition)");
                         return Ok(());
                     }
                 }
                 Err(e) => {
-                    debug!("Data partition EOD strategy failed: {}", e);
+                    debug!("FileMark+3 method failed: {}", e);
                 }
             }
             
