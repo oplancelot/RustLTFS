@@ -1291,9 +1291,11 @@ impl crate::tape_ops::TapeOperations {
     pub fn try_read_index_with_ltfscopygui_method(&self, block: u64) -> Result<String> {
         info!("Using LTFSCopyGUI-compatible ReadToFileMark method at block {}", block);
         
-        // 使用动态块大小（LTFSCopyGUI标准）
-        let block_size = 524288; // 512KB，LTFSCopyGUI的默认块大小
+        // 修复：使用标准LTO块大小（64KB）以确保正确读取完整索引
+        let block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize; // 64KB标准块大小
         let max_blocks = 200; // 与其他地方保持一致
+        
+        debug!("Fixed block size calculation: using standard LTO block size {} bytes", block_size);
         
         // 创建临时文件用于存储读取的数据
         let temp_dir = std::env::temp_dir();
@@ -1328,8 +1330,9 @@ impl crate::tape_ops::TapeOperations {
                     blocks_read += 1;
                     
                     // 检查是否遇到FileMark（通常表示为短读取或特定模式）
-                    if bytes_read < block_size as u32 {
-                        debug!("Encountered short read (possible FileMark) at block {}", block_num);
+                    if (bytes_read as usize) < block_size {
+                        debug!("Encountered short read (possible FileMark) at block {}: read {} bytes < {} block size", 
+                               block_num, bytes_read, block_size);
                         break;
                     }
                 }
