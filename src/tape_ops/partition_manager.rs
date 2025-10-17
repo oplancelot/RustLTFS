@@ -2,6 +2,7 @@ use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::LtfsIndex;
 use crate::scsi::{MediaType, ScsiInterface};
 use std::sync::Arc;
+use std::io::Write;
 use tracing::{debug, info, warn};
 use chrono;
 
@@ -1286,7 +1287,74 @@ impl crate::tape_ops::TapeOperations {
         self.parse_index_location_from_buffer(&buffer)
     }
 
-    /// 在数据分区中搜索索引副本
+    /// 使用LTFSCopyGUI兼容的ReadToFileMark方法读取索引
+    pub fn try_read_index_with_ltfscopygui_method(&self, block: u64) -> Result<String> {
+        info!("Using LTFSCopyGUI-compatible ReadToFileMark method at block {}", block);
+        
+        // 使用动态块大小（LTFSCopyGUI标准）
+        let block_size = 524288; // 512KB，LTFSCopyGUI的默认块大小
+        let max_blocks = 200; // 与其他地方保持一致
+        
+        // 创建临时文件用于存储读取的数据
+        let temp_dir = std::env::temp_dir();
+        let temp_file_name = format!("LTFSIndex_Block{}_{}.tmp", block, 
+                                    chrono::Utc::now().format("%Y%m%d_%H%M%S"));
+        let temp_path = temp_dir.join(&temp_file_name);
+        
+        info!("Creating temporary index file: {:?}", temp_path);
+        
+        let mut temp_file = std::fs::File::create(&temp_path)
+            .map_err(|e| RustLtfsError::io(format!("Cannot create temp file: {}", e)))?;
+        
+        let mut total_bytes = 0;
+        let mut blocks_read = 0;
+        
+        // ReadToFileMark逻辑：持续读取直到遇到FileMark或达到限制
+        for block_num in 0..max_blocks {
+            let mut buffer = vec![0u8; block_size];
+            
+            match self.scsi.read_blocks(1, &mut buffer) {
+                Ok(bytes_read) => {
+                    if bytes_read == 0 {
+                        debug!("No more data available at block {}", block_num);
+                        break;
+                    }
+                    
+                    // 写入临时文件
+                    temp_file.write_all(&buffer[..bytes_read])
+                        .map_err(|e| RustLtfsError::io(format!("Cannot write to temp file: {}", e)))?;
+                    
+                    total_bytes += bytes_read;
+                    blocks_read += 1;
+                    
+                    // 检查是否遇到FileMark（通常表示为短读取或特定模式）
+                    if bytes_read < block_size {
+                        debug!("Encountered short read (possible FileMark) at block {}", block_num);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    debug!("Read error at block {}: {}", block_num, e);
+                    break;
+                }
+            }
+        }
+        
+        // 关闭文件并读取内容
+        drop(temp_file);
+        
+        info!("ReadToFileMark completed: {} blocks read, {} total bytes", blocks_read, total_bytes);
+        
+        // 读取临时文件内容
+        let xml_content = std::fs::read_to_string(&temp_path)
+            .map_err(|e| RustLtfsError::io(format!("Cannot read temp file: {}", e)))?;
+        
+        // 清理临时文件
+        let _ = std::fs::remove_file(&temp_path);
+        
+        Ok(xml_content)
+    }
+
     pub fn search_index_copies_in_data_partition(&self) -> Result<String> {
         info!("Searching for index copies in data partition (partition B)");
 
@@ -1308,7 +1376,8 @@ impl crate::tape_ops::TapeOperations {
                     // 尝试读取并检查是否是有效的LTFS索引
                     let _block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
 
-                    match self.try_read_index_at_current_position_sync() {
+                    // 使用LTFSCopyGUI兼容的ReadToFileMark方法而非限制块数的同步读取
+                    match self.try_read_index_with_ltfscopygui_method(block) {
                         Ok(xml_content) => {
                             if self.is_valid_ltfs_index(&xml_content) {
                                 info!("Found valid LTFS index at data partition block {}", block);
