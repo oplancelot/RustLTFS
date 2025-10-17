@@ -1304,7 +1304,7 @@ impl crate::tape_ops::TapeOperations {
         info!("Creating temporary index file: {:?}", temp_path);
         
         let mut temp_file = std::fs::File::create(&temp_path)
-            .map_err(|e| RustLtfsError::io(format!("Cannot create temp file: {}", e)))?;
+            .map_err(|e| RustLtfsError::file_operation(format!("Cannot create temp file: {}", e)))?;
         
         let mut total_bytes = 0;
         let mut blocks_read = 0;
@@ -1321,14 +1321,14 @@ impl crate::tape_ops::TapeOperations {
                     }
                     
                     // 写入临时文件
-                    temp_file.write_all(&buffer[..bytes_read])
-                        .map_err(|e| RustLtfsError::io(format!("Cannot write to temp file: {}", e)))?;
+                    temp_file.write_all(&buffer[..bytes_read as usize])
+                        .map_err(|e| RustLtfsError::file_operation(format!("Cannot write to temp file: {}", e)))?;
                     
                     total_bytes += bytes_read;
                     blocks_read += 1;
                     
                     // 检查是否遇到FileMark（通常表示为短读取或特定模式）
-                    if bytes_read < block_size {
+                    if bytes_read < block_size as u32 {
                         debug!("Encountered short read (possible FileMark) at block {}", block_num);
                         break;
                     }
@@ -1347,7 +1347,7 @@ impl crate::tape_ops::TapeOperations {
         
         // 读取临时文件内容
         let xml_content = std::fs::read_to_string(&temp_path)
-            .map_err(|e| RustLtfsError::io(format!("Cannot read temp file: {}", e)))?;
+            .map_err(|e| RustLtfsError::file_operation(format!("Cannot read temp file: {}", e)))?;
         
         // 清理临时文件
         let _ = std::fs::remove_file(&temp_path);
