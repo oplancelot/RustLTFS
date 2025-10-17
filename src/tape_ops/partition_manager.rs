@@ -1290,8 +1290,9 @@ impl crate::tape_ops::TapeOperations {
     pub fn search_index_copies_in_data_partition(&self) -> Result<String> {
         info!("Searching for index copies in data partition (partition B)");
 
-        // 策略：在数据分区的几个常见位置搜索索引
+        // 策略：基于LTFSCopyGUI的实际索引位置优先搜索
         let search_locations = vec![
+            38,    // LTFSCopyGUI显示的实际索引位置（优先）
             100,   // 数据分区开始附近
             500,   // 中等位置
             1000,  // 更远的位置
