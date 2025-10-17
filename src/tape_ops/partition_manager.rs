@@ -1293,9 +1293,9 @@ impl crate::tape_ops::TapeOperations {
         
         // 修复：使用标准LTO块大小（64KB）以确保正确读取完整索引
         let block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize; // 64KB标准块大小
-        let max_blocks = 200; // 与其他地方保持一致
+        let max_blocks = 50; // 减少最大块数，专注于索引读取
         
-        debug!("Fixed block size calculation: using standard LTO block size {} bytes", block_size);
+        debug!("Fixed block size calculation: using standard LTO block size {} bytes, max_blocks: {}", block_size, max_blocks);
         
         // 创建临时文件用于存储读取的数据
         let temp_dir = std::env::temp_dir();
@@ -1317,9 +1317,30 @@ impl crate::tape_ops::TapeOperations {
             
             match self.scsi.read_blocks(1, &mut buffer) {
                 Ok(bytes_read) => {
+                    debug!("SCSI read_blocks(1) at relative block {} returned {} bytes", block_num, bytes_read);
+                    
                     if bytes_read == 0 {
                         debug!("No more data available at block {}", block_num);
                         break;
+                    }
+                    
+                    // 对第一个块进行详细分析
+                    if block_num == 0 {
+                        let sample_size = std::cmp::min(64, bytes_read as usize);
+                        let sample_data: Vec<String> = buffer[..sample_size]
+                            .iter()
+                            .map(|&b| format!("{:02X}", b))
+                            .collect();
+                        debug!("First block sample ({}B): {}", sample_size, sample_data.join(" "));
+                        
+                        // 检查是否包含XML或LTFS相关内容
+                        let text_content = String::from_utf8_lossy(&buffer[..bytes_read as usize]);
+                        if text_content.contains("ltfsindex") || text_content.contains("<?xml") {
+                            info!("Found XML/LTFS content in first block!");
+                        } else if bytes_read == 1 {
+                            warn!("Only 1 byte read at block {}, might indicate positioning issue or EOD", block);
+                            debug!("Single byte value: 0x{:02X}", buffer[0]);
+                        }
                     }
                     
                     // 写入临时文件
