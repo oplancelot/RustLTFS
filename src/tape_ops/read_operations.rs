@@ -81,36 +81,36 @@ impl super::TapeOperations {
         }
     }
     
-    /// Read LTFS index from tape (LTFS标准FileMark+3方法)
+    /// Read LTFS index from tape (LTFSCopyGUI兼容方法)
     pub async fn read_index_from_tape(&mut self) -> Result<()> {
-        info!("Starting LTFS standard index reading process with FileMark+3 method...");
+        info!("Starting LTFS index reading process with LTFSCopyGUI compatible method...");
 
         if self.offline_mode {
             info!("Offline mode: using dummy index for simulation");
             return Ok(());
         }
 
-        info!("=== LTFS Standard FileMark+3 Index Reading Process ===");
+        info!("=== LTFSCopyGUI Compatible Index Reading Process ===");
 
-        // Step 1 (最高优先级): LTFS标准FileMark+3方法
-        info!("Step 1 (Highest Priority): LTFS standard FileMark+3 method");
+        // Step 1 (最高优先级): LTFSCopyGUI兼容方法
+        info!("Step 1 (Highest Priority): LTFSCopyGUI compatible method");
         
         // 检测分区策略并决定读取顺序
         let extra_partition_count = self.get_extra_partition_count();
         
         if extra_partition_count > 0 {
-            // 双分区磁带：使用LTFS标准FileMark+3方法从数据分区读取索引
-            info!("Dual-partition detected, using LTFS standard FileMark+3 method from data partition");
+            // 双分区磁带：使用LTFSCopyGUI方法从数据分区读取索引
+            info!("Dual-partition detected, using LTFSCopyGUI method from data partition");
             
             match self.search_index_copies_in_data_partition() {
                 Ok(xml_content) => {
                     if self.validate_and_process_index(&xml_content).await? {
-                        info!("✅ Step 1 succeeded - LTFS index read using FileMark+3 method (dual-partition)");
+                        info!("✅ Step 1 succeeded - LTFS index read using LTFSCopyGUI method (dual-partition)");
                         return Ok(());
                     }
                 }
                 Err(e) => {
-                    debug!("FileMark+3 method failed: {}", e);
+                    debug!("LTFSCopyGUI method failed: {}", e);
                 }
             }
             

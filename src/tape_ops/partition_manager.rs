@@ -1380,7 +1380,7 @@ impl crate::tape_ops::TapeOperations {
     }
 
     pub fn search_index_copies_in_data_partition(&self) -> Result<String> {
-        info!("Searching for index in data partition using LTFS standard FileMark+3 method");
+        info!("Searching for index in data partition using LTFSCopyGUI method");
 
         // 步骤1: 确认是双分区磁带
         info!("Step 1: Confirming dual-partition tape configuration");
@@ -1399,72 +1399,74 @@ impl crate::tape_ops::TapeOperations {
             }
         }
 
-        // 步骤3: 寻找FileMark在数据分区
-        info!("Step 3: Searching for FileMark in data partition");
+        // 步骤3: 定位到数据分区的EOD（End of Data）
+        info!("Step 3: Locating to End of Data in data partition");
+        match self.scsi.locate_to_eod(1) {
+            Ok(()) => {
+                info!("✅ Successfully located to End of Data in data partition");
+            }
+            Err(e) => {
+                warn!("Failed to locate to EOD in data partition: {}", e);
+                return Err(RustLtfsError::ltfs_index(format!(
+                    "Cannot locate to EOD: {}", e
+                )));
+            }
+        }
+
+        // 步骤4: 获取当前FileMark号并计算索引位置
+        info!("Step 4: Getting current FileMark number and calculating index position");
         
-        // 尝试不同的FileMark位置（LTFS标准：数据分区通常有多个FileMark）
-        let filemark_positions = vec![1, 2, 3, 4, 5]; // 尝试前几个FileMark
-        
-        for &filemark_num in &filemark_positions {
-            info!("Trying FileMark {} in data partition", filemark_num);
-            
-            // 定位到指定的FileMark
-            match self.scsi.locate_to_filemark(filemark_num, 1) {
-                Ok(()) => {
-                    info!("✅ Successfully located to FileMark {} in data partition", filemark_num);
-                    
-                    // 步骤4: FileMark + 3 定位到索引
-                    info!("Step 4: Moving to FileMark+3 position for index reading");
-                    
-                    // 读取当前位置信息
-                    match self.scsi.read_position() {
-                        Ok(position) => {
-                            let index_block = position.block_number + 3;
-                            info!("Calculated index position: partition=1, block={} (FileMark {} + 3)", 
-                                  index_block, filemark_num);
-                            
-                            // 定位到索引位置
-                            match self.scsi.locate_block(1, index_block) {
-                                Ok(()) => {
-                                    info!("✅ Positioned to index location: partition=1, block={}", index_block);
-                                    
-                                    // 读取索引内容
-                                    match self.try_read_index_with_ltfscopygui_method(index_block) {
-                                        Ok(xml_content) => {
-                                            // 验证是否为有效的LTFS索引
-                                            if xml_content.len() > 100 && 
-                                               (xml_content.contains("ltfsindex") || xml_content.contains("<?xml")) {
-                                                info!("🎉 Found valid LTFS index at FileMark{}+3 position (block {})", 
-                                                      filemark_num, index_block);
-                                                return Ok(xml_content);
-                                            } else {
-                                                debug!("Content at FileMark{}+3 is not valid LTFS index", filemark_num);
-                                            }
-                                        }
-                                        Err(e) => {
-                                            debug!("Failed to read index at FileMark{}+3: {}", filemark_num, e);
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    debug!("Cannot position to index block {}: {}", index_block, e);
+        match self.scsi.read_position() {
+            Ok(position) => {
+                let current_fm = position.file_number;
+                info!("Current FileMark number: {}", current_fm);
+                
+                if current_fm <= 1 {
+                    warn!("FileMark number too low ({}), not a valid LTFS tape", current_fm);
+                    return Err(RustLtfsError::ltfs_index(format!(
+                        "Invalid LTFS tape: FileMark number {} is too low", current_fm
+                    )));
+                }
+
+                // LTFSCopyGUI方法：定位到 FM-1 个FileMark
+                let target_fm = current_fm - 1;
+                info!("Step 5: Locating to FileMark {} (FM-1) using LTFSCopyGUI method", target_fm);
+                
+                match self.scsi.locate_to_filemark(target_fm, 1) {
+                    Ok(()) => {
+                        info!("✅ Successfully located to FileMark {} in data partition", target_fm);
+                        
+                        // 步骤6: 读取FileMark后的索引内容
+                        info!("Step 6: Reading index content after FileMark using ReadToFileMark method");
+                        
+                        match self.try_read_index_with_ltfscopygui_method(0) {
+                            Ok(xml_content) => {
+                                // 验证是否为有效的LTFS索引
+                                if xml_content.len() > 100 && 
+                                   (xml_content.contains("ltfsindex") || xml_content.contains("<?xml")) {
+                                    info!("🎉 Found valid LTFS index using LTFSCopyGUI method (FileMark {} - 1)", current_fm);
+                                    return Ok(xml_content);
+                                } else {
+                                    debug!("Content after FileMark{} is not valid LTFS index", target_fm);
                                 }
                             }
-                        }
-                        Err(e) => {
-                            debug!("Cannot read position after FileMark {}: {}", filemark_num, e);
+                            Err(e) => {
+                                debug!("Failed to read index after FileMark{}: {}", target_fm, e);
+                            }
                         }
                     }
+                    Err(e) => {
+                        debug!("Cannot locate to FileMark {} in data partition: {}", target_fm, e);
+                    }
                 }
-                Err(e) => {
-                    debug!("Cannot locate to FileMark {} in data partition: {}", filemark_num, e);
-                    continue; // 尝试下一个FileMark
-                }
+            }
+            Err(e) => {
+                debug!("Cannot read position after EOD: {}", e);
             }
         }
 
         Err(RustLtfsError::ltfs_index(
-            "No valid LTFS index found using FileMark+3 method in data partition".to_string(),
+            "No valid LTFS index found using LTFSCopyGUI method in data partition".to_string(),
         ))
     }
 
