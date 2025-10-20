@@ -1450,7 +1450,7 @@ impl crate::tape_ops::TapeOperations {
         
         // 步骤6: ReadToFileMark - 读取索引内容
         info!("Step 6: Reading index content using ReadToFileMark");
-        let index_data = self.scsi.read_to_file_mark(block_sizes::LTO_BLOCK_SIZE)?;
+        let index_data = self.scsi.read_to_file_mark(block_sizes::LTO_BLOCK_SIZE_512K)?;
         
         // 🎯 完全按照LTFSCopyGUI的验证逻辑：检查是否包含"XMLSchema"
         let xml_content = String::from_utf8_lossy(&index_data).to_string();
@@ -1511,7 +1511,7 @@ impl crate::tape_ops::TapeOperations {
         
         // 步骤3: ReadToFileMark - 读取索引
         info!("Step 3: Reading index using ReadToFileMark");
-        let index_data = self.scsi.read_to_file_mark(block_sizes::LTO_BLOCK_SIZE)?;
+        let index_data = self.scsi.read_to_file_mark(block_sizes::LTO_BLOCK_SIZE_512K)?;
         
         // 🎯 完全按照LTFSCopyGUI的验证逻辑：检查是否包含"XMLSchema"
         let xml_content = String::from_utf8_lossy(&index_data).to_string();
@@ -1541,7 +1541,7 @@ impl crate::tape_ops::TapeOperations {
         
         // 步骤3: ReadToFileMark - 读取索引
         info!("Step 3: Reading index using ReadToFileMark");
-        let index_data = self.scsi.read_to_file_mark(block_sizes::LTO_BLOCK_SIZE)?;
+        let index_data = self.scsi.read_to_file_mark(block_sizes::LTO_BLOCK_SIZE_512K)?;
         
         // 🎯 完全按照LTFSCopyGUI的验证逻辑：检查是否包含"XMLSchema"
         let xml_content = String::from_utf8_lossy(&index_data).to_string();
@@ -2095,6 +2095,28 @@ impl crate::tape_ops::TapeOperations {
     fn ltfscopygui_from_schema_text(&self, mut s: String) -> Result<String> {
         debug!("🔧 Applying LTFSCopyGUI FromSchemaText transformations");
         
+        // 记录原始数据信息用于调试
+        let original_len = s.len();
+        let non_null_count = s.chars().filter(|&c| c != '\0').count();
+        debug!("📊 Original data: {} bytes, {} non-null chars ({:.1}% content)", 
+               original_len, non_null_count, (non_null_count as f64 / original_len as f64) * 100.0);
+        
+        // 移除null字符（对应.NET字符串处理）
+        s = s.replace('\0', "");
+        
+        // 检查处理后的数据
+        debug!("📊 After null removal: {} bytes", s.len());
+        if s.len() < 20 {
+            debug!("⚠️ Content sample: {:?}", s.chars().take(100).collect::<String>());
+            
+            // LTFSCopyGUI兼容性：如果数据太短，可能是空白磁带或错误位置
+            // 返回一个更具体的错误信息，但允许上层逻辑继续尝试其他策略
+            return Err(RustLtfsError::ltfs_index(
+                format!("Schema text too short after null removal: {} bytes (original: {} bytes, {:.1}% null)", 
+                       s.len(), original_len, ((original_len - s.len()) as f64 / original_len as f64) * 100.0)
+            ));
+        }
+        
         // 精确对应LTFSCopyGUI的字符串替换操作
         s = s.replace("<directory>", "<_directory><directory>");
         s = s.replace("</directory>", "</directory></_directory>");
@@ -2102,16 +2124,13 @@ impl crate::tape_ops::TapeOperations {
         s = s.replace("</file>", "</file></_file>");
         s = s.replace("%25", "%");
         
-        // 移除null字符（对应.NET字符串处理）
-        s = s.replace('\0', "");
-        
         // 基础验证：确保包含必要的LTFS结构
-        if s.len() < 50 {
-            return Err(RustLtfsError::ltfs_index("Schema text too short after processing".to_string()));
-        }
-        
         if !s.contains("ltfsindex") && !s.contains("directory") && !s.contains("file") {
-            return Err(RustLtfsError::ltfs_index("No LTFS structure found in schema text".to_string()));
+            debug!("⚠️ No LTFS structure found. Content preview: {:?}", 
+                   s.chars().take(200).collect::<String>());
+            return Err(RustLtfsError::ltfs_index(
+                format!("No LTFS structure found in {} bytes of processed text", s.len())
+            ));
         }
         
         debug!("✅ LTFSCopyGUI FromSchemaText processing completed: {} bytes", s.len());

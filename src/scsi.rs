@@ -2403,6 +2403,7 @@ pub enum LoadOption {
 /// Block size constants for LTO tapes
 pub mod block_sizes {
     pub const LTO_BLOCK_SIZE: u32 = 65536; // 64KB standard LTO block size
+    pub const LTO_BLOCK_SIZE_512K: u32 = 524288; // 512KB LTFSCopyGUI BlockSizeLimit (&H80000)
     pub const MIN_BLOCK_SIZE: u32 = 512;
     pub const MAX_BLOCK_SIZE: u32 = 1048576; // 1MB maximum
 }
