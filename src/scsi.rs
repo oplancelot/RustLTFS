@@ -1555,7 +1555,7 @@ impl ScsiInterface {
             let mut test_buffer = vec![0u8; block_sizes::LTO_BLOCK_SIZE as usize];
             
             let result = self.scsi_io_control(
-                &[scsi_commands::read_6, 0x00, 0x00, 0x00, 0x01, 0x00], // READ(6) 1 block
+                &[scsi_commands::READ_6, 0x00, 0x00, 0x00, 0x01, 0x00], // READ(6) 1 block
                 Some(&mut test_buffer),
                 SCSI_IOCTL_DATA_IN,
                 30,
@@ -1627,7 +1627,7 @@ impl ScsiInterface {
                 
                 // 使用READ(6)命令读取一个块
                 let mut cdb = [0u8; 6];
-                cdb[0] = scsi_commands::read_6;
+                cdb[0] = scsi_commands::READ_6;
                 cdb[1] = 0x00; // Variable length mode like LTFSCopyGUI
                 
                 let byte_count = actual_block_limit;
