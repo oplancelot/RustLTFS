@@ -1310,9 +1310,12 @@ impl ScsiInterface {
             let mut cdb = [0u8; 10];
             let mut data_buffer = [0u8; 32];
             
-            // LTFSCopyGUI使用: {&H34, 1, 0, 0, 0, 0, 0, 0, 0, 0}
+            // 🔧 修复：LTFSCopyGUI在AllowPartition=true时使用Service Action 6
+            // AllowPartition模式: {&H34, 6, 0, 0, 0, 0, 0, 0, 0, 0}
+            // DisablePartition模式: {&H34, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+            // 对于多分区支持，我们使用AllowPartition模式
             cdb[0] = scsi_commands::READ_POSITION; // 0x34
-            cdb[1] = 0x01; // Service Action = 1 (与LTFSCopyGUI一致)
+            cdb[1] = 0x06; // Service Action = 6 (LTFSCopyGUI AllowPartition模式)
             cdb[2] = 0x00;
             cdb[3] = 0x00;
             cdb[4] = 0x00;
@@ -1322,7 +1325,7 @@ impl ScsiInterface {
             cdb[8] = 0x00;
             cdb[9] = 0x00;
             
-            debug!("Sending READ POSITION command: {:02X?}", &cdb[..]);
+            debug!("🔧 Sending READ POSITION command (LTFSCopyGUI AllowPartition mode): {:02X?}", &cdb[..]);
             
             let result = self.scsi_io_control(
                 &cdb,
@@ -1333,12 +1336,36 @@ impl ScsiInterface {
             )?;
             
             if result {
-                debug!("READ POSITION raw data: {:02X?}", &data_buffer[..]);
+                debug!("🔧 READ POSITION raw data (Service Action 6): {:02X?}", &data_buffer[..]);
+                
+                // 🔍 详细分析SCSI返回数据的每个字节段 (对应LTFSCopyGUI TapeUtils.vb)
+                debug!("🔍 Raw data analysis (LTFSCopyGUI format):");
+                debug!("  Flags (byte 0): 0x{:02X}", data_buffer[0]);
+                debug!("  Bytes 1-3: {:02X} {:02X} {:02X}", data_buffer[1], data_buffer[2], data_buffer[3]);
+                debug!("  Partition (bytes 4-7): {:02X} {:02X} {:02X} {:02X}", 
+                       data_buffer[4], data_buffer[5], data_buffer[6], data_buffer[7]);
+                debug!("  Block (bytes 8-15): {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}", 
+                       data_buffer[8], data_buffer[9], data_buffer[10], data_buffer[11],
+                       data_buffer[12], data_buffer[13], data_buffer[14], data_buffer[15]);
+                debug!("  File/FileMark (bytes 16-23): {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}", 
+                       data_buffer[16], data_buffer[17], data_buffer[18], data_buffer[19],
+                       data_buffer[20], data_buffer[21], data_buffer[22], data_buffer[23]);
+                debug!("  Set (bytes 24-31): {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}", 
+                       data_buffer[24], data_buffer[25], data_buffer[26], data_buffer[27],
+                       data_buffer[28], data_buffer[29], data_buffer[30], data_buffer[31]);
                 
                 // 按照LTFSCopyGUI的解析方式（TapeUtils.vb第1858-1870行）
                 // AllowPartition = true时的数据结构：
                 let flags = data_buffer[0];
-                let partition = data_buffer[4]; // LTFSCopyGUI: partition从第4字节开始
+                
+                // 🔧 修复分区号解析：LTFSCopyGUI使用4字节循环 (bytes 4-7)
+                // For i As Integer = 0 To 3: result.PartitionNumber = result.PartitionNumber Or param(4 + i)
+                let mut partition_number = 0u32;
+                for i in 0..4 {
+                    partition_number <<= 8;
+                    partition_number |= data_buffer[4 + i] as u32;
+                }
+                let partition = partition_number as u8; // 转换为u8以保持兼容性
                 
                 // Block number: 8字节，从第8字节开始
                 let mut block_number = 0u64;
@@ -1369,6 +1396,14 @@ impl ScsiInterface {
                     end_of_data: (flags & 0x04) != 0, // EOD flag
                     beginning_of_partition: (flags & 0x08) != 0, // BOP flag
                 };
+                
+                // 🔍 显示解析后的值与LTFSCopyGUI格式对比
+                debug!("🔍 Parsed values (LTFSCopyGUI compatible):");
+                debug!("  - Flags: 0x{:02X} (BOP={}, EOD={})", flags, position.beginning_of_partition, position.end_of_data);
+                debug!("  - Partition: {} (from 4-byte value: 0x{:08X})", partition, partition_number);
+                debug!("  - Block Number: {}", block_number);
+                debug!("  - File Number (FileMark): {}", file_number);
+                debug!("  - Set Number: {}", set_number);
                 
                 debug!("LTFSCopyGUI compatible position: partition={}, block={}, file={}, set={}", 
                     position.partition, position.block_number, position.file_number, position.set_number);
