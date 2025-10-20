@@ -1452,13 +1452,16 @@ impl crate::tape_ops::TapeOperations {
         info!("Step 6: Reading index content using ReadToFileMark");
         let index_data = self.scsi.read_to_file_mark(block_sizes::LTO_BLOCK_SIZE)?;
         
-        // 转换为字符串并验证
+        // 🎯 完全按照LTFSCopyGUI的验证逻辑：检查是否包含"XMLSchema"
         let xml_content = String::from_utf8_lossy(&index_data).to_string();
-        if xml_content.len() > 100 && (xml_content.contains("ltfsindex") || xml_content.contains("<?xml")) {
-            info!("✅ Successfully read LTFS index using single partition method: {} bytes", xml_content.len());
+        if xml_content.contains("XMLSchema") {
+            info!("✅ Successfully read LTFS index using single partition method: {} bytes (contains XMLSchema)", xml_content.len());
             Ok(xml_content)
         } else {
-            Err(RustLtfsError::ltfs_index("Invalid LTFS index content in single partition".to_string()))
+            // 🔧 LTFSCopyGUI备选路径：FromSchemaText处理
+            let processed_content = self.ltfscopygui_from_schema_text(xml_content)?;
+            info!("✅ Successfully processed LTFS schema text format: {} bytes", processed_content.len());
+            Ok(processed_content)
         }
     }
 
@@ -1510,12 +1513,16 @@ impl crate::tape_ops::TapeOperations {
         info!("Step 3: Reading index using ReadToFileMark");
         let index_data = self.scsi.read_to_file_mark(block_sizes::LTO_BLOCK_SIZE)?;
         
+        // 🎯 完全按照LTFSCopyGUI的验证逻辑：检查是否包含"XMLSchema"
         let xml_content = String::from_utf8_lossy(&index_data).to_string();
-        if xml_content.len() > 100 && (xml_content.contains("ltfsindex") || xml_content.contains("<?xml")) {
-            info!("✅ Successfully read LTFS index using DisablePartition fallback: {} bytes", xml_content.len());
+        if xml_content.contains("XMLSchema") {
+            info!("✅ Successfully read LTFS index using DisablePartition fallback: {} bytes (contains XMLSchema)", xml_content.len());
             Ok(xml_content)
         } else {
-            Err(RustLtfsError::ltfs_index("Invalid LTFS index content in DisablePartition fallback".to_string()))
+            // 🔧 LTFSCopyGUI备选路径：FromSchemaText处理
+            let processed_content = self.ltfscopygui_from_schema_text(xml_content)?;
+            info!("✅ Successfully processed LTFS schema text format: {} bytes", processed_content.len());
+            Ok(processed_content)
         }
     }
 
@@ -1536,12 +1543,16 @@ impl crate::tape_ops::TapeOperations {
         info!("Step 3: Reading index using ReadToFileMark");
         let index_data = self.scsi.read_to_file_mark(block_sizes::LTO_BLOCK_SIZE)?;
         
+        // 🎯 完全按照LTFSCopyGUI的验证逻辑：检查是否包含"XMLSchema"
         let xml_content = String::from_utf8_lossy(&index_data).to_string();
-        if xml_content.len() > 100 && (xml_content.contains("ltfsindex") || xml_content.contains("<?xml")) {
-            info!("✅ Successfully read LTFS index using FM-1 strategy: {} bytes", xml_content.len());
+        if xml_content.contains("XMLSchema") {
+            info!("✅ Successfully read LTFS index using FM-1 strategy: {} bytes (contains XMLSchema)", xml_content.len());
             Ok(xml_content)
         } else {
-            Err(RustLtfsError::ltfs_index("Invalid LTFS index content in FM-1 strategy".to_string()))
+            // 🔧 LTFSCopyGUI备选路径：FromSchemaText处理
+            let processed_content = self.ltfscopygui_from_schema_text(xml_content)?;
+            info!("✅ Successfully processed LTFS schema text format: {} bytes", processed_content.len());
+            Ok(processed_content)
         }
     }
 
@@ -2076,6 +2087,136 @@ impl crate::tape_ops::TapeOperations {
                 }
             }
             Err(e) => Err(e),
+        }
+    }
+
+    /// 完全复刻LTFSCopyGUI的FromSchemaText方法 (Schema.vb:542-553)
+    /// 精确对应VB.NET代码的字符串替换和处理逻辑
+    fn ltfscopygui_from_schema_text(&self, mut s: String) -> Result<String> {
+        debug!("🔧 Applying LTFSCopyGUI FromSchemaText transformations");
+        
+        // 精确对应LTFSCopyGUI的字符串替换操作
+        s = s.replace("<directory>", "<_directory><directory>");
+        s = s.replace("</directory>", "</directory></_directory>");
+        s = s.replace("<file>", "<_file><file>");
+        s = s.replace("</file>", "</file></_file>");
+        s = s.replace("%25", "%");
+        
+        // 移除null字符（对应.NET字符串处理）
+        s = s.replace('\0', "");
+        
+        // 基础验证：确保包含必要的LTFS结构
+        if s.len() < 50 {
+            return Err(RustLtfsError::ltfs_index("Schema text too short after processing".to_string()));
+        }
+        
+        if !s.contains("ltfsindex") && !s.contains("directory") && !s.contains("file") {
+            return Err(RustLtfsError::ltfs_index("No LTFS structure found in schema text".to_string()));
+        }
+        
+        debug!("✅ LTFSCopyGUI FromSchemaText processing completed: {} bytes", s.len());
+        Ok(s)
+    }
+
+    /// LTFSCopyGUI的LookforXMLEndPosition方法复刻 (Form1.vb:141-156)
+    /// 递归查找XML标签的结束位置
+    fn ltfscopygui_lookfor_xml_end_position(&self, s: &str, target: &str, start_pos: usize) -> usize {
+        let target_bra = format!("<{}>", target);
+        let target_ket = format!("</{}>", target);
+        let mut i = start_pos;
+        
+        while i < s.len().saturating_sub(target_ket.len()) {
+            i += 1;
+            
+            // 检查是否遇到开始标签（需要递归处理）
+            if i + target_bra.len() <= s.len() {
+                if &s[i..i + target_bra.len()] == target_bra {
+                    i = self.ltfscopygui_lookfor_xml_end_position(s, target, i);
+                    continue;
+                }
+            }
+            
+            // 检查是否遇到结束标签
+            if i + target_ket.len() <= s.len() {
+                if &s[i..i + target_ket.len()] == target_ket {
+                    return i;
+                }
+            }
+        }
+        
+        i
+    }
+
+    /// 在数据中查找模式 (用于调试方法)
+    fn find_pattern_in_data(&self, data: &[u8], pattern: &[u8]) -> Option<usize> {
+        data.windows(pattern.len()).position(|window| window == pattern)
+    }
+
+    /// 调试分析索引数据内容 (增强版本)
+    fn debug_analyze_index_data(&self, data: &[u8], strategy_name: &str) {
+        warn!("🔍 Debug analysis for {} - {} bytes total", strategy_name, data.len());
+        
+        // 基础统计
+        let non_zero_count = data.iter().filter(|&&b| b != 0).count();
+        let zero_ratio = (data.len() - non_zero_count) as f64 / data.len() as f64;
+        warn!("📊 Data composition: {:.1}% zeros, {} non-zero bytes", zero_ratio * 100.0, non_zero_count);
+        
+        // 查找常见的XML模式
+        let patterns_to_check = [
+            ("<?xml", "XML declaration"),
+            ("<ltfsindex", "LTFS index start"),
+            ("XMLSchema", "XML Schema reference"),
+            ("<directory", "Directory element"), 
+            ("</ltfsindex>", "LTFS index end"),
+            ("ltfs", "LTFS text (case insensitive)"),
+        ];
+        
+        for (pattern, description) in &patterns_to_check {
+            if let Some(pos) = self.find_pattern_in_data(data, pattern.as_bytes()) {
+                warn!("🎯 Found {}: '{}' at position {}", description, pattern, pos);
+            } else {
+                // 大小写不敏感搜索
+                let lower_data: Vec<u8> = data.iter().map(|&b| b.to_ascii_lowercase()).collect();
+                if let Some(pos) = self.find_pattern_in_data(&lower_data, pattern.to_lowercase().as_bytes()) {
+                    warn!("🎯 Found {} (case insensitive): '{}' at position {}", description, pattern, pos);
+                }
+            }
+        }
+        
+        // 采样数据内容
+        let sample_size = std::cmp::min(512, data.len());
+        let sample_start = if data.len() > 1024 { 512 } else { 0 };
+        let sample_end = std::cmp::min(sample_start + sample_size, data.len());
+        
+        if sample_start < sample_end {
+            let sample_data = &data[sample_start..sample_end];
+            let sample_text = String::from_utf8_lossy(sample_data);
+            let printable_chars: String = sample_text.chars()
+                .take(200)
+                .map(|c| if c.is_ascii_graphic() || c.is_whitespace() { c } else { '.' })
+                .collect();
+            
+            warn!("📄 Sample data (bytes {}-{}): {:?}", sample_start, sample_end, printable_chars);
+        }
+        
+        // 检查是否全为特定字符
+        if data.iter().all(|&b| b == 0) {
+            warn!("⚠️ All data is null bytes - likely unwritten block");
+        } else if data.iter().all(|&b| b == 0xFF) {
+            warn!("⚠️ All data is 0xFF - possible error condition");
+        } else if data.len() == 65536 && non_zero_count < 100 {
+            warn!("⚠️ Mostly zeros in 64KB block - typical LTO padding pattern");
+        }
+        
+        // 尝试找到XML的开始和结束
+        if let Some(xml_start) = self.find_pattern_in_data(data, b"<") {
+            if let Some(xml_end) = self.find_pattern_in_data(&data[xml_start..], b">") {
+                let tag_end = xml_start + xml_end + 1;
+                if tag_end < data.len() {
+                    let first_tag = String::from_utf8_lossy(&data[xml_start..tag_end]);
+                    warn!("🏷️ First XML-like tag: {}", first_tag);
+                }
+            }
         }
     }
 }
