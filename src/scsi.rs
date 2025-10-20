@@ -1250,14 +1250,14 @@ impl ScsiInterface {
         }
     }
     
-    /// Space operation (move by specified count of objects)
+    /// Space operation (move by specified count of objects) - LTFSCopyGUI compatible
     pub fn space(&self, space_type: SpaceType, count: i32) -> Result<()> {
-        debug!("Space operation: type={:?}, count={}", space_type, count);
+        debug!("Space operation (LTFSCopyGUI compatible): type={:?}, count={}", space_type, count);
         
         #[cfg(windows)]
         {
             let mut cdb = [0u8; 6];
-            cdb[0] = scsi_commands::SPACE;
+            cdb[0] = scsi_commands::SPACE; // 0x11
             cdb[1] = space_type as u8;
             
             // Handle EndOfData specially - should use count=1 according to SCSI standards
@@ -1269,19 +1269,14 @@ impl ScsiInterface {
                 _ => count
             };
             
-            // Handle negative counts (reverse direction)
-            let abs_count = actual_count.abs() as u32;
-            if actual_count < 0 {
-                // Two's complement for negative values
-                let neg_count = (!abs_count + 1) & 0xFFFFFF; // 24-bit field
-                cdb[2] = ((neg_count >> 16) & 0xFF) as u8;
-                cdb[3] = ((neg_count >> 8) & 0xFF) as u8;
-                cdb[4] = (neg_count & 0xFF) as u8;
-            } else {
-                cdb[2] = ((abs_count >> 16) & 0xFF) as u8;
-                cdb[3] = ((abs_count >> 8) & 0xFF) as u8;
-                cdb[4] = (abs_count & 0xFF) as u8;
-            }
+            // LTFSCopyGUI方式：直接将count作为有符号整数处理
+            // LTFSCopyGUI: {&H11, Code, Count >> 16 And &HFF, Count >> 8 And &HFF, Count And &HFF, 0}
+            cdb[2] = ((actual_count >> 16) & 0xFF) as u8;
+            cdb[3] = ((actual_count >> 8) & 0xFF) as u8;
+            cdb[4] = (actual_count & 0xFF) as u8;
+            cdb[5] = 0x00;
+            
+            debug!("LTFSCopyGUI compatible SPACE command: {:02X?}", &cdb[..]);
             
             let result = self.scsi_io_control(
                 &cdb,
@@ -1295,28 +1290,39 @@ impl ScsiInterface {
                 debug!("Space operation completed successfully");
                 Ok(())
             } else {
-                Err(crate::error::RustLtfsError::scsi("Space operation failed"))
+                Err(crate::error::RustLtfsError::scsi("Space operation failed".to_string()))
             }
         }
         
         #[cfg(not(windows))]
         {
             let _ = (space_type, count);
-            Err(crate::error::RustLtfsError::unsupported("Non-Windows platform"))
+            Err(crate::error::RustLtfsError::unsupported("Non-Windows platform".to_string()))
         }
     }
     
-    /// Read tape position information
+    /// Read tape position information (LTFSCopyGUI compatible implementation)
     pub fn read_position(&self) -> Result<TapePosition> {
-        debug!("Reading tape position");
+        debug!("Reading tape position using LTFSCopyGUI compatible method");
         
         #[cfg(windows)]
         {
             let mut cdb = [0u8; 10];
             let mut data_buffer = [0u8; 32];
             
-            cdb[0] = scsi_commands::READ_POSITION;
-            cdb[1] = 0x03; // Extended form (LTFSCopyGUI compatible: Reserved1 = 0x03)
+            // LTFSCopyGUI使用: {&H34, 1, 0, 0, 0, 0, 0, 0, 0, 0}
+            cdb[0] = scsi_commands::READ_POSITION; // 0x34
+            cdb[1] = 0x01; // Service Action = 1 (与LTFSCopyGUI一致)
+            cdb[2] = 0x00;
+            cdb[3] = 0x00;
+            cdb[4] = 0x00;
+            cdb[5] = 0x00;
+            cdb[6] = 0x00;
+            cdb[7] = 0x00;
+            cdb[8] = 0x00;
+            cdb[9] = 0x00;
+            
+            debug!("Sending READ POSITION command: {:02X?}", &cdb[..]);
             
             let result = self.scsi_io_control(
                 &cdb,
@@ -1327,43 +1333,55 @@ impl ScsiInterface {
             )?;
             
             if result {
-                // Parse position data according to SCSI standards
+                debug!("READ POSITION raw data: {:02X?}", &data_buffer[..]);
+                
+                // 按照LTFSCopyGUI的解析方式（TapeUtils.vb第1858-1870行）
+                // AllowPartition = true时的数据结构：
                 let flags = data_buffer[0];
-                let partition = data_buffer[1];
+                let partition = data_buffer[4]; // LTFSCopyGUI: partition从第4字节开始
                 
-                // Block number (32-bit in short form)
-                let block_number = ((data_buffer[4] as u64) << 24) |
-                                 ((data_buffer[5] as u64) << 16) |
-                                 ((data_buffer[6] as u64) << 8) |
-                                 (data_buffer[7] as u64);
+                // Block number: 8字节，从第8字节开始
+                let mut block_number = 0u64;
+                for i in 0..8 {
+                    block_number <<= 8;
+                    block_number |= data_buffer[8 + i] as u64;
+                }
                 
-                // File number (32-bit)
-                let file_number = ((data_buffer[8] as u64) << 24) |
-                                ((data_buffer[9] as u64) << 16) |
-                                ((data_buffer[10] as u64) << 8) |
-                                (data_buffer[11] as u64);
+                // File number (FileMark): 8字节，从第16字节开始
+                let mut file_number = 0u64;
+                for i in 0..8 {
+                    file_number <<= 8;
+                    file_number |= data_buffer[16 + i] as u64;
+                }
+                
+                // Set number: 8字节，从第24字节开始
+                let mut set_number = 0u64;
+                for i in 0..8 {
+                    set_number <<= 8;
+                    set_number |= data_buffer[24 + i] as u64;
+                }
                 
                 let position = TapePosition {
                     partition,
                     block_number,
                     file_number,
-                    set_number: 0, // Not available in short form
-                    end_of_data: (flags & 0x04) != 0,
-                    beginning_of_partition: (flags & 0x08) != 0,
+                    set_number,
+                    end_of_data: (flags & 0x04) != 0, // EOD flag
+                    beginning_of_partition: (flags & 0x08) != 0, // BOP flag
                 };
                 
-                debug!("Current position: partition={}, block={}, file={}", 
-                    position.partition, position.block_number, position.file_number);
+                debug!("LTFSCopyGUI compatible position: partition={}, block={}, file={}, set={}", 
+                    position.partition, position.block_number, position.file_number, position.set_number);
                 
                 Ok(position)
             } else {
-                Err(crate::error::RustLtfsError::scsi("Read position failed"))
+                Err(crate::error::RustLtfsError::scsi("Read position failed".to_string()))
             }
         }
         
         #[cfg(not(windows))]
         {
-            Err(crate::error::RustLtfsError::unsupported("Non-Windows platform"))
+            Err(crate::error::RustLtfsError::unsupported("Non-Windows platform".to_string()))
         }
     }
     

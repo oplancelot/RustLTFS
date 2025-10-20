@@ -1419,22 +1419,85 @@ impl crate::tape_ops::TapeOperations {
         match self.scsi.read_position() {
             Ok(position) => {
                 let current_fm = position.file_number;
-                info!("Current FileMark number: {}", current_fm);
+                info!("🔍 Detailed position information:");
+                info!("  - Partition: {}", position.partition);
+                info!("  - Block Number: {}", position.block_number);
+                info!("  - File Number (FileMark): {}", position.file_number);
+                info!("  - Set Number: {}", position.set_number);
+                info!("  - End of Data: {}", position.end_of_data);
+                info!("  - Beginning of Partition: {}", position.beginning_of_partition);
+                info!("📊 LTFSCopyGUI position format: P{} B{} FM{} SET{}", 
+                    position.partition, position.block_number, position.file_number, position.set_number);
                 
                 if current_fm <= 1 {
-                    warn!("FileMark number too low ({}), not a valid LTFS tape", current_fm);
+                    warn!("⚠️ FileMark number too low ({}), trying LTFSCopyGUI DisablePartition fallback method", current_fm);
+                    warn!("📍 This matches LTFSCopyGUI behavior when FM <= 1");
+                    // LTFSCopyGUI的DisablePartition备用策略：Space6(-2, FileMark)
+                    info!("Step 5: Using LTFSCopyGUI DisablePartition method (Space6 -2 FileMark)");
+                    
+                    match self.scsi.space(crate::scsi::SpaceType::FileMarks, -2) {
+                        Ok(()) => {
+                            info!("✅ Successfully moved back 2 FileMarks using Space6 command");
+                            
+                            // 获取Space后的位置
+                            match self.scsi.read_position() {
+                                Ok(new_pos) => {
+                                    info!("📍 Position after Space6(-2): P{} B{} FM{} SET{}", 
+                                        new_pos.partition, new_pos.block_number, new_pos.file_number, new_pos.set_number);
+                                }
+                                Err(e) => {
+                                    debug!("Could not read position after Space6: {}", e);
+                                }
+                            }
+                            
+                            // 读取索引内容
+                            match self.try_read_index_with_ltfscopygui_method(0) {
+                                Ok(xml_content) => {
+                                    // 验证是否为有效的LTFS索引
+                                    if xml_content.len() > 100 && 
+                                       (xml_content.contains("ltfsindex") || xml_content.contains("<?xml")) {
+                                        info!("🎉 Found valid LTFS index using LTFSCopyGUI DisablePartition method");
+                                        return Ok(xml_content);
+                                    } else {
+                                        debug!("Content after Space6(-2) is not valid LTFS index");
+                                    }
+                                }
+                                Err(e) => {
+                                    debug!("Failed to read index after Space6(-2): {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            debug!("Failed to move back 2 FileMarks using Space6: {}", e);
+                        }
+                    }
+                    
+                    // 如果DisablePartition方法也失败，返回原始错误
                     return Err(RustLtfsError::ltfs_index(format!(
-                        "Invalid LTFS tape: FileMark number {} is too low", current_fm
+                        "Invalid LTFS tape: FileMark number {} is too low, both standard and DisablePartition methods failed", current_fm
                     )));
                 }
 
                 // LTFSCopyGUI方法：定位到 FM-1 个FileMark
                 let target_fm = current_fm - 1;
                 info!("Step 5: Locating to FileMark {} (FM-1) using LTFSCopyGUI method", target_fm);
+                info!("📋 LTFSCopyGUI logic: CurrentFM={} -> Target=FM-1={}", current_fm, target_fm);
                 
                 match self.scsi.locate_to_filemark(target_fm, 1) {
                     Ok(()) => {
                         info!("✅ Successfully located to FileMark {} in data partition", target_fm);
+                        
+                        // 获取定位后的位置
+                        match self.scsi.read_position() {
+                            Ok(located_pos) => {
+                                info!("📍 Position after locating to FileMark {}: P{} B{} FM{} SET{}", 
+                                    target_fm, located_pos.partition, located_pos.block_number, 
+                                    located_pos.file_number, located_pos.set_number);
+                            }
+                            Err(e) => {
+                                debug!("Could not read position after locate: {}", e);
+                            }
+                        }
                         
                         // 步骤6: 读取FileMark后的索引内容
                         info!("Step 6: Reading index content after FileMark using ReadToFileMark method");
