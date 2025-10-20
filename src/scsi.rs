@@ -1542,6 +1542,146 @@ impl ScsiInterface {
             Err(crate::error::RustLtfsError::unsupported("Non-Windows platform"))
         }
     }
+
+    /// ReadFileMark - 跳过当前FileMark标记 (完全对应LTFSCopyGUI的ReadFileMark实现)
+    /// 这个方法精确复制LTFSCopyGUI TapeUtils.ReadFileMark的行为
+    pub fn read_file_mark(&self) -> Result<bool> {
+        debug!("🔧 ReadFileMark: Checking if positioned at FileMark (LTFSCopyGUI compatible)");
+        
+        #[cfg(windows)]
+        {
+            // 步骤1：尝试读取一个块来检测是否已经在FileMark位置
+            let mut sense_buffer = [0u8; SENSE_INFO_LEN];
+            let mut test_buffer = vec![0u8; block_sizes::LTO_BLOCK_SIZE as usize];
+            
+            let result = self.scsi_io_control(
+                &[scsi_commands::read_6, 0x00, 0x00, 0x00, 0x01, 0x00], // READ(6) 1 block
+                Some(&mut test_buffer),
+                SCSI_IOCTL_DATA_IN,
+                30,
+                Some(&mut sense_buffer),
+            )?;
+            
+            if !result {
+                // 读取失败，分析sense数据
+                let (_, is_file_mark) = self.analyze_read_sense_data(&sense_buffer, block_sizes::LTO_BLOCK_SIZE)?;
+                if is_file_mark {
+                    debug!("✅ ReadFileMark: Already positioned at FileMark (detected via sense data)");
+                    return Ok(true);
+                }
+            }
+            
+            // 步骤2：如果读取到了数据，说明没有在FileMark位置，需要回退
+            debug!("🔄 ReadFileMark: Read data successfully, need to move back to previous position");
+            
+            // 获取当前位置
+            let current_pos = self.read_position()?;
+            debug!("📍 Current position before backtrack: P{} B{} FM{}", 
+                  current_pos.partition, current_pos.block_number, current_pos.file_number);
+            
+            // LTFSCopyGUI的回退策略：根据AllowPartition设置选择方法
+            if self.allow_partition {
+                // AllowPartition=true: 使用Locate回退到前一个块
+                if current_pos.block_number > 0 {
+                    debug!("🎯 Using Locate method to move back one block (AllowPartition mode)");
+                    self.locate_block(current_pos.partition, current_pos.block_number - 1)?;
+                } else {
+                    debug!("⚠️ Already at block 0, cannot move back further");
+                }
+            } else {
+                // AllowPartition=false: 使用Space6命令回退一个块
+                debug!("🎯 Using Space6 method to move back one block (DisablePartition mode)");
+                self.space(SpaceType::Blocks, -1)?;
+            }
+            
+            // 获取回退后的位置
+            let new_pos = self.read_position()?;
+            debug!("📍 Position after backtrack: P{} B{} FM{}", 
+                  new_pos.partition, new_pos.block_number, new_pos.file_number);
+            
+            debug!("✅ ReadFileMark: Successfully moved back, now positioned before FileMark");
+            Ok(false)
+        }
+        
+        #[cfg(not(windows))]
+        {
+            Err(crate::error::RustLtfsError::unsupported("Non-Windows platform"))
+        }
+    }
+
+    /// ReadToFileMark - 读取数据直到遇到FileMark (完全对应LTFSCopyGUI的ReadToFileMark实现)
+    /// 这个方法精确复制LTFSCopyGUI TapeUtils.ReadToFileMark的FileMark检测逻辑
+    pub fn read_to_file_mark(&self, block_size_limit: u32) -> Result<Vec<u8>> {
+        debug!("🔧 ReadToFileMark: Starting with block_size_limit={} (LTFSCopyGUI compatible)", block_size_limit);
+        
+        #[cfg(windows)]
+        {
+            let mut buffer = Vec::new();
+            let actual_block_limit = std::cmp::min(block_size_limit, block_sizes::LTO_BLOCK_SIZE);
+            
+            debug!("📊 Using actual block limit: {} bytes", actual_block_limit);
+            
+            loop {
+                let mut sense_buffer = [0u8; SENSE_INFO_LEN];
+                let mut read_buffer = vec![0u8; actual_block_limit as usize];
+                
+                // 使用READ(6)命令读取一个块
+                let mut cdb = [0u8; 6];
+                cdb[0] = scsi_commands::read_6;
+                cdb[1] = 0x00; // Variable length mode like LTFSCopyGUI
+                
+                let byte_count = actual_block_limit;
+                cdb[2] = ((byte_count >> 16) & 0xFF) as u8;
+                cdb[3] = ((byte_count >> 8) & 0xFF) as u8;
+                cdb[4] = (byte_count & 0xFF) as u8;
+                cdb[5] = 0x00;
+                
+                let result = self.scsi_io_control(
+                    &cdb,
+                    Some(&mut read_buffer),
+                    SCSI_IOCTL_DATA_IN,
+                    300,
+                    Some(&mut sense_buffer),
+                )?;
+                
+                // 🎯 精确复制LTFSCopyGUI的FileMark检测逻辑
+                // LTFSCopyGUI: Dim Add_Key As UInt16 = CInt(sense(12)) << 8 Or sense(13)
+                let add_key = ((sense_buffer[12] as u16) << 8) | (sense_buffer[13] as u16);
+                debug!("🔍 Sense analysis: result={}, Add_Key=0x{:04X} (ASC=0x{:02X}, ASCQ=0x{:02X})", 
+                      result, add_key, sense_buffer[12], sense_buffer[13]);
+                
+                if result {
+                    // 读取成功，将数据添加到缓冲区
+                    if !read_buffer.is_empty() {
+                        buffer.extend_from_slice(&read_buffer);
+                        debug!("📝 Added {} bytes to buffer, total: {} bytes", read_buffer.len(), buffer.len());
+                    }
+                }
+                
+                // 🎯 关键的FileMark检测规则 (精确对应LTFSCopyGUI)
+                // LTFSCopyGUI: If (Add_Key >= 1 And Add_Key <> 4) Then Exit While
+                if add_key >= 1 && add_key != 4 {
+                    info!("🎯 FileMark detected: Add_Key=0x{:04X} matches LTFSCopyGUI criteria (>=1 and !=4)", add_key);
+                    break;
+                }
+                
+                // 如果没有检测到FileMark且没有读取到数据，可能到达了EOD
+                if !result && read_buffer.is_empty() {
+                    debug!("📄 No more data available, stopping read");
+                    break;
+                }
+            }
+            
+            info!("✅ ReadToFileMark completed: {} total bytes read using LTFSCopyGUI method", buffer.len());
+            Ok(buffer)
+        }
+        
+        #[cfg(not(windows))]
+        {
+            let _ = block_size_limit;
+            Err(crate::error::RustLtfsError::unsupported("Non-Windows platform"))
+        }
+    }
     
     /// Comprehensive locate method (based on LTFSCopyGUI TapeUtils.Locate)
     /// Supports block, file mark, and EOD positioning with drive-specific optimizations
