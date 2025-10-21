@@ -1439,10 +1439,10 @@ impl crate::tape_ops::TapeOperations {
             )));
         }
         
-        // 步骤4: 使用FM-1策略定位到索引位置
-        let target_fm = current_fm - 1;
-        info!("Step 4: Locating to FileMark {} (FM-1 strategy)", target_fm);
-        self.scsi.locate_to_filemark(target_fm, 0)?;
+        // 步骤4: LTFSCopyGUI真实策略 - 定位到FileMark 1 (不是FM-1!)
+        // 对应LTFSCopyGUI代码: TapeUtils.Locate(driveHandle, 1UL, partition, TapeUtils.LocateDestType.FileMark)
+        info!("Step 4: Locating to FileMark 1 (LTFSCopyGUI standard strategy)");
+        self.scsi.locate_to_filemark(0, 1)?; // partition=0, filemark=1
         
         // 步骤5: ReadFileMark - 跳过FileMark标记
         info!("Step 5: Skipping FileMark using ReadFileMark method");
@@ -1491,9 +1491,9 @@ impl crate::tape_ops::TapeOperations {
             info!("Step 4a: FM <= 1, using DisablePartition fallback (Space6 -2 FileMark)");
             return self.ltfscopygui_disable_partition_fallback();
         } else {
-            // 标准FM-1策略
-            info!("Step 4b: Using standard FM-1 strategy");
-            return self.ltfscopygui_standard_fm_minus_1_strategy(current_fm, data_partition);
+            // 标准FileMark 1策略 (LTFSCopyGUI标准)
+            info!("Step 4b: Using standard FileMark 1 strategy");
+            return self.ltfscopygui_standard_filemark_strategy(data_partition);
         }
     }
 
@@ -1526,14 +1526,14 @@ impl crate::tape_ops::TapeOperations {
         }
     }
 
-    /// LTFSCopyGUI的标准FM-1策略 (对应TapeUtils.Locate(FM-1, partition, FileMark))
-    fn ltfscopygui_standard_fm_minus_1_strategy(&self, current_fm: u64, partition: u8) -> Result<String> {
-        info!("🔧 Executing LTFSCopyGUI standard FM-1 strategy");
+    /// LTFSCopyGUI的标准FileMark定位策略 (精确对应TapeUtils.Locate FileMark逻辑)
+    fn ltfscopygui_standard_filemark_strategy(&self, partition: u8) -> Result<String> {
+        info!("🔧 Executing LTFSCopyGUI standard FileMark 1 strategy");
         
-        // 步骤1: 定位到FM-1
-        let target_fm = current_fm - 1;
-        info!("Step 1: Locating to FileMark {} (FM-1)", target_fm);
-        self.scsi.locate_to_filemark(target_fm, partition)?;
+        // 步骤1: 定位到FileMark 1 (LTFSCopyGUI标准)
+        // 对应: TapeUtils.Locate(driveHandle, 1UL, partition, TapeUtils.LocateDestType.FileMark)
+        info!("Step 1: Locating to FileMark 1 (LTFSCopyGUI standard)");
+        self.scsi.locate_to_filemark(1, partition)?; // filemark=1, partition
         
         // 步骤2: ReadFileMark - 跳过FileMark
         info!("Step 2: Skipping FileMark using ReadFileMark");
@@ -1546,7 +1546,7 @@ impl crate::tape_ops::TapeOperations {
         // 🎯 完全按照LTFSCopyGUI的验证逻辑：检查是否包含"XMLSchema"
         let xml_content = String::from_utf8_lossy(&index_data).to_string();
         if xml_content.contains("XMLSchema") {
-            info!("✅ Successfully read LTFS index using FM-1 strategy: {} bytes (contains XMLSchema)", xml_content.len());
+            info!("✅ Successfully read LTFS index using FileMark 1 strategy: {} bytes (contains XMLSchema)", xml_content.len());
             Ok(xml_content)
         } else {
             // 🔧 LTFSCopyGUI备选路径：FromSchemaText处理
