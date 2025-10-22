@@ -1545,10 +1545,19 @@ impl crate::tape_ops::TapeOperations {
         
         // 🎯 完全按照LTFSCopyGUI的验证逻辑：检查是否包含"XMLSchema"
         let xml_content = String::from_utf8_lossy(&index_data).to_string();
-        if xml_content.contains("XMLSchema") {
+        
+        // 🔍 添加详细诊断日志
+        info!("🔍 LTFSCopyGUI XML validation - Content length: {} bytes", xml_content.len());
+        let preview = xml_content.chars().take(200).collect::<String>();
+        info!("🔍 LTFSCopyGUI XML content preview: {:?}", preview);
+        let contains_xmlschema = xml_content.contains("XMLSchema");
+        info!("🔍 LTFSCopyGUI XMLSchema check result: {}", contains_xmlschema);
+        
+        if contains_xmlschema {
             info!("✅ Successfully read LTFS index using FileMark 1 strategy: {} bytes (contains XMLSchema)", xml_content.len());
             Ok(xml_content)
         } else {
+            info!("🔧 LTFSCopyGUI XMLSchema not found, applying FromSchemaText processing");
             // 🔧 LTFSCopyGUI备选路径：FromSchemaText处理
             let processed_content = self.ltfscopygui_from_schema_text(xml_content)?;
             info!("✅ Successfully processed LTFS schema text format: {} bytes", processed_content.len());

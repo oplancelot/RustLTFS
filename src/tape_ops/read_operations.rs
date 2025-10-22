@@ -17,9 +17,15 @@ impl super::TapeOperations {
     pub async fn validate_and_process_index(&mut self, xml_content: &str) -> Result<bool> {
         info!("🔍 Validating index content: {} bytes", xml_content.len());
         
+        // 🔍 添加详细的验证日志
+        let preview = xml_content.chars().take(300).collect::<String>();
+        info!("🔍 Index content preview: {:?}", preview);
+        
         // 基本验证XML格式
         if !xml_content.contains("<ltfsindex") || !xml_content.contains("</ltfsindex>") {
             warn!("❌ Basic XML validation failed - missing LTFS index tags");
+            info!("🔍 Missing tags check: contains('<ltfsindex'): {}, contains('</ltfsindex>'): {}", 
+                  xml_content.contains("<ltfsindex"), xml_content.contains("</ltfsindex>"));
             debug!("Content preview: {}", &xml_content[..std::cmp::min(200, xml_content.len())]);
             return Ok(false);
         }
@@ -38,6 +44,7 @@ impl super::TapeOperations {
             }
             Err(e) => {
                 warn!("❌ XML parsing failed: {}", e);
+                info!("🔍 Failed XML content length: {} bytes", xml_content.len());
                 debug!("Failed XML content preview: {}", &xml_content[..std::cmp::min(500, xml_content.len())]);
                 Ok(false)
             }
@@ -104,17 +111,27 @@ impl super::TapeOperations {
             
             match self.search_index_copies_in_data_partition() {
                 Ok(xml_content) => {
-                    if self.validate_and_process_index(&xml_content).await? {
-                        info!("✅ Step 1 succeeded - LTFS index read using LTFSCopyGUI method (dual-partition)");
-                        return Ok(());
+                    info!("🔍 LTFSCopyGUI method returned {} bytes of content", xml_content.len());
+                    match self.validate_and_process_index(&xml_content).await? {
+                        true => {
+                            info!("✅ Step 1 succeeded - LTFS index read using LTFSCopyGUI method (dual-partition)");
+                            return Ok(());
+                        }
+                        false => {
+                            warn!("⚠️ LTFSCopyGUI method read data but XML validation failed");
+                            info!("🔍 This suggests the data at FileMark 1 position is not valid LTFS XML");
+                            // 不要立即fallback到单分区逻辑，先尝试dual-partition的backup策略
+                        }
                     }
                 }
                 Err(e) => {
+                    warn!("❌ LTFSCopyGUI method failed completely: {}", e);
                     debug!("LTFSCopyGUI method failed: {}", e);
                 }
             }
             
-            // 备用：尝试索引分区EOD定位
+            // 🔧 双分区backup策略：尝试从索引分区(partition 0) EOD读取
+            info!("🔧 Trying dual-partition backup strategy: index partition EOD");
             match self.try_read_latest_index_from_eod(0).await {
                 Ok(xml_content) => {
                     if self.validate_and_process_index(&xml_content).await? {
@@ -2597,7 +2614,7 @@ impl super::TapeOperations {
     /// 按照LTFSCopyGUI逻辑从指定分区EOD读取最新索引
     /// 对应单分区磁带的索引读取逻辑
     async fn try_read_latest_index_from_eod(&mut self, partition: u8) -> Result<String> {
-        info!("Reading latest index from partition {} EOD (single partition logic)", partition);
+        info!("Reading latest index from partition {} EOD", partition);
 
         // Step 1: 定位到指定分区EOD
         info!("Locating to partition {} EOD", partition);
