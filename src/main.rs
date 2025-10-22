@@ -387,20 +387,7 @@ async fn run(args: Cli) -> Result<()> {
             let device_initialized = match ops.initialize().await {
                 Ok(_) => {
                     info!("Device initialized successfully");
-                    
-                    // Read LTFS index from tape if not skipping index
-                    if !skip_index {
-                        match ops.read_index_from_tape().await {
-                            Ok(_) => {
-                                info!("LTFS index loaded from tape successfully");
-                            }
-                            Err(e) => {
-                                warn!("Failed to read LTFS index from tape: {}", e);
-                                // Continue with device initialized but no index loaded
-                            }
-                        }
-                    }
-                    
+                    // Note: LTFS index was already loaded during initialization
                     true
                 }
                 Err(e) => {
@@ -838,22 +825,17 @@ async fn run(args: Cli) -> Result<()> {
             
             // Initialize and read index using async version
             ops.initialize().await?;
-            match ops.read_index_from_tape().await {
-                Ok(()) => {
-                    // Save index to file if requested
-                    if let Some(output_path) = output {
-                        let save_path = output_path.to_string_lossy().to_string();
-                        ops.save_index_to_file(&std::path::Path::new(&save_path)).await?;
-                        info!("LTFS index saved to: {}", save_path);
-                    }
-                    println!("✅ LTFS index read from tape successfully");
-                    Ok(())
-                }
-                Err(e) => {
-                    error!("Failed to read LTFS index from tape: {}", e);
-                    Err(e)
-                }
+            // Note: LTFS index was already loaded during initialization
+            
+            // Save index to file if requested
+            if let Some(output_path) = output {
+                let save_path = output_path.to_string_lossy().to_string();
+                ops.save_index_to_file(&std::path::Path::new(&save_path)).await?;
+                info!("LTFS index saved to: {}", save_path);
             }
+            println!("✅ LTFS index read from tape successfully");
+            
+            Ok(())
         }
 
         Commands::ReadDataIndex { device, output, .. } => {
