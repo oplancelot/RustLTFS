@@ -1729,47 +1729,68 @@ impl ScsiInterface {
     /// Standard/modern drive locate implementation
     #[cfg(windows)]
     fn locate_standard(&self, block_address: u64, partition: u8, dest_type: LocateDestType, sense_buffer: &mut [u8; SENSE_INFO_LEN]) -> Result<u16> {
-        if self.allow_partition || dest_type != LocateDestType::Block {
-            // Use LOCATE(16) command for modern drives with partition support
-            let mut cp = 0u8;
-            if let Ok(current_pos) = self.read_position() {
-                if current_pos.partition != partition {
-                    cp = 1; // Change partition flag
+        // 🎯 关键修复：FileMark定位必须使用LTFSCopyGUI逻辑 (Line 972-974)
+        // ElseIf DestType = LocateDestType.FileMark Then
+        //     Locate(handle, 0, 0)
+        //     Space6(handle:=handle, Count:=BlockAddress, Code:=LocateDestType.FileMark)
+        match dest_type {
+            LocateDestType::FileMark => {
+                info!("🔧 Using LTFSCopyGUI FileMark strategy: Locate(0,0) + Space6({}) in partition {}", block_address, partition);
+                
+                // Step 1: 先定位到指定分区的开头 (对应Locate(handle, 0, 0))
+                self.locate(0, partition, LocateDestType::Block)?;
+                
+                // Step 2: 然后用Space6命令移动到FileMark (对应Space6(handle, Count, FileMark))
+                info!("🔧 Spacing to FileMark {} using SPACE command", block_address);
+                self.space(SpaceType::FileMarks, block_address as i32)?;
+                
+                Ok(0)
+            }
+            _ => {
+                // 对于Block和EOD，使用标准的LOCATE(16)命令
+                if self.allow_partition || dest_type != LocateDestType::Block {
+                    // Use LOCATE(16) command for modern drives with partition support
+                    let mut cp = 0u8;
+                    if let Ok(current_pos) = self.read_position() {
+                        if current_pos.partition != partition {
+                            cp = 1; // Change partition flag
+                        }
+                    }
+                    
+                    let mut cdb = [0u8; 16];
+                    cdb[0] = 0x92; // LOCATE(16)
+                    cdb[1] = (dest_type as u8) << 3 | (cp << 1);
+                    cdb[2] = 0;
+                    cdb[3] = partition;
+                    
+                    // 64-bit block address
+                    cdb[4] = ((block_address >> 56) & 0xFF) as u8;
+                    cdb[5] = ((block_address >> 48) & 0xFF) as u8;
+                    cdb[6] = ((block_address >> 40) & 0xFF) as u8;
+                    cdb[7] = ((block_address >> 32) & 0xFF) as u8;
+                    cdb[8] = ((block_address >> 24) & 0xFF) as u8;
+                    cdb[9] = ((block_address >> 16) & 0xFF) as u8;
+                    cdb[10] = ((block_address >> 8) & 0xFF) as u8;
+                    cdb[11] = (block_address & 0xFF) as u8;
+                    
+                    self.execute_locate_command(&cdb, sense_buffer)
+                } else {
+                    // Use LOCATE(10) for simple block positioning
+                    let mut cdb = [0u8; 10];
+                    cdb[0] = 0x2B; // LOCATE(10)
+                    cdb[1] = 0;
+                    cdb[2] = 0;
+                    cdb[3] = ((block_address >> 24) & 0xFF) as u8;
+                    cdb[4] = ((block_address >> 16) & 0xFF) as u8;
+                    cdb[5] = ((block_address >> 8) & 0xFF) as u8;
+                    cdb[6] = (block_address & 0xFF) as u8;
+                    cdb[7] = 0;
+                    cdb[8] = 0;
+                    cdb[9] = 0;
+                    
+                    self.execute_locate_command(&cdb, sense_buffer)
                 }
             }
-            
-            let mut cdb = [0u8; 16];
-            cdb[0] = 0x92; // LOCATE(16)
-            cdb[1] = (dest_type as u8) << 3 | (cp << 1);
-            cdb[2] = 0;
-            cdb[3] = partition;
-            
-            // 64-bit block address
-            cdb[4] = ((block_address >> 56) & 0xFF) as u8;
-            cdb[5] = ((block_address >> 48) & 0xFF) as u8;
-            cdb[6] = ((block_address >> 40) & 0xFF) as u8;
-            cdb[7] = ((block_address >> 32) & 0xFF) as u8;
-            cdb[8] = ((block_address >> 24) & 0xFF) as u8;
-            cdb[9] = ((block_address >> 16) & 0xFF) as u8;
-            cdb[10] = ((block_address >> 8) & 0xFF) as u8;
-            cdb[11] = (block_address & 0xFF) as u8;
-            
-            self.execute_locate_command(&cdb, sense_buffer)
-        } else {
-            // Use LOCATE(10) for simple block positioning
-            let mut cdb = [0u8; 10];
-            cdb[0] = 0x2B; // LOCATE(10)
-            cdb[1] = 0;
-            cdb[2] = 0;
-            cdb[3] = ((block_address >> 24) & 0xFF) as u8;
-            cdb[4] = ((block_address >> 16) & 0xFF) as u8;
-            cdb[5] = ((block_address >> 8) & 0xFF) as u8;
-            cdb[6] = (block_address & 0xFF) as u8;
-            cdb[7] = 0;
-            cdb[8] = 0;
-            cdb[9] = 0;
-            
-            self.execute_locate_command(&cdb, sense_buffer)
         }
     }
     
@@ -1953,7 +1974,16 @@ impl ScsiInterface {
     
     /// Convenience method: locate to file mark
     pub fn locate_to_filemark(&self, filemark_number: u64, partition: u8) -> Result<()> {
-        self.locate(filemark_number, partition, LocateDestType::FileMark)?;
+        // 🎯 关键修复：避免无限递归，直接使用LTFSCopyGUI逻辑
+        // 对应: Locate(handle, 0, 0) + Space6(handle, Count, FileMark)
+        info!("🔧 locate_to_filemark: FileMark {} in partition {} using LTFSCopyGUI method", filemark_number, partition);
+        
+        // Step 1: 先定位到指定分区的开头
+        self.locate(0, partition, LocateDestType::Block)?;
+        
+        // Step 2: 然后用Space命令移动到FileMark
+        self.space(SpaceType::FileMarks, filemark_number as i32)?;
+        
         Ok(())
     }
     
