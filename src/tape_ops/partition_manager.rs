@@ -1469,15 +1469,15 @@ impl crate::tape_ops::TapeOperations {
     fn read_index_multi_partition_ltfscopygui(&self, extra_partition_count: u8) -> Result<String> {
         info!("🔧 LTFSCopyGUI multi-partition index reading (ExtraPartitionCount={})", extra_partition_count);
         
-        // 🎯 关键修复：明确使用数据分区进行索引读取 (对应LTFSCopyGUI Line 7138逻辑)
+        // 🎯 关键修复：明确使用数据分区进行索引读取 (对应LTFSCopyGUI Line 4636逻辑)
         let data_partition = 1u8; // 数据分区固定为1
         info!("🔧 Step 1: Targeting data partition {} for index reading (LTFSCopyGUI data partition strategy)", data_partition);
         
-        // 步骤1: 切换到数据分区并定位到EOD
-        info!("Step 1a: Switching to data partition {}", data_partition);
+        // 步骤1a: 先切换到数据分区Block 0 (对应LTFSCopyGUI Line 4635)
+        info!("Step 1a: Switching to data partition {} Block 0 (LTFSCopyGUI prerequisite)", data_partition);
         self.scsi.locate_block(data_partition, 0)?;
         
-        // 步骤2: 定位到数据分区的EOD
+        // 步骤1b: 然后定位到数据分区的EOD (对应LTFSCopyGUI Line 4636)
         info!("Step 1b: Locating to data partition EOD");
         self.scsi.locate_to_eod(data_partition)?;
         
@@ -1498,15 +1498,23 @@ impl crate::tape_ops::TapeOperations {
             info!("Step 3: Skipping FileMark using ReadFileMark");
             self.scsi.read_file_mark()?;
             
-            // 步骤4: ReadToFileMark - 读取索引
-            info!("Step 4: Reading data partition index using ReadToFileMark");
+            // 步骤4: ReadToFileMark - 读取索引 (使用动态blocksize)
+            info!("Step 4: Reading data partition index using ReadToFileMark (LTFSCopyGUI blocksize)");
+            
+            // 🔧 关键修复：使用plabel.blocksize而非固定大小 (对应LTFSCopyGUI Line 4661)
+            let dynamic_blocksize = self.partition_label
+                .as_ref()
+                .map(|label| label.blocksize)
+                .unwrap_or(block_sizes::LTO_BLOCK_SIZE);
+            
+            info!("🔧 Using dynamic blocksize: {} bytes (from partition label)", dynamic_blocksize);
             
             // 🔍 添加当前位置详细诊断
             let current_pos = self.scsi.read_position()?;
             info!("🔍 Current position before ReadToFileMark: P{} B{} FM{}", 
                  current_pos.partition, current_pos.block_number, current_pos.file_number);
             
-            let index_data = self.scsi.read_to_file_mark(block_sizes::LTO_BLOCK_SIZE_512K)?;
+            let index_data = self.scsi.read_to_file_mark(dynamic_blocksize)?;
             
             // 🎯 完全按照LTFSCopyGUI的验证逻辑：检查是否包含"XMLSchema"
             let xml_content = String::from_utf8_lossy(&index_data).to_string();
