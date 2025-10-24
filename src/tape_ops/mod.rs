@@ -8,6 +8,9 @@ pub mod capacity_manager;
 pub mod dual_partition_index;
 pub mod deduplication;
 pub mod device_management;
+pub mod data_partition_reader;
+pub mod block38_diagnostic;
+pub mod index_validator;
 
 pub use self::core::*;
 // 选择性导出避免重名冲突

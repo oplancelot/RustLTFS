@@ -857,6 +857,48 @@ async fn run(args: Cli) -> Result<()> {
             }
         }
 
+        Commands::DiagnoseBlock38 { device, quick, test_backtrack } => {
+            info!("Diagnosing P1 Block38 positioning issue on device: {}", device);
+            
+            if test_backtrack {
+                info!("Testing ReadFileMark backtrack logic");
+                match tape_ops::block38_diagnostic::test_readfilemark_backtrack(&device) {
+                    Ok(_) => {
+                        info!("ReadFileMark backtrack test completed");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        error!("ReadFileMark backtrack test failed: {}", e);
+                        Err(e)
+                    }
+                }
+            } else if quick {
+                info!("Running quick P1 Block38 diagnostic");
+                match tape_ops::block38_diagnostic::quick_check_block38(&device) {
+                    Ok(_) => {
+                        info!("Quick diagnostic completed");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        error!("Quick diagnostic failed: {}", e);
+                        Err(e)
+                    }
+                }
+            } else {
+                info!("Running full P1 Block38 diagnostic");
+                match tape_ops::block38_diagnostic::diagnose_block38_issue(&device) {
+                    Ok(_) => {
+                        info!("Full diagnostic completed");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        error!("Full diagnostic failed: {}", e);
+                        Err(e)
+                    }
+                }
+            }
+        }
+
         Commands::UpdateIndex { device, .. } => {
             info!("Updating LTFS index on tape: {}", device);
             

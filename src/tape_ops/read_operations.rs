@@ -6,7 +6,7 @@ use tracing::{debug, info, warn};
 
 // 导入partition_manager中的类型
 use super::partition_manager::{IndexLocation, PartitionStrategy};
-use super::{TapeFormatAnalysis}; // 导入增强版VOL1验证需要的枚举
+use super::TapeFormatAnalysis; // 导入增强版VOL1验证需要的枚举
 
 // LtfsPartitionLabel 在 format_operations.rs 中定义
 // 通过模块重新导出使用
@@ -16,41 +16,53 @@ impl super::TapeOperations {
     /// 验证并处理索引 - 增强版本：添加详细调试信息
     pub async fn validate_and_process_index(&mut self, xml_content: &str) -> Result<bool> {
         info!("🔍 Validating index content: {} bytes", xml_content.len());
-        
+
         // 🔍 添加详细的验证日志
         let preview = xml_content.chars().take(300).collect::<String>();
         info!("🔍 Index content preview: {:?}", preview);
-        
+
         // 基本验证XML格式
         if !xml_content.contains("<ltfsindex") || !xml_content.contains("</ltfsindex>") {
             warn!("❌ Basic XML validation failed - missing LTFS index tags");
-            info!("🔍 Missing tags check: contains('<ltfsindex'): {}, contains('</ltfsindex>'): {}", 
-                  xml_content.contains("<ltfsindex"), xml_content.contains("</ltfsindex>"));
-            debug!("Content preview: {}", &xml_content[..std::cmp::min(200, xml_content.len())]);
+            info!(
+                "🔍 Missing tags check: contains('<ltfsindex'): {}, contains('</ltfsindex>'): {}",
+                xml_content.contains("<ltfsindex"),
+                xml_content.contains("</ltfsindex>")
+            );
+            debug!(
+                "Content preview: {}",
+                &xml_content[..std::cmp::min(200, xml_content.len())]
+            );
             return Ok(false);
         }
-        
+
         info!("✅ Basic XML validation passed - LTFS index tags found");
-        
+
         // 解析并设置索引
         match crate::ltfs_index::LtfsIndex::from_xml(xml_content) {
             Ok(index) => {
                 info!("✅ XML parsing successful - setting index");
                 info!("   Volume UUID: {}", index.volumeuuid);
                 info!("   Generation: {}", index.generationnumber);
-                info!("   Files count: {}", self.count_files_in_directory(&index.root_directory));
+                info!(
+                    "   Files count: {}",
+                    self.count_files_in_directory(&index.root_directory)
+                );
                 self.index = Some(index);
                 Ok(true)
             }
             Err(e) => {
                 warn!("❌ XML parsing failed: {}", e);
                 info!("🔍 Failed XML content length: {} bytes", xml_content.len());
-                debug!("Failed XML content preview: {}", &xml_content[..std::cmp::min(500, xml_content.len())]);
+                debug!(
+                    "Failed XML content preview: {}",
+                    &xml_content[..std::cmp::min(500, xml_content.len())]
+                );
                 Ok(false)
             }
         }
     }
-    
+
     /// 计算目录中的文件数量
     fn count_files_in_directory(&self, dir: &crate::ltfs_index::Directory) -> usize {
         let mut count = dir.contents.files.len();
@@ -59,15 +71,18 @@ impl super::TapeOperations {
         }
         count
     }
-    
+
     /// 检测分区策略 - 修复版本：直接使用已打开的SCSI设备
     pub async fn detect_partition_strategy(&self) -> Result<PartitionStrategy> {
         info!("🔧 Detecting partition strategy using opened SCSI device (fixing device handle inconsistency)");
-        
+
         // 直接使用已初始化的ExtraPartitionCount，避免创建新的PartitionManager实例
         let extra_partition_count = self.get_extra_partition_count();
-        
-        info!("Determining partition strategy based on ExtraPartitionCount = {}", extra_partition_count);
+
+        info!(
+            "Determining partition strategy based on ExtraPartitionCount = {}",
+            extra_partition_count
+        );
 
         match extra_partition_count {
             0 => {
@@ -87,7 +102,7 @@ impl super::TapeOperations {
             }
         }
     }
-    
+
     /// Read LTFS index from tape (LTFSCopyGUI兼容方法)
     pub async fn read_index_from_tape(&mut self) -> Result<()> {
         info!("Starting LTFS index reading process with LTFSCopyGUI compatible method...");
@@ -101,17 +116,20 @@ impl super::TapeOperations {
 
         // Step 1 (最高优先级): LTFSCopyGUI兼容方法
         info!("Step 1 (Highest Priority): LTFSCopyGUI compatible method");
-        
+
         // 检测分区策略并决定读取顺序
         let extra_partition_count = self.get_extra_partition_count();
-        
+
         if extra_partition_count > 0 {
             // 双分区磁带：使用LTFSCopyGUI方法从数据分区读取索引
             info!("Dual-partition detected, using LTFSCopyGUI method from data partition");
-            
+
             match self.search_index_copies_in_data_partition() {
                 Ok(xml_content) => {
-                    info!("🔍 LTFSCopyGUI method returned {} bytes of content", xml_content.len());
+                    info!(
+                        "🔍 LTFSCopyGUI method returned {} bytes of content",
+                        xml_content.len()
+                    );
                     match self.validate_and_process_index(&xml_content).await? {
                         true => {
                             info!("✅ Step 1 succeeded - LTFS index read using LTFSCopyGUI method (dual-partition)");
@@ -129,7 +147,7 @@ impl super::TapeOperations {
                     debug!("LTFSCopyGUI method failed: {}", e);
                 }
             }
-            
+
             // 🔧 双分区backup策略：尝试从索引分区(partition 0) EOD读取
             info!("🔧 Trying dual-partition backup strategy: index partition EOD");
             match self.try_read_latest_index_from_eod(0).await {
@@ -146,7 +164,7 @@ impl super::TapeOperations {
         } else {
             // 单分区磁带：从partition=0读取索引
             info!("Single-partition detected, reading from partition 0");
-            
+
             match self.try_read_latest_index_from_eod(0).await {
                 Ok(xml_content) => {
                     if self.validate_and_process_index(&xml_content).await? {
@@ -162,7 +180,7 @@ impl super::TapeOperations {
 
         // Step 2: 标准流程作为备用策略
         info!("Step 2: Standard LTFS reading process as fallback");
-        
+
         // 定位到索引分区并读取VOL1标签
         self.scsi.locate_block(0, 0)?;
         let mut label_buffer = vec![0u8; crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize];
@@ -187,7 +205,7 @@ impl super::TapeOperations {
                         }
                         Err(e) => debug!("Data partition EOD reading failed: {}", e),
                     }
-                    
+
                     // 使用ReadToFileMark方法读取整个索引文件
                     match self.read_index_xml_from_tape_with_file_mark() {
                         Ok(xml_content) => {
@@ -210,7 +228,7 @@ impl super::TapeOperations {
 
         // Step 3: 最后的多分区策略回退
         info!("Step 3: Final multi-partition strategy fallback");
-        
+
         let partition_strategy = self
             .detect_partition_strategy()
             .await
@@ -251,7 +269,9 @@ impl super::TapeOperations {
                     }
                 }
 
-                info!("🔄 All standard locations failed, falling back to single-partition strategy");
+                info!(
+                    "🔄 All standard locations failed, falling back to single-partition strategy"
+                );
                 self.read_index_from_single_partition_tape().await
             }
         }
@@ -356,7 +376,10 @@ impl super::TapeOperations {
             .map(|plabel| plabel.blocksize as usize)
             .unwrap_or(crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize);
 
-        debug!("Using dynamic blocksize: {} bytes for index reading", block_size);
+        debug!(
+            "Using dynamic blocksize: {} bytes for index reading",
+            block_size
+        );
 
         // 直接使用当前TapeOperations的read_to_file_mark方法
         self.read_to_file_mark_with_temp_file(block_size)
@@ -587,7 +610,9 @@ impl super::TapeOperations {
     /// Enhanced VOL1 label validation with comprehensive format detection
     /// 增强版 VOL1 标签验证：支持多种磁带格式检测和详细诊断
     fn parse_vol1_label(&self, buffer: &[u8]) -> Result<bool> {
-        info!("🔍 Enhanced VOL1 validation (LTFSCopyGUI compatible with extended format support)...");
+        info!(
+            "🔍 Enhanced VOL1 validation (LTFSCopyGUI compatible with extended format support)..."
+        );
 
         // Enhanced Condition 1: Dynamic buffer length check with detailed analysis
         if buffer.len() < 80 {
@@ -595,25 +620,33 @@ impl super::TapeOperations {
                 "❌ VOL1 validation failed: buffer too short ({} bytes), need at least 80 bytes",
                 buffer.len()
             );
-            
+
             // Provide diagnostic information for short buffers
             if buffer.len() > 0 {
                 let preview_len = std::cmp::min(buffer.len(), 40);
-                info!("🔧 Buffer content preview ({} bytes): hex={:02X?}", preview_len, &buffer[0..preview_len]);
-                info!("🔧 Buffer content preview ({} bytes): text={:?}", preview_len, String::from_utf8_lossy(&buffer[0..preview_len]));
+                info!(
+                    "🔧 Buffer content preview ({} bytes): hex={:02X?}",
+                    preview_len,
+                    &buffer[0..preview_len]
+                );
+                info!(
+                    "🔧 Buffer content preview ({} bytes): text={:?}",
+                    preview_len,
+                    String::from_utf8_lossy(&buffer[0..preview_len])
+                );
             }
-            
+
             return Ok(false);
         }
 
         // Extract the standard 80-byte VOL1 label area
         let vol1_label = &buffer[0..80];
-        
+
         // Enhanced Condition 2: Multi-format tape detection with detailed analysis
         let vol1_prefix = b"VOL1";
         if !vol1_label.starts_with(vol1_prefix) {
             info!("⚠️ VOL1 prefix not found, performing enhanced format detection...");
-            
+
             // Comprehensive tape format analysis
             let tape_analysis = self.analyze_tape_format_enhanced(vol1_label);
             match tape_analysis {
@@ -647,7 +680,10 @@ impl super::TapeOperations {
 
         // Enhanced Condition 3: Advanced LTFS identifier validation with fallback strategies
         if vol1_label.len() < 28 {
-            warn!("❌ VOL1 label too short for LTFS identifier check (need 28+ bytes, got {})", vol1_label.len());
+            warn!(
+                "❌ VOL1 label too short for LTFS identifier check (need 28+ bytes, got {})",
+                vol1_label.len()
+            );
             return Ok(false);
         }
 
@@ -661,19 +697,22 @@ impl super::TapeOperations {
 
         // Enhanced fallback strategies for LTFS detection
         info!("🔄 Standard LTFS identifier not found, trying enhanced detection strategies...");
-        
+
         // Strategy 1: Search for LTFS identifier in alternative positions
         if let Some(ltfs_position) = self.search_ltfs_identifier_in_vol1(vol1_label) {
-            info!("🎯 Found LTFS identifier at alternative position: {}", ltfs_position);
+            info!(
+                "🎯 Found LTFS identifier at alternative position: {}",
+                ltfs_position
+            );
             return self.validate_extended_ltfs_properties(vol1_label);
         }
-        
+
         // Strategy 2: Check for LTFS version indicators
         if self.detect_ltfs_version_indicators(vol1_label) {
             info!("🔍 LTFS version indicators detected, likely LTFS tape with non-standard label");
             return self.validate_extended_ltfs_properties(vol1_label);
         }
-        
+
         // Strategy 3: Pattern-based LTFS detection
         if self.detect_ltfs_patterns(vol1_label) {
             info!("📊 LTFS patterns detected in VOL1 label");
@@ -686,7 +725,7 @@ impl super::TapeOperations {
             String::from_utf8_lossy(ltfs_bytes)
         );
         info!("🔧 Enhanced diagnostic: checking for partial LTFS compatibility...");
-        
+
         // Check if this might be a partially formatted or corrupted LTFS tape
         if self.detect_partial_ltfs_formatting(vol1_label) {
             warn!("⚠️ Partial LTFS formatting detected - tape may be recoverable");
@@ -704,11 +743,14 @@ impl super::TapeOperations {
         if non_zero_count == 0 {
             return TapeFormatAnalysis::BlankTape;
         }
-        
+
         // Check for very sparse data (likely blank or minimally written)
         let sparse_threshold = 5; // Less than 5 non-zero bytes in 80 bytes
         if non_zero_count < sparse_threshold {
-            debug!("Sparse data detected: only {} non-zero bytes", non_zero_count);
+            debug!(
+                "Sparse data detected: only {} non-zero bytes",
+                non_zero_count
+            );
             return TapeFormatAnalysis::BlankTape;
         }
 
@@ -716,21 +758,22 @@ impl super::TapeOperations {
         if vol1_label.starts_with(b"HDR1") || vol1_label.starts_with(b"HDR2") {
             return TapeFormatAnalysis::LegacyTape("ANSI Standard Label (HDR)".to_string());
         }
-        
+
         if vol1_label.starts_with(b"UHL1") || vol1_label.starts_with(b"UHL2") {
             return TapeFormatAnalysis::LegacyTape("User Header Label (UHL)".to_string());
         }
-        
+
         if vol1_label.starts_with(b"EOF1") || vol1_label.starts_with(b"EOF2") {
             return TapeFormatAnalysis::LegacyTape("End of File Label (EOF)".to_string());
         }
-        
+
         if vol1_label.starts_with(b"EOV1") || vol1_label.starts_with(b"EOV2") {
             return TapeFormatAnalysis::LegacyTape("End of Volume Label (EOV)".to_string());
         }
 
         // Check for IBM tape formats
-        if vol1_label[0..4] == [0xE5, 0xD6, 0xD3, 0xF1] { // EBCDIC "VOL1"
+        if vol1_label[0..4] == [0xE5, 0xD6, 0xD3, 0xF1] {
+            // EBCDIC "VOL1"
             return TapeFormatAnalysis::LegacyTape("IBM EBCDIC VOL1 Label".to_string());
         }
 
@@ -742,7 +785,7 @@ impl super::TapeOperations {
         // Check for corrupted label (has data but unrecognizable pattern)
         let ascii_count = vol1_label.iter().filter(|&&b| b >= 32 && b <= 126).count();
         let ascii_ratio = ascii_count as f64 / vol1_label.len() as f64;
-        
+
         if ascii_ratio < 0.3 {
             return TapeFormatAnalysis::CorruptedLabel;
         }
@@ -753,10 +796,10 @@ impl super::TapeOperations {
     /// Search for LTFS identifier in alternative positions within VOL1 label
     fn search_ltfs_identifier_in_vol1(&self, vol1_label: &[u8]) -> Option<usize> {
         let ltfs_signature = b"LTFS";
-        
+
         // Search in common alternative positions (some LTFS implementations may vary)
         let search_positions = [20, 28, 32, 36, 40, 44, 48]; // Alternative positions to check
-        
+
         for &pos in &search_positions {
             if pos + 4 <= vol1_label.len() {
                 if &vol1_label[pos..pos + 4] == ltfs_signature {
@@ -764,26 +807,33 @@ impl super::TapeOperations {
                 }
             }
         }
-        
+
         // Broader search within the entire VOL1 label
         for i in 0..=(vol1_label.len().saturating_sub(4)) {
             if &vol1_label[i..i + 4] == ltfs_signature {
                 return Some(i);
             }
         }
-        
+
         None
     }
 
     /// Detect LTFS version indicators in VOL1 label
     fn detect_ltfs_version_indicators(&self, vol1_label: &[u8]) -> bool {
         let vol1_text = String::from_utf8_lossy(vol1_label).to_lowercase();
-        
+
         // Look for version patterns commonly found in LTFS labels
         let version_patterns = [
-            "ltfs", "2.4", "2.2", "2.0", "1.0", "version", "ltfscopygui", "rustltfs"
+            "ltfs",
+            "2.4",
+            "2.2",
+            "2.0",
+            "1.0",
+            "version",
+            "ltfscopygui",
+            "rustltfs",
         ];
-        
+
         let mut pattern_count = 0;
         for pattern in &version_patterns {
             if vol1_text.contains(pattern) {
@@ -791,7 +841,7 @@ impl super::TapeOperations {
                 debug!("Found LTFS version indicator: '{}'", pattern);
             }
         }
-        
+
         pattern_count >= 2 // Require at least 2 patterns for confidence
     }
 
@@ -803,20 +853,21 @@ impl super::TapeOperations {
             self.has_ltfs_block_size_indicators(vol1_label),
             self.has_ltfs_partition_indicators(vol1_label),
         ];
-        
+
         patterns_found.iter().filter(|&&found| found).count() >= 2
     }
 
     /// Check if VOL1 contains LTFS-specific patterns
     fn contains_ltfs_patterns(&self, vol1_label: &[u8]) -> bool {
         let vol1_text = String::from_utf8_lossy(vol1_label);
-        
+
         // Look for case-insensitive LTFS patterns
         let ltfs_indicators = ["ltfs", "linear", "tape", "file", "system"];
-        let found_indicators = ltfs_indicators.iter()
+        let found_indicators = ltfs_indicators
+            .iter()
             .filter(|&pattern| vol1_text.to_lowercase().contains(pattern))
             .count();
-            
+
         found_indicators >= 2
     }
 
@@ -824,21 +875,21 @@ impl super::TapeOperations {
     fn has_ltfs_block_size_indicators(&self, vol1_label: &[u8]) -> bool {
         // Look for typical LTFS block sizes in the label
         let common_block_sizes = [524288u32, 65536u32, 32768u32]; // Common LTFS block sizes
-        
+
         for &block_size in &common_block_sizes {
             let size_bytes = block_size.to_le_bytes();
             if vol1_label.windows(4).any(|window| window == size_bytes) {
                 debug!("Found potential block size indicator: {}", block_size);
                 return true;
             }
-            
+
             let size_bytes_be = block_size.to_be_bytes();
             if vol1_label.windows(4).any(|window| window == size_bytes_be) {
                 debug!("Found potential block size indicator (BE): {}", block_size);
                 return true;
             }
         }
-        
+
         false
     }
 
@@ -847,15 +898,17 @@ impl super::TapeOperations {
         // Look for partition-related information typical in LTFS
         let vol1_text = String::from_utf8_lossy(vol1_label).to_lowercase();
         let partition_patterns = ["partition", "part", "index", "data"];
-        
-        partition_patterns.iter().any(|&pattern| vol1_text.contains(pattern))
+
+        partition_patterns
+            .iter()
+            .any(|&pattern| vol1_text.contains(pattern))
     }
 
     /// Detect partial LTFS formatting that might be recoverable
     fn detect_partial_ltfs_formatting(&self, vol1_label: &[u8]) -> bool {
         // Look for signs of interrupted or partial LTFS formatting
         let vol1_text = String::from_utf8_lossy(vol1_label);
-        
+
         // Check for partial signatures or formatting indicators
         let partial_indicators = [
             vol1_text.contains("LTF"), // Partial "LTFS"
@@ -863,28 +916,29 @@ impl super::TapeOperations {
             vol1_text.contains("vol"), // Partial volume info
             vol1_label.windows(2).any(|window| window == [0x4C, 0x54]), // Partial "LT" bytes
         ];
-        
+
         partial_indicators.iter().any(|&found| found)
     }
 
     /// Validate extended LTFS properties in VOL1 label
     fn validate_extended_ltfs_properties(&self, vol1_label: &[u8]) -> Result<bool> {
         info!("🔍 Validating extended LTFS properties in VOL1 label...");
-        
+
         // Basic validation passed, now check additional LTFS properties
         let mut validation_score = 0u32;
         let max_score = 10u32;
-        
+
         // Check 1: Volume serial number area (bytes 4-10)
         if vol1_label.len() >= 11 {
             let volume_serial = &vol1_label[4..11];
-            if volume_serial.iter().any(|&b| b != 0 && b != 0x20) { // Not all zeros or spaces
+            if volume_serial.iter().any(|&b| b != 0 && b != 0x20) {
+                // Not all zeros or spaces
                 validation_score += 2;
                 debug!("✓ Volume serial number present");
             }
         }
-        
-        // Check 2: Owner identifier area (bytes 37-50)  
+
+        // Check 2: Owner identifier area (bytes 37-50)
         if vol1_label.len() >= 51 {
             let owner_id = &vol1_label[37..51];
             if owner_id.iter().any(|&b| b != 0 && b != 0x20) {
@@ -892,18 +946,23 @@ impl super::TapeOperations {
                 debug!("✓ Owner identifier present");
             }
         }
-        
+
         // Check 3: Label standard version (typically at byte 79)
         if vol1_label.len() >= 80 {
             let label_std_version = vol1_label[79];
-            if label_std_version >= 0x30 && label_std_version <= 0x39 { // ASCII digit
+            if label_std_version >= 0x30 && label_std_version <= 0x39 {
+                // ASCII digit
                 validation_score += 2;
-                debug!("✓ Valid label standard version: {}", label_std_version as char);
+                debug!(
+                    "✓ Valid label standard version: {}",
+                    label_std_version as char
+                );
             }
         }
-        
+
         // Check 4: Overall ASCII compliance
-        let ascii_count = vol1_label.iter()
+        let ascii_count = vol1_label
+            .iter()
             .filter(|&&b| (b >= 0x20 && b <= 0x7E) || b == 0x00)
             .count();
         let ascii_ratio = ascii_count as f64 / vol1_label.len() as f64;
@@ -911,23 +970,29 @@ impl super::TapeOperations {
             validation_score += 2;
             debug!("✓ Good ASCII compliance: {:.1}%", ascii_ratio * 100.0);
         }
-        
+
         // Check 5: Reasonable data distribution (not too repetitive)
-        let unique_bytes = vol1_label.iter().collect::<std::collections::HashSet<_>>().len();
+        let unique_bytes = vol1_label
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
         if unique_bytes >= 10 {
             validation_score += 2;
             debug!("✓ Good data diversity: {} unique bytes", unique_bytes);
         }
-        
+
         // Check 6: LTFS-specific structural validation
         if self.validate_ltfs_vol1_structure(vol1_label) {
             validation_score += 1;
             debug!("✓ LTFS VOL1 structure validation passed");
         }
-        
+
         let validation_percentage = (validation_score as f64 / max_score as f64) * 100.0;
-        info!("📊 Extended LTFS validation score: {}/{} ({:.1}%)", validation_score, max_score, validation_percentage);
-        
+        info!(
+            "📊 Extended LTFS validation score: {}/{} ({:.1}%)",
+            validation_score, max_score, validation_percentage
+        );
+
         if validation_score >= 6 {
             info!("✅ Extended LTFS properties validation passed with high confidence");
             Ok(true)
@@ -943,58 +1008,80 @@ impl super::TapeOperations {
     /// Validate LTFS-specific VOL1 label structure
     fn validate_ltfs_vol1_structure(&self, vol1_label: &[u8]) -> bool {
         // LTFS VOL1 should have specific structural characteristics
-        
+
         // Check for proper field separators and lengths
         let mut structure_score = 0u32;
-        
+
         // Field 1: Volume identifier (4 bytes "VOL1")
         if vol1_label.starts_with(b"VOL1") {
             structure_score += 1;
         }
-        
+
         // Field 2: Volume serial (6 bytes, typically alphanumeric)
         if vol1_label.len() >= 10 {
             let vol_serial = &vol1_label[4..10];
-            if vol_serial.iter().all(|&b| b.is_ascii_alphanumeric() || b == 0x20) {
+            if vol_serial
+                .iter()
+                .all(|&b| b.is_ascii_alphanumeric() || b == 0x20)
+            {
                 structure_score += 1;
             }
         }
-        
+
         // Field 3: Security byte (should be space or ASCII)
         if vol1_label.len() >= 11 && (vol1_label[10] == 0x20 || vol1_label[10].is_ascii()) {
             structure_score += 1;
         }
-        
+
         structure_score >= 2
     }
 
     /// Log detailed tape analysis for diagnostic purposes
     fn log_detailed_tape_analysis(&self, vol1_label: &[u8]) {
         info!("🔧 === Detailed Tape Analysis Report ===");
-        
+
         // Basic statistics
         let total_bytes = vol1_label.len();
         let non_zero_bytes = vol1_label.iter().filter(|&&b| b != 0).count();
-        let ascii_bytes = vol1_label.iter().filter(|&&b| b >= 0x20 && b <= 0x7E).count();
+        let ascii_bytes = vol1_label
+            .iter()
+            .filter(|&&b| b >= 0x20 && b <= 0x7E)
+            .count();
         let control_bytes = vol1_label.iter().filter(|&&b| b < 0x20).count();
-        
-        info!("📊 Statistics: {} total bytes, {} non-zero, {} ASCII printable, {} control", 
-              total_bytes, non_zero_bytes, ascii_bytes, control_bytes);
-        
+
+        info!(
+            "📊 Statistics: {} total bytes, {} non-zero, {} ASCII printable, {} control",
+            total_bytes, non_zero_bytes, ascii_bytes, control_bytes
+        );
+
         // Hex dump of first 40 bytes
         let preview_len = std::cmp::min(40, vol1_label.len());
-        info!("🔍 Hex dump (first {} bytes): {:02X?}", preview_len, &vol1_label[0..preview_len]);
-        
+        info!(
+            "🔍 Hex dump (first {} bytes): {:02X?}",
+            preview_len,
+            &vol1_label[0..preview_len]
+        );
+
         // ASCII representation
-        let ascii_repr = vol1_label[0..preview_len].iter()
-            .map(|&b| if b >= 0x20 && b <= 0x7E { b as char } else { '.' })
+        let ascii_repr = vol1_label[0..preview_len]
+            .iter()
+            .map(|&b| {
+                if b >= 0x20 && b <= 0x7E {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
             .collect::<String>();
         info!("🔤 ASCII representation: '{}'", ascii_repr);
-        
+
         // Pattern analysis
-        let unique_bytes = vol1_label.iter().collect::<std::collections::HashSet<_>>().len();
+        let unique_bytes = vol1_label
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
         info!("🎨 Data diversity: {} unique byte values", unique_bytes);
-        
+
         // Look for any recognizable patterns
         if let Some(pattern) = self.identify_tape_patterns(vol1_label) {
             info!("🔍 Identified pattern: {}", pattern);
@@ -1004,29 +1091,30 @@ impl super::TapeOperations {
     /// Identify recognizable patterns in tape data
     fn identify_tape_patterns(&self, data: &[u8]) -> Option<String> {
         let text = String::from_utf8_lossy(data).to_lowercase();
-        
+
         // Check for various tape-related patterns
         if text.contains("backup") || text.contains("archive") {
             return Some("Backup/Archive software signature".to_string());
         }
-        
+
         if text.contains("tar") || text.contains("cpio") {
             return Some("Unix archive format signature".to_string());
         }
-        
+
         if text.contains("ibm") || text.contains("tivoli") {
             return Some("IBM software signature".to_string());
         }
-        
+
         if text.contains("hp") || text.contains("veritas") {
             return Some("Enterprise backup software signature".to_string());
         }
-        
+
         // Check for filesystem signatures
-        if data.windows(2).any(|window| window == [0x53, 0xEF]) { // ext2/3/4 magic
+        if data.windows(2).any(|window| window == [0x53, 0xEF]) {
+            // ext2/3/4 magic
             return Some("Linux filesystem signature".to_string());
         }
-        
+
         None
     }
 
@@ -1691,7 +1779,7 @@ impl super::TapeOperations {
                         // 尝试从LTFS标签解析索引位置
                         match self.parse_index_locations_from_volume_label(&ltfs_label_buffer) {
                             Ok(index_location) => {
-                                info!("✅ Found index location from LTFS label: partition {}, block {}", 
+                                info!("✅ Found index location from LTFS label: partition {}, block {}",
                                      index_location.partition, index_location.start_block);
 
                                 match self.read_index_from_specific_location(&index_location) {
@@ -1784,7 +1872,6 @@ impl super::TapeOperations {
                 .to_string(),
         ))
     }
-
 
     /// 尝试从数据分区读取索引副本
     fn try_read_from_data_partition(&self) -> Result<String> {
@@ -1884,9 +1971,9 @@ impl super::TapeOperations {
         let partition_count = self.detect_partition_count()?;
         let index_partition = if partition_count > 1 { 0 } else { 0 };
 
-        // 策略0 (最高优先级): 按照LTFSCopyGUI逻辑优先读取数据分区EOD最新索引  
+        // 策略0 (最高优先级): 按照LTFSCopyGUI逻辑优先读取数据分区EOD最新索引
         info!("Strategy 0 (Highest Priority): Reading latest index from data partition EOD (LTFSCopyGUI logic)");
-        
+
         if partition_count > 1 {
             // 多分区磁带：按照LTFSCopyGUI的"读取数据区索引"逻辑，优先从数据分区EOD读取最新索引
             match self.try_read_latest_index_from_data_partition_eod().await {
@@ -1999,7 +2086,7 @@ impl super::TapeOperations {
                         // 尝试从LTFS标签解析索引位置
                         match self.parse_index_locations_from_volume_label(&ltfs_label_buffer) {
                             Ok(index_location) => {
-                                info!("✅ Found index location from LTFS label: partition {}, block {}", 
+                                info!("✅ Found index location from LTFS label: partition {}, block {}",
                                      index_location.partition, index_location.start_block);
 
                                 match self.read_index_from_specific_location(&index_location) {
@@ -2043,34 +2130,46 @@ impl super::TapeOperations {
         // 1. 定位到数据分区EOD
         // 2. 向前查找最后的索引
         let data_partition = 1;
-        
+
         // 先尝试定位到数据分区EOD
         match self.scsi.locate_block(data_partition, 0) {
             Ok(()) => {
                 // 定位到数据分区的EOD
-        // 使用LOCATE命令而非SPACE命令进行EOD定位（LTFSCopyGUI兼容）
-        match self.scsi.locate_to_eod(data_partition) {
+                // 使用LOCATE命令而非SPACE命令进行EOD定位（LTFSCopyGUI兼容）
+                match self.scsi.locate_to_eod(data_partition) {
                     Ok(()) => {
                         let eod_position = self.scsi.read_position()?;
-                        info!("Data partition EOD at partition={}, block={}", eod_position.partition, eod_position.block_number);
-                        
+                        info!(
+                            "Data partition EOD at partition={}, block={}",
+                            eod_position.partition, eod_position.block_number
+                        );
+
                         // 从EOD向前查找索引，类似LTFSCopyGUI的FM-1定位
                         if eod_position.file_number > 1 {
                             // 向前定位到最后一个FileMark之前
-                            match self.scsi.locate_to_filemark(eod_position.file_number - 1, data_partition) {
+                            match self
+                                .scsi
+                                .locate_to_filemark(eod_position.file_number - 1, data_partition)
+                            {
                                 Ok(()) => {
                                     // 跳过FileMark，向前移动一个filemark
                                     match self.scsi.space(crate::scsi::SpaceType::FileMarks, 1) {
                                         Ok(_) => {
                                             // 现在应该在最后的索引位置，尝试读取
-                                            match self.try_read_index_at_current_position_with_filemarks() {
+                                            match self
+                                                .try_read_index_at_current_position_with_filemarks()
+                                            {
                                                 Ok(xml_content) => {
-                                                    if xml_content.contains("<ltfsindex") && xml_content.contains("</ltfsindex>") {
+                                                    if xml_content.contains("<ltfsindex")
+                                                        && xml_content.contains("</ltfsindex>")
+                                                    {
                                                         info!("✅ Found valid index at data partition EOD-1");
                                                         return Ok(xml_content);
                                                     }
                                                 }
-                                                Err(e) => debug!("Failed to read index at EOD-1: {}", e),
+                                                Err(e) => {
+                                                    debug!("Failed to read index at EOD-1: {}", e)
+                                                }
                                             }
                                         }
                                         Err(e) => debug!("Failed to read filemark: {}", e),
@@ -2088,7 +2187,7 @@ impl super::TapeOperations {
 
         // 回退策略：搜索数据分区的一些常见索引位置
         info!("EOD strategy failed, trying common data partition locations");
-        // 修复：添加小块号，覆盖新写入的索引位置 
+        // 修复：添加小块号，覆盖新写入的索引位置
         let search_blocks = vec![50, 100, 500, 1000, 2000, 5000, 10000]; // 从小到大搜索
 
         for &block in &search_blocks {
@@ -2197,12 +2296,12 @@ impl super::TapeOperations {
     }
 
     // === 性能优化方法 ===
-    
+
     /// 获取缓存的索引位置 - 智能持久化缓存机制
     fn get_cached_index_location(&self) -> Option<u64> {
         // 构建缓存文件路径
         let cache_path = self.get_cache_file_path();
-        
+
         // 尝试从缓存文件读取成功位置
         match std::fs::read_to_string(&cache_path) {
             Ok(content) => {
@@ -2217,21 +2316,27 @@ impl super::TapeOperations {
                                 if let Ok(timestamp) = parts[2].parse::<i64>() {
                                     let current_time = chrono::Utc::now().timestamp();
                                     let cache_validity_hours = 24;
-                                    
+
                                     if current_time - timestamp < cache_validity_hours * 3600 {
-                                        debug!("✅ Found valid cached index location: block {} for device {}", 
+                                        debug!("✅ Found valid cached index location: block {} for device {}",
                                                cached_location, self.device_path);
                                         return Some(cached_location);
                                     } else {
-                                        debug!("⏰ Cached location expired for device {}", self.device_path);
+                                        debug!(
+                                            "⏰ Cached location expired for device {}",
+                                            self.device_path
+                                        );
                                     }
-                                } 
+                                }
                             }
                             break;
                         }
                     }
                 }
-                debug!("❌ No valid cached location found for device {}", self.device_path);
+                debug!(
+                    "❌ No valid cached location found for device {}",
+                    self.device_path
+                );
                 None
             }
             Err(_) => {
@@ -2240,15 +2345,18 @@ impl super::TapeOperations {
             }
         }
     }
-    
+
     /// 缓存成功的索引位置 - 持久化实现
     fn cache_successful_location(&self, location: u64) {
-        info!("📋 Caching successful index location: block {} for device {}", location, self.device_path);
-        
+        info!(
+            "📋 Caching successful index location: block {} for device {}",
+            location, self.device_path
+        );
+
         let cache_path = self.get_cache_file_path();
         let timestamp = chrono::Utc::now().timestamp();
         let cache_entry = format!("{}:{}:{}\n", self.device_path, location, timestamp);
-        
+
         // 创建缓存目录
         if let Some(parent) = cache_path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
@@ -2256,11 +2364,11 @@ impl super::TapeOperations {
                 return;
             }
         }
-        
+
         // 读取现有缓存文件（如果存在）
         let existing_content = std::fs::read_to_string(&cache_path).unwrap_or_default();
         let mut new_content = String::new();
-        
+
         // 过滤掉当前设备的旧缓存条目
         for line in existing_content.lines() {
             let parts: Vec<&str> = line.split(':').collect();
@@ -2269,10 +2377,10 @@ impl super::TapeOperations {
                 new_content.push('\n');
             }
         }
-        
+
         // 添加新的缓存条目
         new_content.push_str(&cache_entry);
-        
+
         // 写入缓存文件
         match std::fs::write(&cache_path, new_content) {
             Ok(()) => {
@@ -2283,7 +2391,7 @@ impl super::TapeOperations {
             }
         }
     }
-    
+
     /// 获取缓存文件路径
     fn get_cache_file_path(&self) -> std::path::PathBuf {
         // 使用系统临时目录或用户配置目录
@@ -2292,37 +2400,42 @@ impl super::TapeOperations {
         } else {
             std::env::temp_dir().join("rustltfs")
         };
-        
+
         cache_dir.join("index_location_cache.txt")
     }
-    
+
     /// 优化的并行策略搜索 - 基于测试结果优化
     async fn try_optimized_parallel_strategies(&mut self) -> Result<(String, u64)> {
         info!("🚀 Starting optimized index search with intelligent strategies");
-        
+
         // 基于实际测试结果和LTFSCopyGUI兼容性的优化位置列表
         let priority_locations = vec![
-            6,     // LTFSCopyGUI找到索引的位置 - 最高优先级
-            50,    // 测试中成功的位置 - 高优先级
-            1000,  // 原有的成功位置
-            2, 5,  // 标准LTFS位置  
+            6,    // LTFSCopyGUI找到索引的位置 - 最高优先级
+            50,   // 测试中成功的位置 - 高优先级
+            1000, // 原有的成功位置
+            2, 5, // 标准LTFS位置
             10, 20, // 常见位置
-            100, 200, 500,  // 中等距离位置
-            2000, 5000,     // 较远位置
+            100, 200, 500, // 中等距离位置
+            2000, 5000, // 较远位置
         ];
-        
+
         info!("Trying {} priority locations with block 6 (LTFSCopyGUI-compatible) as highest priority", priority_locations.len());
-        
+
         // 串行搜索优先位置（避免并行磁带操作的复杂性）
         for &block in &priority_locations {
             if let Ok(()) = self.scsi.locate_block(0, block) {
                 debug!("🎯 Testing priority location: block {}", block);
-                
+
                 // 使用智能读取方法
                 match self.try_read_index_intelligently(block) {
                     Ok(xml_content) => {
-                        if xml_content.contains("<ltfsindex") && xml_content.contains("</ltfsindex>") {
-                            info!("✅ Found index at priority location: block {} (intelligent read)", block);
+                        if xml_content.contains("<ltfsindex")
+                            && xml_content.contains("</ltfsindex>")
+                        {
+                            info!(
+                                "✅ Found index at priority location: block {} (intelligent read)",
+                                block
+                            );
                             self.cache_successful_location(block);
                             return Ok((xml_content, block));
                         }
@@ -2333,23 +2446,23 @@ impl super::TapeOperations {
                 }
             }
         }
-        
+
         // 如果优先位置都失败，回退到原有的完整搜索
         info!("Priority locations failed, falling back to comprehensive search");
         match self.try_alternative_index_reading_strategies_async().await {
             Ok(xml_content) => {
                 // 估算找到的位置（实际实现中应该记录确切位置）
-                Ok((xml_content, 1000))  // 默认位置
+                Ok((xml_content, 1000)) // 默认位置
             }
-            Err(e) => Err(e)
+            Err(e) => Err(e),
         }
     }
 
     /// 智能索引读取 - 在指定位置使用优化方法
     fn try_read_index_intelligently(&self, block: u64) -> Result<String> {
         info!("🎯 Trying intelligent index read at block {}", block);
-        
-        // 获取动态blocksize 
+
+        // 获取动态blocksize
         let block_size = self
             .partition_label
             .as_ref()
@@ -2361,47 +2474,64 @@ impl super::TapeOperations {
         // 使用智能读取方法
         self.read_index_intelligently_with_partitions(block_size)
     }
-    
+
     /// 智能索引读取方法 - 高效版本
     /// 解决260MB数据获取12KB索引的效率问题
     pub fn read_index_intelligently(&self, block_size: usize) -> Result<String> {
         info!("🚀 Starting intelligent index reading (optimized for efficiency)");
-        
+
         // Phase 1: 快速预验证 - 读取前几个块检测索引标记
         const PREVIEW_BLOCKS: usize = 2; // 只读取2个块进行预验证
         let preview_size = block_size * PREVIEW_BLOCKS;
         let mut preview_buffer = vec![0u8; preview_size];
-        
-        info!("Phase 1: Quick preview - reading {} blocks ({} bytes) for validation", 
-              PREVIEW_BLOCKS, preview_size);
-        
-        match self.scsi.read_blocks(PREVIEW_BLOCKS as u32, &mut preview_buffer) {
+
+        info!(
+            "Phase 1: Quick preview - reading {} blocks ({} bytes) for validation",
+            PREVIEW_BLOCKS, preview_size
+        );
+
+        match self
+            .scsi
+            .read_blocks(PREVIEW_BLOCKS as u32, &mut preview_buffer)
+        {
             Ok(blocks_read) => {
                 if blocks_read == 0 {
                     debug!("Preview read returned 0 blocks - no data at current position");
-                    return Err(RustLtfsError::ltfs_index("No data at current position".to_string()));
+                    return Err(RustLtfsError::ltfs_index(
+                        "No data at current position".to_string(),
+                    ));
                 }
-                
+
                 // 转换为字符串进行快速检测
                 let preview_text = String::from_utf8_lossy(&preview_buffer);
-                
+
                 // 检测LTFS索引标记
                 if !preview_text.contains("<ltfsindex") {
-                    debug!("❌ Preview validation failed - no <ltfsindex> found in first {} blocks", PREVIEW_BLOCKS);
-                    return Err(RustLtfsError::ltfs_index("No LTFS index marker found in preview".to_string()));
+                    debug!(
+                        "❌ Preview validation failed - no <ltfsindex> found in first {} blocks",
+                        PREVIEW_BLOCKS
+                    );
+                    return Err(RustLtfsError::ltfs_index(
+                        "No LTFS index marker found in preview".to_string(),
+                    ));
                 }
-                
-                info!("✅ Preview validation passed - LTFS index detected, proceeding with full read");
+
+                info!(
+                    "✅ Preview validation passed - LTFS index detected, proceeding with full read"
+                );
             }
             Err(e) => {
                 debug!("Preview read failed: {}", e);
-                return Err(RustLtfsError::ltfs_index(format!("Preview read failed: {}", e)));
+                return Err(RustLtfsError::ltfs_index(format!(
+                    "Preview read failed: {}",
+                    e
+                )));
             }
         }
-        
+
         // Phase 2: 智能完整读取 - 既然检测到索引，进行优化的完整读取
         info!("Phase 2: Intelligent full read with early termination");
-        
+
         // 创建临时文件
         let temp_dir = std::env::temp_dir();
         let temp_filename = format!(
@@ -2410,52 +2540,58 @@ impl super::TapeOperations {
         );
         let temp_path = temp_dir.join(temp_filename);
         info!("Creating temporary index file: {:?}", temp_path);
-        
+
         let mut temp_file = std::fs::File::create(&temp_path)?;
-        
+
         // 首先写入已经读取的预览数据
         use std::io::Write;
         temp_file.write_all(&preview_buffer)?;
-        
+
         let mut total_bytes_read = preview_size as u64;
         let mut blocks_read = PREVIEW_BLOCKS;
         let max_blocks = 50; // 减少最大限制从200到50
         let mut consecutive_zero_blocks = 0;
         const MAX_CONSECUTIVE_ZEROS: usize = 3; // 连续3个零块就停止
-        
-        info!("Continuing read from block {} with max {} total blocks", 
-              blocks_read + 1, max_blocks);
-        
+
+        info!(
+            "Continuing read from block {} with max {} total blocks",
+            blocks_read + 1,
+            max_blocks
+        );
+
         // 继续读取剩余数据
         loop {
             if blocks_read >= max_blocks {
                 info!("Reached intelligent block limit ({}), stopping", max_blocks);
                 break;
             }
-            
+
             let mut buffer = vec![0u8; block_size];
-            
+
             match self.scsi.read_blocks(1, &mut buffer) {
                 Ok(read_count) => {
                     if read_count == 0 {
                         info!("✅ Reached file mark (read_count = 0), stopping");
                         break;
                     }
-                    
+
                     // 检测零块（可能表示数据结束）
                     let is_zero_block = buffer.iter().all(|&b| b == 0);
                     if is_zero_block {
                         consecutive_zero_blocks += 1;
-                        debug!("Zero block detected ({}/{})", consecutive_zero_blocks, MAX_CONSECUTIVE_ZEROS);
-                        
+                        debug!(
+                            "Zero block detected ({}/{})",
+                            consecutive_zero_blocks, MAX_CONSECUTIVE_ZEROS
+                        );
+
                         if consecutive_zero_blocks >= MAX_CONSECUTIVE_ZEROS {
-                            info!("✅ Detected {} consecutive zero blocks, stopping read (likely end of data)", 
+                            info!("✅ Detected {} consecutive zero blocks, stopping read (likely end of data)",
                                   consecutive_zero_blocks);
                             break;
                         }
                     } else {
                         consecutive_zero_blocks = 0; // 重置零块计数器
-                        
+
                         // 检测索引结束标记
                         let text_chunk = String::from_utf8_lossy(&buffer);
                         if text_chunk.contains("</ltfsindex>") {
@@ -2463,18 +2599,24 @@ impl super::TapeOperations {
                             temp_file.write_all(&buffer)?;
                             total_bytes_read += block_size as u64;
                             blocks_read += 1;
-                            info!("✅ Found </ltfsindex> marker, index complete after {} blocks", blocks_read);
+                            info!(
+                                "✅ Found </ltfsindex> marker, index complete after {} blocks",
+                                blocks_read
+                            );
                             break;
                         }
                     }
-                    
+
                     temp_file.write_all(&buffer)?;
                     total_bytes_read += block_size as u64;
                     blocks_read += 1;
-                    
+
                     // 每10个块报告一次进度
                     if blocks_read % 10 == 0 {
-                        debug!("Read {} blocks, {} bytes so far", blocks_read, total_bytes_read);
+                        debug!(
+                            "Read {} blocks, {} bytes so far",
+                            blocks_read, total_bytes_read
+                        );
                     }
                 }
                 Err(e) => {
@@ -2489,34 +2631,43 @@ impl super::TapeOperations {
                 }
             }
         }
-        
+
         temp_file.flush()?;
         drop(temp_file);
-        
-        info!("🎯 Intelligent read completed: {} blocks read, {} total bytes (vs old method: ~13MB)", 
-              blocks_read, total_bytes_read);
-        
+
+        info!(
+            "🎯 Intelligent read completed: {} blocks read, {} total bytes (vs old method: ~13MB)",
+            blocks_read, total_bytes_read
+        );
+
         // 读取并清理临时文件
         let xml_content = std::fs::read_to_string(&temp_path)?;
-        
+
         // 清理临时文件
         if let Err(e) = std::fs::remove_file(&temp_path) {
             warn!("Failed to remove temporary file {:?}: {}", temp_path, e);
         }
-        
+
         // 清理XML内容
         let cleaned_xml = xml_content.replace('\0', "").trim().to_string();
-        
+
         if cleaned_xml.is_empty() {
-            return Err(RustLtfsError::ltfs_index("Cleaned XML is empty".to_string()));
+            return Err(RustLtfsError::ltfs_index(
+                "Cleaned XML is empty".to_string(),
+            ));
         }
-        
+
         // 验证XML完整性
         if !cleaned_xml.contains("<ltfsindex") || !cleaned_xml.contains("</ltfsindex>") {
-            return Err(RustLtfsError::ltfs_index("Incomplete LTFS index XML".to_string()));
+            return Err(RustLtfsError::ltfs_index(
+                "Incomplete LTFS index XML".to_string(),
+            ));
         }
-        
-        info!("✅ Intelligent read extracted {} bytes of valid index data", cleaned_xml.len());
+
+        info!(
+            "✅ Intelligent read extracted {} bytes of valid index data",
+            cleaned_xml.len()
+        );
         Ok(cleaned_xml)
     }
 
@@ -2535,56 +2686,83 @@ impl super::TapeOperations {
 
         // Step 1: 定位到数据分区EOD (对应LTFSCopyGUI: TapeUtils.Locate(driveHandle, 0UL, DataPartition, TapeUtils.LocateDestType.EOD))
         info!("Locating to data partition {} EOD", data_partition);
-        
+
         match self.scsi.locate_block(data_partition, 0) {
-            Ok(()) => info!("Successfully positioned to data partition {}, block 0", data_partition),
+            Ok(()) => info!(
+                "Successfully positioned to data partition {}, block 0",
+                data_partition
+            ),
             Err(e) => {
-                warn!("Failed to locate to data partition {}, block 0: {}", data_partition, e);
-                return Err(RustLtfsError::ltfs_index(format!("Cannot position to data partition: {}", e)));
+                warn!(
+                    "Failed to locate to data partition {}, block 0: {}",
+                    data_partition, e
+                );
+                return Err(RustLtfsError::ltfs_index(format!(
+                    "Cannot position to data partition: {}",
+                    e
+                )));
             }
         }
-        
+
         // 使用LOCATE命令而非SPACE命令进行EOD定位（LTFSCopyGUI兼容）
         info!("Using LOCATE command for EOD positioning (LTFSCopyGUI compatible)");
         match self.scsi.locate_to_eod(data_partition) {
-            Ok(()) => info!("Successfully located to End of Data in partition {}", data_partition),
+            Ok(()) => info!(
+                "Successfully located to End of Data in partition {}",
+                data_partition
+            ),
             Err(e) => {
-                warn!("Failed to locate to End of Data in partition {}: {}", data_partition, e);
-                return Err(RustLtfsError::ltfs_index(format!("Cannot locate to EOD: {}", e)));
+                warn!(
+                    "Failed to locate to End of Data in partition {}: {}",
+                    data_partition, e
+                );
+                return Err(RustLtfsError::ltfs_index(format!(
+                    "Cannot locate to EOD: {}",
+                    e
+                )));
             }
         }
 
         let eod_position = self.scsi.read_position()?;
-        info!("Data partition EOD position: partition={}, block={}, file_number={}", 
-              eod_position.partition, eod_position.block_number, eod_position.file_number);
+        info!(
+            "Data partition EOD position: partition={}, block={}, file_number={}",
+            eod_position.partition, eod_position.block_number, eod_position.file_number
+        );
 
         // Step 2: 检查 FileNumber，确保有足够的 FileMark (对应LTFSCopyGUI: If FM <= 1 Then)
         if eod_position.file_number <= 1 {
             return Err(RustLtfsError::ltfs_index(
-                "Insufficient file marks in data partition for index reading".to_string()
+                "Insufficient file marks in data partition for index reading".to_string(),
             ));
         }
 
         // Step 3: 定位到最后一个FileMark之前 (对应LTFSCopyGUI: TapeUtils.Locate(handle:=driveHandle, BlockAddress:=FM - 1, Partition:=DataPartition, DestType:=TapeUtils.LocateDestType.FileMark))
         let target_filemark = eod_position.file_number - 1;
         info!("Locating to FileMark {} in data partition", target_filemark);
-        
-        match self.scsi.locate_to_filemark(target_filemark, data_partition) {
+
+        match self
+            .scsi
+            .locate_to_filemark(target_filemark, data_partition)
+        {
             Ok(()) => {
                 info!("Successfully positioned to FileMark {}", target_filemark);
-                
+
                 // Step 4: 跳过FileMark并读取索引内容 (对应LTFSCopyGUI: TapeUtils.ReadFileMark + TapeUtils.ReadToFileMark)
                 match self.scsi.space(crate::scsi::SpaceType::FileMarks, 1) {
                     Ok(_) => {
                         info!("Skipped FileMark, now reading latest index content");
                         let position_after_fm = self.scsi.read_position()?;
-                        info!("Position after FileMark: partition={}, block={}", 
-                              position_after_fm.partition, position_after_fm.block_number);
-                        
+                        info!(
+                            "Position after FileMark: partition={}, block={}",
+                            position_after_fm.partition, position_after_fm.block_number
+                        );
+
                         // 读取索引内容
                         match self.try_read_index_at_current_position_with_filemarks() {
                             Ok(xml_content) => {
-                                if xml_content.contains("<ltfsindex") && xml_content.contains("</ltfsindex>") {
+                                if xml_content.contains("<ltfsindex")
+                                    && xml_content.contains("</ltfsindex>")
+                                {
                                     info!("✅ Successfully read latest index from data partition EOD at FileMark {}", target_filemark);
                                     return Ok(xml_content);
                                 } else {
@@ -2592,7 +2770,10 @@ impl super::TapeOperations {
                                 }
                             }
                             Err(e) => {
-                                debug!("Failed to read content at data partition EOD FileMark {}: {}", target_filemark, e);
+                                debug!(
+                                    "Failed to read content at data partition EOD FileMark {}: {}",
+                                    target_filemark, e
+                                );
                             }
                         }
                     }
@@ -2602,12 +2783,15 @@ impl super::TapeOperations {
                 }
             }
             Err(e) => {
-                debug!("Failed to locate to FileMark {} in data partition: {}", target_filemark, e);
+                debug!(
+                    "Failed to locate to FileMark {} in data partition: {}",
+                    target_filemark, e
+                );
             }
         }
 
         Err(RustLtfsError::ltfs_index(
-            "No valid latest index found at data partition EOD".to_string()
+            "No valid latest index found at data partition EOD".to_string(),
         ))
     }
 
@@ -2621,41 +2805,71 @@ impl super::TapeOperations {
         self.scsi.locate_block(partition, 0)?;
         // 使用LOCATE命令定位到指定分区的EOD（LTFSCopyGUI兼容）
         match self.scsi.locate_to_eod(partition) {
-            Ok(()) => info!("Successfully located to End of Data in partition {}", partition),
+            Ok(()) => info!(
+                "Successfully located to End of Data in partition {}",
+                partition
+            ),
             Err(e) => {
-                warn!("Failed to locate to End of Data in partition {}: {}", partition, e);
-                return Err(RustLtfsError::ltfs_index(format!("Cannot locate to EOD: {}", e)));
+                warn!(
+                    "Failed to locate to End of Data in partition {}: {}",
+                    partition, e
+                );
+                return Err(RustLtfsError::ltfs_index(format!(
+                    "Cannot locate to EOD: {}",
+                    e
+                )));
             }
         }
 
         let eod_position = self.scsi.read_position()?;
-        info!("Partition {} EOD position: partition={}, block={}, file_number={}", 
-              partition, eod_position.partition, eod_position.block_number, eod_position.file_number);
+        info!(
+            "Partition {} EOD position: partition={}, block={}, file_number={}",
+            partition, eod_position.partition, eod_position.block_number, eod_position.file_number
+        );
 
         // Step 2: 检查 FileNumber，确保有足够的 FileMark
         if eod_position.file_number <= 1 {
-            return Err(RustLtfsError::ltfs_index(
-                format!("Insufficient file marks in partition {} for index reading", partition)
-            ));
+            return Err(RustLtfsError::ltfs_index(format!(
+                "Insufficient file marks in partition {} for index reading",
+                partition
+            )));
         }
 
-        // Step 3: 定位到最后一个FileMark之前
-        let target_filemark = eod_position.file_number - 1;
-        info!("Locating to FileMark {} in partition {}", target_filemark, partition);
-        
+        // Step 3: 根据分区类型确定目标FileMark
+        // 🔧 修复：索引分区(P0)使用固定的FileMark 1（LTFS标准位置）
+        // 数据分区(P1)使用FM-1策略（最新索引在EOD之前）
+        let target_filemark = if partition == 0 {
+            // 索引分区：LTFS标准索引位置在FileMark 1之后
+            info!("Index partition (P0): using standard LTFS location FileMark 1");
+            1
+        } else {
+            // 数据分区：最新索引在最后一个FileMark之前
+            info!("Data partition (P{}): using FM-1 strategy", partition);
+            eod_position.file_number - 1
+        };
+        info!(
+            "Locating to FileMark {} in partition {}",
+            target_filemark, partition
+        );
+
         match self.scsi.locate_to_filemark(target_filemark, partition) {
             Ok(()) => {
-                info!("Successfully positioned to FileMark {} in partition {}", target_filemark, partition);
-                
+                info!(
+                    "Successfully positioned to FileMark {} in partition {}",
+                    target_filemark, partition
+                );
+
                 // Step 4: 跳过FileMark并读取索引内容
                 match self.scsi.space(crate::scsi::SpaceType::FileMarks, 1) {
                     Ok(_) => {
                         info!("Skipped FileMark, now reading latest index content");
-                        
+
                         // 读取索引内容
                         match self.try_read_index_at_current_position_with_filemarks() {
                             Ok(xml_content) => {
-                                if xml_content.contains("<ltfsindex") && xml_content.contains("</ltfsindex>") {
+                                if xml_content.contains("<ltfsindex")
+                                    && xml_content.contains("</ltfsindex>")
+                                {
                                     info!("✅ Successfully read latest index from partition {} EOD at FileMark {}", partition, target_filemark);
                                     return Ok(xml_content);
                                 } else {
@@ -2663,29 +2877,39 @@ impl super::TapeOperations {
                                 }
                             }
                             Err(e) => {
-                                debug!("Failed to read content at partition {} EOD FileMark {}: {}", partition, target_filemark, e);
+                                debug!(
+                                    "Failed to read content at partition {} EOD FileMark {}: {}",
+                                    partition, target_filemark, e
+                                );
                             }
                         }
                     }
                     Err(e) => {
-                        debug!("Failed to skip FileMark {} in partition {}: {}", target_filemark, partition, e);
+                        debug!(
+                            "Failed to skip FileMark {} in partition {}: {}",
+                            target_filemark, partition, e
+                        );
                     }
                 }
             }
             Err(e) => {
-                debug!("Failed to locate to FileMark {} in partition {}: {}", target_filemark, partition, e);
+                debug!(
+                    "Failed to locate to FileMark {} in partition {}: {}",
+                    target_filemark, partition, e
+                );
             }
         }
 
-        Err(RustLtfsError::ltfs_index(
-            format!("No valid latest index found at partition {} EOD", partition)
-        ))
+        Err(RustLtfsError::ltfs_index(format!(
+            "No valid latest index found at partition {} EOD",
+            partition
+        )))
     }
 
     /// 标准LTFS读取策略 - 基于成功的标准读取流程
     async fn try_standard_ltfs_reading(&mut self) -> Result<String> {
         info!("🔍 Starting standard LTFS reading strategy");
-        
+
         // 定位到索引分区并读取VOL1标签
         self.scsi.locate_block(0, 0)?;
         let mut label_buffer = vec![0u8; crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize];
@@ -2709,13 +2933,14 @@ impl super::TapeOperations {
                         }
                         Err(e) => debug!("Index partition EOD reading failed: {}", e),
                     }
-                    
+
                     // 备用：使用ReadToFileMark方法读取整个索引文件
                     match self.read_index_xml_from_tape_with_file_mark() {
                         Ok(xml_content) => {
-                            if !xml_content.trim().is_empty() 
-                                && xml_content.contains("<ltfsindex") 
-                                && xml_content.contains("</ltfsindex>") {
+                            if !xml_content.trim().is_empty()
+                                && xml_content.contains("<ltfsindex")
+                                && xml_content.contains("</ltfsindex>")
+                            {
                                 info!("✅ Standard LTFS reading (ReadToFileMark) succeeded");
                                 return Ok(xml_content);
                             }
@@ -2732,7 +2957,7 @@ impl super::TapeOperations {
                         }
                         Err(e) => debug!("Single partition EOD reading failed: {}", e),
                     }
-                    
+
                     // 备用：单分区策略读取
                     match self.try_single_partition_extended_search_async().await {
                         Ok(xml_content) => {
@@ -2756,10 +2981,10 @@ impl super::TapeOperations {
         } else {
             warn!("VOL1 label validation failed, trying fallback strategies");
         }
-        
+
         // VOL1验证失败或标准策略失败时的回退策略
         info!("Trying fallback strategy: index partition EOD");
-        
+
         // 首先尝试从索引分区EOD读取（不依赖VOL1验证）
         match self.try_read_latest_index_from_eod(0).await {
             Ok(xml_content) => {
@@ -2768,21 +2993,25 @@ impl super::TapeOperations {
             }
             Err(e) => debug!("Fallback EOD reading failed: {}", e),
         }
-        
+
         // 最后尝试：直接搜索已知位置（仅作为最后手段）
         info!("Trying final fallback: direct location search");
         let fallback_locations = vec![6, 2, 5, 10, 20, 100]; // block 6是LTFSCopyGUI找到索引的位置
-        
+
         for &block in &fallback_locations {
-            info!("Trying final fallback location: partition 0, block {}", block);
-            
+            info!(
+                "Trying final fallback location: partition 0, block {}",
+                block
+            );
+
             match self.scsi.locate_block(0, block) {
                 Ok(()) => {
                     match self.try_read_index_at_current_position_with_filemarks() {
                         Ok(xml_content) => {
-                            if !xml_content.trim().is_empty() 
-                                && xml_content.contains("<ltfsindex") 
-                                && xml_content.contains("</ltfsindex>") {
+                            if !xml_content.trim().is_empty()
+                                && xml_content.contains("<ltfsindex")
+                                && xml_content.contains("</ltfsindex>")
+                            {
                                 info!("✅ Standard LTFS reading (final fallback) succeeded at block {}", block);
                                 return Ok(xml_content);
                             }
@@ -2795,7 +3024,7 @@ impl super::TapeOperations {
         }
 
         Err(RustLtfsError::ltfs_index(
-            "Standard LTFS reading strategy failed (including all fallbacks)".to_string()
+            "Standard LTFS reading strategy failed (including all fallbacks)".to_string(),
         ))
     }
 }

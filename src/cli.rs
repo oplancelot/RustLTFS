@@ -292,6 +292,23 @@ pub enum Commands {
         detailed: bool,
     },
 
+    /// Diagnose P1 Block38 positioning issue (诊断P1 Block38定位问题)
+    /// 
+    /// 专门用于诊断和修复RustLTFS中P1 Block38定位问题
+    DiagnoseBlock38 {
+        /// Tape device path (e.g. \\.\TAPE0)
+        #[arg(short = 't', long = "tape", value_name = "DEVICE")]
+        device: String,
+        
+        /// Run quick diagnostic only
+        #[arg(long)]
+        quick: bool,
+        
+        /// Test ReadFileMark backtrack logic
+        #[arg(long)]
+        test_backtrack: bool,
+    },
+
     /// Update LTFS index on tape (对应LTFSCopyGUI的更新数据区索引功能)
     /// 
     /// 手动触发LTFS索引更新，将当前索引写入数据分区末尾
