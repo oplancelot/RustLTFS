@@ -1658,11 +1658,18 @@ impl ScsiInterface {
                 
                 debug!("🔍 Sense analysis: result={}, Add_Key=0x{:04X} (ASC=0x{:02X}, ASCQ=0x{:02X}), DiffBytes={}", 
                       result, add_key, sense_buffer[12], sense_buffer[13], diff_bytes);
+                info!("🔍 Detailed sense analysis: result={}, DiffBytes={}, BlockSizeLimit={}", 
+                     result, diff_bytes, block_size_limit);
                 
                 if result {
                     // 读取成功，检查是否需要自动回退 (LTFSCopyGUI Line 644-648)
                     let block_size_limit_i32 = block_size_limit as i32;
                     let global_block_limit = block_sizes::LTO_BLOCK_SIZE as i32;
+                    
+                    info!("🔍 Auto-backtrack condition check: DiffBytes={}, DiffBytes<0={}, BlockSize={}, (BlockSize-DiffBytes)={}, GlobalLimit={}, Condition={}",
+                         diff_bytes, diff_bytes < 0, block_size_limit_i32, 
+                         block_size_limit_i32 - diff_bytes, global_block_limit,
+                         diff_bytes < 0 && (block_size_limit_i32 - diff_bytes) < global_block_limit);
                     
                     if diff_bytes < 0 && (block_size_limit_i32 - diff_bytes) < global_block_limit {
                         info!("🔄 LTFSCopyGUI auto-backtrack triggered: DiffBytes={}, condition met", diff_bytes);
