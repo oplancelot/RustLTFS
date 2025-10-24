@@ -1546,61 +1546,56 @@ impl ScsiInterface {
     /// ReadFileMark - 跳过当前FileMark标记 (完全对应LTFSCopyGUI的ReadFileMark实现)
     /// 这个方法精确复制LTFSCopyGUI TapeUtils.ReadFileMark的行为
     pub fn read_file_mark(&self) -> Result<bool> {
-        debug!("🔧 ReadFileMark: Checking if positioned at FileMark (LTFSCopyGUI compatible)");
+        debug!("🔧 ReadFileMark: Starting LTFSCopyGUI compatible FileMark detection");
         
         #[cfg(windows)]
         {
-            // 步骤1：尝试读取一个块来检测是否已经在FileMark位置
+            // 🎯 精确复制LTFSCopyGUI ReadFileMark逻辑 (Line 785-792)
+            // 1. 总是尝试读取一个块 (对应 ReadBlock)
             let mut sense_buffer = [0u8; SENSE_INFO_LEN];
             let mut test_buffer = vec![0u8; block_sizes::LTO_BLOCK_SIZE as usize];
             
             let result = self.scsi_io_control(
-                &[scsi_commands::READ_6, 0x00, 0x00, 0x00, 0x01, 0x00], // READ(6) 1 block
+                &[scsi_commands::read_6, 0x00, 0x00, 0x00, 0x01, 0x00], // READ(6) 1 block
                 Some(&mut test_buffer),
                 SCSI_IOCTL_DATA_IN,
                 30,
                 Some(&mut sense_buffer),
             )?;
             
-            if !result {
-                // 读取失败，分析sense数据
-                let (_, is_file_mark) = self.analyze_read_sense_data(&sense_buffer, block_sizes::LTO_BLOCK_SIZE)?;
-                if is_file_mark {
-                    debug!("✅ ReadFileMark: Already positioned at FileMark (detected via sense data)");
-                    return Ok(true);
-                }
+            debug!("🔍 ReadFileMark: Read result={}, data_length={}", result, test_buffer.len());
+            
+            // 2. 检查是否读取到数据 (对应 If data.Length = 0 Then Return True)
+            if !result || test_buffer.is_empty() {
+                debug!("✅ ReadFileMark: No data read, already positioned at FileMark");
+                return Ok(true);
             }
             
-            // 步骤2：如果读取到了数据，说明没有在FileMark位置，需要回退
-            debug!("🔄 ReadFileMark: Read data successfully, need to move back to previous position");
+            // 3. 读取到数据，说明不在FileMark位置 - 无条件回退 (对应Line 791)
+            debug!("🔄 ReadFileMark: Data read, not at FileMark - executing unconditional backtrack");
             
             // 获取当前位置
             let current_pos = self.read_position()?;
-            debug!("📍 Current position before backtrack: P{} B{} FM{}", 
-                  current_pos.partition, current_pos.block_number, current_pos.file_number);
+            info!("📍 ReadFileMark current position: P{} B{} FM{} (will backtrack to B{})", 
+                  current_pos.partition, current_pos.block_number, current_pos.file_number,
+                  current_pos.block_number.saturating_sub(1));
             
-            // LTFSCopyGUI的回退策略：根据AllowPartition设置选择方法
-            if self.allow_partition {
-                // AllowPartition=true: 使用Locate回退到前一个块
-                if current_pos.block_number > 0 {
-                    debug!("🎯 Using Locate method to move back one block (AllowPartition mode)");
-                    self.locate_block(current_pos.partition, current_pos.block_number - 1)?;
-                } else {
-                    debug!("⚠️ Already at block 0, cannot move back further");
-                }
+            // 🎯 关键：LTFSCopyGUI无条件回退一个Block
+            // Locate(handle:=handle, BlockAddress:=p.BlockNumber - 1, Partition:=p.PartitionNumber)
+            if current_pos.block_number > 0 {
+                info!("🔧 ReadFileMark: Executing LTFSCopyGUI unconditional backtrack to Block {}", 
+                     current_pos.block_number - 1);
+                self.locate_block(current_pos.partition, current_pos.block_number - 1)?;
+                
+                // 验证回退后的位置
+                let new_pos = self.read_position()?;
+                info!("✅ ReadFileMark: Backtrack completed - now at P{} B{} FM{}", 
+                     new_pos.partition, new_pos.block_number, new_pos.file_number);
             } else {
-                // AllowPartition=false: 使用Space6命令回退一个块
-                debug!("🎯 Using Space6 method to move back one block (DisablePartition mode)");
-                self.space(SpaceType::Blocks, -1)?;
+                debug!("⚠️ ReadFileMark: Already at block 0, cannot backtrack further");
             }
             
-            // 获取回退后的位置
-            let new_pos = self.read_position()?;
-            debug!("📍 Position after backtrack: P{} B{} FM{}", 
-                  new_pos.partition, new_pos.block_number, new_pos.file_number);
-            
-            debug!("✅ ReadFileMark: Successfully moved back, now positioned before FileMark");
-            Ok(false)
+            Ok(false) // 返回false表示执行了回退
         }
         
         #[cfg(not(windows))]
@@ -1662,9 +1657,10 @@ impl ScsiInterface {
                      result, diff_bytes, block_size_limit);
                 
                 if result {
-                    // 读取成功，检查是否需要自动回退 (LTFSCopyGUI Line 644-648)
+                    // 读取成��，检查是否需要自动回退 (LTFSCopyGUI Line 644-648)
                     let block_size_limit_i32 = block_size_limit as i32;
-                    let global_block_limit = block_sizes::LTO_BLOCK_SIZE as i32;
+                    // 🔧 关键修复：使用LTFSCopyGUI的GlobalBlockLimit值 (1048576)
+                    let global_block_limit = 1048576i32; // LTFSCopyGUI默认值
                     
                     info!("🔍 Auto-backtrack condition check: DiffBytes={}, DiffBytes<0={}, BlockSize={}, (BlockSize-DiffBytes)={}, GlobalLimit={}, Condition={}",
                          diff_bytes, diff_bytes < 0, block_size_limit_i32, 
