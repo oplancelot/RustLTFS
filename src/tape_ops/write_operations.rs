@@ -488,11 +488,25 @@ impl TapeOperations {
 
         // If not in target data partition, move to end of data partition
         if current_pos.partition != data_partition {
-            info!("Moving to end of data partition {}", data_partition);
-            self.scsi.locate_block(data_partition, 0)?;
-            self.scsi.space(crate::scsi::SpaceType::EndOfData, 0)?;
+            info!(
+                "Moving to end of data partition {} using locate_to_eod",
+                data_partition
+            );
+
+            // Use single locate_to_eod command instead of two-step locate_block+space
+            // This ensures proper partition switching and EOD positioning atomically
+            self.scsi.locate_to_eod(data_partition)?;
 
             let eod_pos = self.scsi.read_position()?;
+
+            // Verify we're actually in the correct partition
+            if eod_pos.partition != data_partition {
+                return Err(RustLtfsError::tape_device(format!(
+                    "Failed to switch to data partition {}: ended up at partition {} after locate_to_eod",
+                    data_partition, eod_pos.partition
+                )));
+            }
+
             target_block = eod_pos.block_number;
             info!(
                 "End of data position: partition={}, block={}",
@@ -985,17 +999,9 @@ impl TapeOperations {
             .unwrap_or("unknown")
             .to_string();
 
-        // Check if directory already exists in index
-        let directory_exists = if let Some(ref index) = self.index {
-            self.directory_exists_in_index(index, target_path, &dir_name)?
-        } else {
-            false
-        };
-
-        if !directory_exists {
-            // Create directory in LTFS index (对应LTFSCopyGUI的目录创建逻辑)
-            self.create_directory_in_index(source_dir, target_path)?;
-        }
+        // Note: Directory structure is automatically created by ensure_directory_path_exists
+        // when files are added, so we don't need to explicitly create directories here.
+        // Explicit creation was causing directories to be added at root level incorrectly.
 
         // Get list of files and subdirectories
         let mut entries = tokio::fs::read_dir(source_dir)
