@@ -1301,11 +1301,8 @@ impl ScsiInterface {
     pub fn write_blocks(&self, block_count: u32, buffer: &[u8]) -> Result<u32> {
         debug!("Writing {} blocks to tape", block_count);
 
-        if buffer.len() < (block_count * block_sizes::LTO_BLOCK_SIZE) as usize {
-            return Err(crate::error::RustLtfsError::scsi(
-                "Buffer too small for requested block count",
-            ));
-        }
+        // LTFSCopyGUI compatibility: write actual buffer length, not block_count * LTO_BLOCK_SIZE
+        // This allows writing 524288-byte blocks (LTFSCopyGUI's plabel.blocksize) instead of 65536
 
         #[cfg(windows)]
         {
@@ -1315,15 +1312,15 @@ impl ScsiInterface {
             // LTFSCopyGUI compatibility: Use variable length mode
             // Matches LTFSCopyGUI: cdbData = {&HA, 0, ...} - second byte is 0
             cdb[1] = 0x00; // Variable length mode like LTFSCopyGUI
-                           // Transfer Length - LTFSCopyGUI compatibility: use byte count, not block count
-                           // LTFSCopyGUI: Length >> 16 And &HFF (byte-based transfer)
-            let byte_count = block_count * block_sizes::LTO_BLOCK_SIZE;
+                           // Transfer Length - LTFSCopyGUI compatibility: use actual buffer length
+                           // LTFSCopyGUI: TapeUtils.Write(handle, Data, BytesReaded) writes BytesReaded bytes
+            let byte_count = buffer.len() as u32;
             cdb[2] = ((byte_count >> 16) & 0xFF) as u8;
             cdb[3] = ((byte_count >> 8) & 0xFF) as u8;
             cdb[4] = (byte_count & 0xFF) as u8;
             // cdb[5] is control byte, leave as 0
 
-            let data_length = (block_count * block_sizes::LTO_BLOCK_SIZE) as usize;
+            let data_length = buffer.len();
             let result = self.scsi_io_control(
                 &cdb,
                 Some(&mut buffer[..data_length].to_vec().as_mut_slice()),
