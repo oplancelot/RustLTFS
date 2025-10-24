@@ -1,13 +1,11 @@
+use super::{FileWriteEntry, TapeOperations, WriteOptions, WriteResult};
 use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::LtfsIndex;
-use super::{
-    TapeOperations, FileWriteEntry, WriteOptions, WriteResult
-};
-use std::path::Path;
 use std::collections::HashMap;
-use tracing::{debug, error, info, warn};
-use tokio::io::{AsyncReadExt, BufReader};
+use std::path::Path;
 use tokio::fs::File;
+use tokio::io::{AsyncReadExt, BufReader};
+use tracing::{debug, error, info, warn};
 
 /// Generate LTFS-compatible Z-format timestamp (matching LTFSCopyGUI XML format)
 /// Converts RFC3339 format with +00:00 to Z format for XML compatibility
@@ -75,10 +73,12 @@ impl ScsiErrorHandler {
         let error_description = match (sense_key, asc, ascq) {
             // No sense
             (0x00, _, _) => "No sense - operation completed successfully".to_string(),
-            
+
             // Recovered error
-            (0x01, _, _) => "Recovered error - operation completed with recovery action".to_string(),
-            
+            (0x01, _, _) => {
+                "Recovered error - operation completed with recovery action".to_string()
+            }
+
             // Not ready
             (0x02, 0x04, 0x01) => "Not ready - becoming ready".to_string(),
             (0x02, 0x04, 0x02) => "Not ready - initializing command required".to_string(),
@@ -86,50 +86,58 @@ impl ScsiErrorHandler {
             (0x02, 0x04, 0x04) => "Not ready - format in progress".to_string(),
             (0x02, 0x30, 0x00) => "Not ready - incompatible medium installed".to_string(),
             (0x02, 0x3A, 0x00) => "Not ready - medium not present".to_string(),
-            
+
             // Medium error
             (0x03, 0x11, 0x00) => "Medium error - unrecovered read error".to_string(),
             (0x03, 0x14, 0x01) => "Medium error - record not found".to_string(),
             (0x03, 0x30, 0x00) => "Medium error - incompatible medium installed".to_string(),
             (0x03, 0x31, 0x00) => "Medium error - medium format corrupted".to_string(),
-            
+
             // Hardware error
             (0x04, 0x08, 0x00) => "Hardware error - logical unit communication failure".to_string(),
             (0x04, 0x08, 0x01) => "Hardware error - logical unit communication timeout".to_string(),
             (0x04, 0x15, 0x01) => "Hardware error - mechanical positioning error".to_string(),
             (0x04, 0x40, 0x00) => "Hardware error - diagnostic failure".to_string(),
             (0x04, 0x44, 0x00) => "Hardware error - internal target failure".to_string(),
-            
+
             // Illegal request
             (0x05, 0x20, 0x00) => "Illegal request - invalid command operation code".to_string(),
             (0x05, 0x24, 0x00) => "Illegal request - invalid field in CDB".to_string(),
             (0x05, 0x25, 0x00) => "Illegal request - logical unit not supported".to_string(),
             (0x05, 0x26, 0x00) => "Illegal request - invalid field in parameter list".to_string(),
-            
+
             // Unit attention
             (0x06, 0x28, 0x00) => "Unit attention - not ready to ready change".to_string(),
-            (0x06, 0x29, 0x00) => "Unit attention - power on, reset, or bus device reset occurred".to_string(),
+            (0x06, 0x29, 0x00) => {
+                "Unit attention - power on, reset, or bus device reset occurred".to_string()
+            }
             (0x06, 0x2A, 0x01) => "Unit attention - mode parameters changed".to_string(),
-            
+
             // Data protect
             (0x07, 0x27, 0x00) => "Data protect - write protected".to_string(),
             (0x07, 0x30, 0x00) => "Data protect - incompatible medium installed".to_string(),
-            
+
             // Blank check
             (0x08, 0x00, 0x05) => "Blank check - end of data detected".to_string(),
-            
+
             // Volume overflow (critical for LTFSCopyGUI compatibility)
             (0x0D, 0x00, 0x00) => "Volume overflow - physical end of medium".to_string(),
-            
+
             // Aborted command
-            (0x0B, 0x08, 0x00) => "Aborted command - logical unit communication failure".to_string(),
-            (0x0B, 0x08, 0x01) => "Aborted command - logical unit communication timeout".to_string(),
+            (0x0B, 0x08, 0x00) => {
+                "Aborted command - logical unit communication failure".to_string()
+            }
+            (0x0B, 0x08, 0x01) => {
+                "Aborted command - logical unit communication timeout".to_string()
+            }
             (0x0B, 0x43, 0x00) => "Aborted command - message error".to_string(),
             (0x0B, 0x47, 0x00) => "Aborted command - SCSI parity error".to_string(),
-            
+
             // Default case
-            _ => format!("Unknown error - Sense Key: 0x{:02X}, ASC: 0x{:02X}, ASCQ: 0x{:02X}", 
-                        sense_key, asc, ascq),
+            _ => format!(
+                "Unknown error - Sense Key: 0x{:02X}, ASC: 0x{:02X}, ASCQ: 0x{:02X}",
+                sense_key, asc, ascq
+            ),
         };
 
         Ok(error_description)
@@ -144,8 +152,8 @@ impl ScsiErrorHandler {
 
         // Check for volume overflow condition (matching LTFSCopyGUI logic)
         let sense_key = sense_data[2] & 0x0F;
-        let _ili_bit = (sense_data[2] >> 5) & 0x01;  // ILI (Incorrect Length Indicator)
-        let eom_bit = (sense_data[2] >> 6) & 0x01;  // EOM (End of Medium)
+        let _ili_bit = (sense_data[2] >> 5) & 0x01; // ILI (Incorrect Length Indicator)
+        let eom_bit = (sense_data[2] >> 6) & 0x01; // EOM (End of Medium)
 
         // Volume overflow detection from LTFSCopyGUI:
         // ((sense(2) >> 6) And &H1) = 1 AndAlso ((sense(2) And &HF) = 13)
@@ -169,17 +177,20 @@ impl ScsiErrorHandler {
     /// Handle SCSI write error with user interaction simulation
     /// Corresponds to VB.NET error handling with MessageBox choices
     pub fn handle_write_error(
-        &self, 
-        sense_data: &[u8], 
+        &self,
+        sense_data: &[u8],
         file_path: &str,
-        retry_count: u32
+        retry_count: u32,
     ) -> Result<ScsiErrorAction> {
         let error_description = self.parse_sense_data(sense_data)?;
-        
+
         // Check for volume overflow
         if self.is_volume_overflow(sense_data) {
             if self.ignore_volume_overflow {
-                warn!("Volume overflow detected but ignored due to configuration: {}", file_path);
+                warn!(
+                    "Volume overflow detected but ignored due to configuration: {}",
+                    file_path
+                );
                 return Ok(ScsiErrorAction::Ignore);
             } else {
                 error!("Volume overflow detected for file: {}", file_path);
@@ -199,16 +210,23 @@ impl ScsiErrorHandler {
 
         // Check for retryable errors
         if retry_count < self.max_retry_attempts {
-            warn!("SCSI write error (attempt {}/{}): {}", 
-                  retry_count + 1, self.max_retry_attempts, error_description);
+            warn!(
+                "SCSI write error (attempt {}/{}): {}",
+                retry_count + 1,
+                self.max_retry_attempts,
+                error_description
+            );
             warn!("Retrying operation for file: {}", file_path);
             return Ok(ScsiErrorAction::Retry);
         }
 
         // Max retries exceeded - in GUI version this would show MessageBox
-        error!("SCSI write error after {} attempts: {}", self.max_retry_attempts, error_description);
+        error!(
+            "SCSI write error after {} attempts: {}",
+            self.max_retry_attempts, error_description
+        );
         error!("Failed file: {}", file_path);
-        
+
         // For now, abort on persistent errors
         // In a GUI version, this would present Abort/Retry/Ignore options to user
         Ok(ScsiErrorAction::Abort)
@@ -217,7 +235,8 @@ impl ScsiErrorHandler {
     /// Format sense data as hex string for debugging
     /// Corresponds to VB.NET TapeUtils.Byte2Hex functionality
     pub fn format_sense_hex(&self, sense_data: &[u8]) -> String {
-        sense_data.iter()
+        sense_data
+            .iter()
             .map(|byte| format!("{:02X}", byte))
             .collect::<Vec<String>>()
             .join(" ")
@@ -271,7 +290,7 @@ impl CheckSumBlockwiseCalculator {
     pub fn new_with_options(options: &WriteOptions) -> Self {
         use sha1::Digest as Sha1Digest;
         use sha2::Digest as Sha256Digest;
-        
+
         Self {
             sha1_hasher: Sha1Digest::new(),
             md5_hasher: md5::Context::new(),
@@ -298,7 +317,7 @@ impl CheckSumBlockwiseCalculator {
     pub fn new() -> Self {
         use sha1::Digest as Sha1Digest;
         use sha2::Digest as Sha256Digest;
-        
+
         Self {
             sha1_hasher: Sha1Digest::new(),
             md5_hasher: md5::Context::new(),
@@ -314,23 +333,23 @@ impl CheckSumBlockwiseCalculator {
     pub fn propagate(&mut self, data: &[u8]) {
         use sha1::Digest as Sha1Digest;
         use sha2::Digest as Sha256Digest;
-        
+
         self.sha1_hasher.update(data);
         self.md5_hasher.consume(data);
         Sha256Digest::update(&mut self.sha256_hasher, data);
-        
+
         if let Some(ref mut hasher) = self.blake3_hasher {
             hasher.update(data);
         }
-        
+
         if let Some(ref mut hasher) = self.xxh3_hasher {
             hasher.update(data);
         }
-        
+
         if let Some(ref mut hasher) = self.xxh128_hasher {
             hasher.update(data);
         }
-        
+
         self.bytes_processed += data.len() as u64;
     }
 
@@ -360,81 +379,81 @@ impl CheckSumBlockwiseCalculator {
 
     /// Get BLAKE3 value
     pub fn blake3_value(&self) -> Option<String> {
-        self.blake3_hasher.as_ref().map(|hasher| {
-            hex::encode_upper(hasher.clone().finalize().as_bytes())
-        })
+        self.blake3_hasher
+            .as_ref()
+            .map(|hasher| hex::encode_upper(hasher.clone().finalize().as_bytes()))
     }
 
     /// Get XxHash3 value
     pub fn xxhash3_value(&self) -> Option<String> {
-        self.xxh3_hasher.as_ref().map(|hasher| {
-            format!("{:X}", hasher.clone().digest())
-        })
+        self.xxh3_hasher
+            .as_ref()
+            .map(|hasher| format!("{:X}", hasher.clone().digest()))
     }
 
     /// Get XxHash128 value
     pub fn xxhash128_value(&self) -> Option<String> {
-        self.xxh128_hasher.as_ref().map(|hasher| {
-            format!("{:X}", hasher.clone().digest128())
-        })
+        self.xxh128_hasher
+            .as_ref()
+            .map(|hasher| format!("{:X}", hasher.clone().digest128()))
     }
 
     /// Get filtered hash map based on WriteOptions (LTFSCopyGUI compatible keys)
     pub fn get_enabled_hashes(&self, options: &WriteOptions) -> HashMap<String, String> {
         let mut hashes = HashMap::new();
-        
+
         if options.hash_sha1_enabled {
             hashes.insert("ltfs.hash.sha1sum".to_string(), self.sha1_value());
         }
-        
+
         if options.hash_md5_enabled {
             hashes.insert("ltfs.hash.md5sum".to_string(), self.md5_value());
         }
-        
+
         // SHA256 is always included when hash_on_write is enabled
         hashes.insert("ltfs.hash.sha256sum".to_string(), self.sha256_value());
-        
+
         if options.hash_blake3_enabled {
             if let Some(blake3) = self.blake3_value() {
                 hashes.insert("ltfs.hash.blake3sum".to_string(), blake3);
             }
         }
-        
+
         if options.hash_xxhash3_enabled {
             if let Some(xxh3) = self.xxhash3_value() {
                 hashes.insert("ltfs.hash.xxhash3sum".to_string(), xxh3);
             }
         }
-        
+
         if options.hash_xxhash128_enabled {
             if let Some(xxh128) = self.xxhash128_value() {
                 hashes.insert("ltfs.hash.xxhash128sum".to_string(), xxh128);
             }
         }
-        
+
         hashes
     }
 
     /// Get all hash values as map (LTFSCopyGUI compatible keys)
     pub fn get_all_hashes(&self) -> HashMap<String, String> {
         let mut hashes = HashMap::new();
-        
+
         hashes.insert("ltfs.hash.sha1sum".to_string(), self.sha1_value());
         hashes.insert("ltfs.hash.md5sum".to_string(), self.md5_value());
         hashes.insert("ltfs.hash.sha256sum".to_string(), self.sha256_value());
-        
+
         if let Some(blake3) = self.blake3_value() {
             hashes.insert("ltfs.hash.blake3sum".to_string(), blake3);
         }
-        
+
         if let Some(xxh3) = self.xxhash3_value() {
             hashes.insert("ltfs.hash.xxhash3sum".to_string(), xxh3);
         }
-        
+
         if let Some(xxh128) = self.xxhash128_value() {
             hashes.insert("ltfs.hash.xxhash128sum".to_string(), xxh128);
         }
-        
+
         hashes
     }
 }
@@ -443,32 +462,36 @@ impl CheckSumBlockwiseCalculator {
 impl TapeOperations {
     /// Locate to write position precisely (corresponds to VB.NET LocateToWritePosition)
     pub async fn locate_to_write_position(&mut self) -> Result<PartitionWriteState> {
-        info!("Locating to write position with ExtraPartitionCount = {}", 
-              self.get_extra_partition_count());
-        
+        info!(
+            "Locating to write position with ExtraPartitionCount = {}",
+            self.get_extra_partition_count()
+        );
+
         // Read current position
         let current_pos = self.scsi.read_position()?;
         info!(
             "Current tape position: partition={}, block={}",
             current_pos.partition, current_pos.block_number
         );
-        
+
         // 使用ExtraPartitionCount进行分区映射 (对应LTFSCopyGUI的Math.Min逻辑)
         let logical_data_partition = 1u8; // Partition B (data partition)
         let data_partition = self.get_target_partition(logical_data_partition);
         let mut target_block = current_pos.block_number;
-        
+
         info!(
             "Partition mapping: logical={} -> physical={} (ExtraPartitionCount={})",
-            logical_data_partition, data_partition, self.get_extra_partition_count()
+            logical_data_partition,
+            data_partition,
+            self.get_extra_partition_count()
         );
-        
+
         // If not in target data partition, move to end of data partition
         if current_pos.partition != data_partition {
             info!("Moving to end of data partition {}", data_partition);
             self.scsi.locate_block(data_partition, 0)?;
             self.scsi.space(crate::scsi::SpaceType::EndOfData, 0)?;
-            
+
             let eod_pos = self.scsi.read_position()?;
             target_block = eod_pos.block_number;
             info!(
@@ -487,37 +510,44 @@ impl TapeOperations {
                 );
             }
         }
-        
+
         // Validate position is reasonable (对应LTFSCopyGUI的分区验证逻辑)
         if let Some(ref schema) = &self.schema {
-            let schema_partition = if schema.location.partition == "b" { 1 } else { 0 };
+            let schema_partition = if schema.location.partition == "b" {
+                1
+            } else {
+                0
+            };
             let target_schema_partition = self.get_target_partition(schema_partition);
-            
-            if target_schema_partition == data_partition && 
-               target_block <= schema.location.startblock {
+
+            if target_schema_partition == data_partition
+                && target_block <= schema.location.startblock
+            {
                 return Err(RustLtfsError::tape_device(format!(
                     "Current position p{}b{} not allowed for index write, index is at p{}b{}",
-                    data_partition, target_block, 
-                    target_schema_partition, schema.location.startblock
+                    data_partition,
+                    target_block,
+                    target_schema_partition,
+                    schema.location.startblock
                 )));
             }
         }
-        
+
         let write_state = PartitionWriteState {
             current_partition: data_partition,
             current_block: target_block,
             is_index_partition: false,
             last_filemark_position: None,
         };
-        
+
         info!(
             "Positioning complete, write position: partition={}, block={}",
             write_state.current_partition, write_state.current_block
         );
-        
+
         Ok(write_state)
     }
-    
+
     /// Stream write file to tape (refactored version, solves large file memory issues)
     /// Corresponds to VB.NET block read/write logic
     pub async fn write_file_to_tape_streaming(
@@ -525,7 +555,10 @@ impl TapeOperations {
         source_path: &Path,
         target_path: &str,
     ) -> Result<WriteResult> {
-        info!("Streaming file write to tape: {:?} -> {}", source_path, target_path);
+        info!(
+            "Streaming file write to tape: {:?} -> {}",
+            source_path, target_path
+        );
 
         // Check stop flag
         if self.stop_flag {
@@ -556,7 +589,7 @@ impl TapeOperations {
         let metadata = tokio::fs::metadata(source_path).await.map_err(|e| {
             RustLtfsError::file_operation(format!("Unable to get file information: {}", e))
         })?;
-        
+
         let file_size = metadata.len();
         info!("File size: {} bytes", file_size);
 
@@ -606,23 +639,25 @@ impl TapeOperations {
 
         // Locate to write position
         let _write_state = self.locate_to_write_position().await?;
-        
+
         // Get write start position
         let write_start_position = self.scsi.read_position()?;
-        
+
         // Open file and create buffered reader
-        let file = File::open(source_path).await.map_err(|e| {
-            RustLtfsError::file_operation(format!("Unable to open file: {}", e))
-        })?;
-        
+        let file = File::open(source_path)
+            .await
+            .map_err(|e| RustLtfsError::file_operation(format!("Unable to open file: {}", e)))?;
+
         let mut buf_reader = BufReader::with_capacity(
             self.block_size as usize * 32, // 32-block buffer
-            file
+            file,
         );
 
         // Initialize hash calculator (if enabled) based on configuration
         let mut hash_calculator = if self.write_options.hash_on_write {
-            Some(CheckSumBlockwiseCalculator::new_with_options(&self.write_options))
+            Some(CheckSumBlockwiseCalculator::new_with_options(
+                &self.write_options,
+            ))
         } else {
             None
         };
@@ -632,27 +667,29 @@ impl TapeOperations {
         let duplicate_count = if self.write_options.dedupe {
             if let Some(ref dedup_manager) = self.dedup_manager {
                 info!("执行去重检查：{:?}", source_path);
-                
+
                 // 快速计算文件哈希（只计算主要哈希算法）
                 let quick_hashes = self.calculate_file_hashes(source_path).await?;
-                
+
                 // 检查是否存在重复文件
                 if let Some(duplicates) = dedup_manager.check_file_exists(&quick_hashes) {
                     duplicate_detected = true;
                     let dup_count = duplicates.len();
-                    
-                    info!("🔍 检测到重复文件：{:?}，已存在 {} 个副本", 
-                          source_path, dup_count);
-                    
+
+                    info!(
+                        "🔍 检测到重复文件：{:?}，已存在 {} 个副本",
+                        source_path, dup_count
+                    );
+
                     // 根据策略决定是否跳过写入
                     if self.write_options.skip_duplicates {
                         info!("⏭️ 跳过重复文件写入：{:?}", source_path);
-                        
+
                         // 更新统计信息
                         self.write_progress.current_files_processed += 1;
                         self.write_progress.duplicates_skipped += 1;
                         self.write_progress.space_saved += file_size;
-                        
+
                         return Ok(WriteResult {
                             position: crate::scsi::TapePosition {
                                 partition: 1,
@@ -668,7 +705,7 @@ impl TapeOperations {
                     } else {
                         info!("📝 仍然写入重复文件（去重策略允许）");
                     }
-                    
+
                     dup_count
                 } else {
                     0
@@ -684,53 +721,59 @@ impl TapeOperations {
         let mut total_blocks_written = 0u32;
         let mut total_bytes_written = 0u64;
         let write_start_time = std::time::Instant::now();
-        
+
         // Choose processing strategy based on file size
         if file_size <= self.block_size as u64 {
             // Small file: read and write in one go
             info!("Processing small file ({} bytes)", file_size);
-            
+
             let mut buffer = vec![0u8; self.block_size as usize];
-            let bytes_read = buf_reader.read(&mut buffer[..file_size as usize]).await.map_err(|e| {
-                RustLtfsError::file_operation(format!("Failed to read file: {}", e))
-            })?;
-            
+            let bytes_read = buf_reader
+                .read(&mut buffer[..file_size as usize])
+                .await
+                .map_err(|e| {
+                    RustLtfsError::file_operation(format!("Failed to read file: {}", e))
+                })?;
+
             if bytes_read != file_size as usize {
                 return Err(RustLtfsError::file_operation(format!(
                     "Bytes read mismatch: expected {} bytes, actually read {} bytes",
                     file_size, bytes_read
                 )));
             }
-            
+
             // Calculate hash
             if let Some(ref mut calc) = hash_calculator {
                 calc.propagate(&buffer[..bytes_read]);
                 calc.process_final_block();
             }
-            
+
             // Apply performance controls before write (对应LTFSCopyGUI的性能控制)
-            self.apply_performance_controls(self.block_size as u64).await?;
-            
+            self.apply_performance_controls(self.block_size as u64)
+                .await?;
+
             // Write to tape
             let blocks_written = self.scsi.write_blocks(1, &buffer)?;
-            
+
             if blocks_written != 1 {
                 return Err(RustLtfsError::scsi(format!(
                     "Expected to write 1 block, but actually wrote {} blocks",
                     blocks_written
                 )));
             }
-            
+
             total_blocks_written = blocks_written;
             total_bytes_written = file_size;
-            
         } else {
             // Large file: block-wise streaming processing
-            info!("Processing large file ({} bytes), using block-wise streaming", file_size);
-            
+            info!(
+                "Processing large file ({} bytes), using block-wise streaming",
+                file_size
+            );
+
             let mut buffer = vec![0u8; self.block_size as usize];
             let mut remaining_bytes = file_size;
-            
+
             while remaining_bytes > 0 {
                 // Check stop and pause flags
                 if self.stop_flag {
@@ -738,84 +781,88 @@ impl TapeOperations {
                         "Write operation stopped".to_string(),
                     ));
                 }
-                
+
                 while self.pause_flag && !self.stop_flag {
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }
-                
+
                 // Calculate bytes to read for current block
                 let bytes_to_read = std::cmp::min(remaining_bytes, self.block_size as u64) as usize;
-                
+
                 // Clear buffer (for last block, this ensures zero padding)
                 buffer.fill(0);
-                
+
                 // Read data from file
-                let bytes_read = buf_reader.read(&mut buffer[..bytes_to_read]).await.map_err(|e| {
-                    RustLtfsError::file_operation(format!("Failed to read file: {}", e))
-                })?;
-                
+                let bytes_read = buf_reader
+                    .read(&mut buffer[..bytes_to_read])
+                    .await
+                    .map_err(|e| {
+                        RustLtfsError::file_operation(format!("Failed to read file: {}", e))
+                    })?;
+
                 if bytes_read == 0 {
                     break; // End of file
                 }
-                
+
                 // Calculate hash
                 if let Some(ref mut calc) = hash_calculator {
                     calc.propagate(&buffer[..bytes_read]);
                 }
-                
+
                 // Apply speed limiting (if configured)
                 if let Some(speed_limit_mbps) = self.write_options.speed_limit {
-                    self.apply_speed_limit(self.block_size as u64, speed_limit_mbps).await;
+                    self.apply_speed_limit(self.block_size as u64, speed_limit_mbps)
+                        .await;
                 }
-                
+
                 // Apply comprehensive performance controls (对应LTFSCopyGUI的全面性能控制)
                 self.apply_performance_controls(bytes_read as u64).await?;
-                
+
                 // Write block to tape
                 let blocks_written = self.scsi.write_blocks(1, &buffer)?;
-                
+
                 if blocks_written != 1 {
                     return Err(RustLtfsError::scsi(format!(
                         "Expected to write 1 block, but actually wrote {} blocks",
                         blocks_written
                     )));
                 }
-                
+
                 total_blocks_written += blocks_written;
                 total_bytes_written += bytes_read as u64;
                 remaining_bytes -= bytes_read as u64;
-                
+
                 // Update progress
                 self.write_progress.current_bytes_processed += bytes_read as u64;
-                
+
                 debug!(
                     "Written {} blocks, {} bytes, remaining {} bytes",
                     total_blocks_written, total_bytes_written, remaining_bytes
                 );
             }
-            
+
             // Complete hash calculation
             if let Some(ref mut calc) = hash_calculator {
                 calc.process_final_block();
             }
         }
-        
+
         // Write file mark to separate files
         self.scsi.write_filemarks(1)?;
-        
+
         let write_duration = write_start_time.elapsed();
         let speed_mbps = if write_duration.as_millis() > 0 {
-            (total_bytes_written as f64 / (1024.0 * 1024.0)) / 
-            (write_duration.as_millis() as f64 / 1000.0)
+            (total_bytes_written as f64 / (1024.0 * 1024.0))
+                / (write_duration.as_millis() as f64 / 1000.0)
         } else {
             0.0
         };
-        
+
         info!(
             "File write complete: {} blocks ({} bytes), took {:?}, speed {:.2} MiB/s",
             total_blocks_written, total_bytes_written, write_duration, speed_mbps
         );
-        
+
         // Update LTFS index with computed hashes
         if let Some(hash_calc) = &hash_calculator {
             let hashes = hash_calc.get_enabled_hashes(&self.write_options);
@@ -834,21 +881,23 @@ impl TapeOperations {
                 &write_start_position,
             )?;
         }
-        
+
         // Update progress counters
         self.write_progress.current_files_processed += 1;
         self.write_progress.total_bytes_unindexed += file_size;
-        
+
         // 注册文件到去重数据库（如果启用）
         if !duplicate_detected && self.write_options.dedupe {
-            if let (Some(ref mut dedup_manager), Some(ref hash_calc)) = (&mut self.dedup_manager, &hash_calculator) {
+            if let (Some(ref mut dedup_manager), Some(ref hash_calc)) =
+                (&mut self.dedup_manager, &hash_calculator)
+            {
                 let hashes = hash_calc.get_enabled_hashes(&self.write_options);
                 let tape_location = super::deduplication::TapeLocation {
                     partition: write_start_position.partition,
                     start_block: write_start_position.block_number,
                     file_uid: 0, // UID will be set when updating index
                 };
-                
+
                 if let Err(e) = dedup_manager.register_file(
                     &source_path.to_string_lossy(),
                     file_size,
@@ -859,31 +908,35 @@ impl TapeOperations {
                 }
             }
         }
-        
+
         // 记录重复文件统计信息（用于日志记录）
         debug!("Duplicate count for tracking: {}", duplicate_count);
-        
+
         // Check if index update is needed based on interval, force_index option, or small file scenario
         // For testing and small files, we automatically force index write when total unindexed data is small
-        let should_force_index = self.write_options.force_index || 
-                                 (self.write_progress.total_bytes_unindexed < 100 * 1024 * 1024 && // Less than 100MB
+        let should_force_index = self.write_options.force_index
+            || (self.write_progress.total_bytes_unindexed < 100 * 1024 * 1024 && // Less than 100MB
                                   self.write_progress.current_files_processed <= 10); // And few files
-        
-        if self.write_progress.total_bytes_unindexed >= self.write_options.index_write_interval ||
-           should_force_index {
-            info!("Index write triggered: interval_reached={}, should_force={}, total_unindexed={}, files_processed={}", 
+
+        if self.write_progress.total_bytes_unindexed >= self.write_options.index_write_interval
+            || should_force_index
+        {
+            info!("Index write triggered: interval_reached={}, should_force={}, total_unindexed={}, files_processed={}",
                   self.write_progress.total_bytes_unindexed >= self.write_options.index_write_interval,
                   should_force_index && !self.write_options.force_index,
                   self.write_progress.total_bytes_unindexed,
                   self.write_progress.current_files_processed);
-            self.update_index_on_tape_with_options_dual_partition(should_force_index).await?;
+            self.update_index_on_tape_with_options_dual_partition(should_force_index)
+                .await?;
         } else {
-            info!("Index write skipped: total_unindexed={}, interval={}, files_processed={}", 
-                  self.write_progress.total_bytes_unindexed,
-                  self.write_options.index_write_interval,
-                  self.write_progress.current_files_processed);
+            info!(
+                "Index write skipped: total_unindexed={}, interval={}, files_processed={}",
+                self.write_progress.total_bytes_unindexed,
+                self.write_options.index_write_interval,
+                self.write_progress.current_files_processed
+            );
         }
-        
+
         Ok(WriteResult {
             position: write_start_position,
             blocks_written: total_blocks_written,
@@ -1047,7 +1100,10 @@ impl TapeOperations {
                 let file_target = format!("{}/{}", target_path, file_name);
 
                 // Write individual file
-                if let Err(e) = self.write_file_to_tape_streaming(&file_path, &file_target).await {
+                if let Err(e) = self
+                    .write_file_to_tape_streaming(&file_path, &file_target)
+                    .await
+                {
                     error!("Failed to write file {:?}: {}", file_path, e);
                     // Continue with other files instead of failing entire directory
                 }
@@ -1085,11 +1141,11 @@ impl TapeOperations {
     // ================== 异步写入操作 ==================
 
     /// Write multiple files asynchronously
-    pub async fn write_files_async(
-        &mut self,
-        file_entries: Vec<FileWriteEntry>,
-    ) -> Result<()> {
-        info!("Starting async write operation for {} files", file_entries.len());
+    pub async fn write_files_async(&mut self, file_entries: Vec<FileWriteEntry>) -> Result<()> {
+        info!(
+            "Starting async write operation for {} files",
+            file_entries.len()
+        );
 
         // Add all entries to write queue
         self.write_queue.extend(file_entries);
@@ -1134,11 +1190,16 @@ impl TapeOperations {
             .to_string();
 
         let now = get_current_ltfs_timestamp();
-        let new_uid = current_index.highestfileuid.unwrap_or(0) + 1;
+        // NOTE: UID will be allocated in add_file_to_target_directory() after directories are created
+        // This prevents UID conflicts when creating nested directories
 
         let extent = crate::ltfs_index::FileExtent {
             // 使用实际写入位置的分区信息，而不是硬编码
-            partition: if write_position.partition == 0 { "a".to_string() } else { "b".to_string() },
+            partition: if write_position.partition == 0 {
+                "a".to_string()
+            } else {
+                "b".to_string()
+            },
             start_block: write_position.block_number,
             byte_count: file_size,
             file_offset: 0,
@@ -1167,7 +1228,7 @@ impl TapeOperations {
 
         let new_file = crate::ltfs_index::File {
             name: file_name,
-            uid: new_uid,
+            uid: 0, // Temporary placeholder - will be assigned in add_file_to_target_directory
             length: file_size,
             creation_time: creation_time,
             change_time: now.clone(),
@@ -1183,20 +1244,20 @@ impl TapeOperations {
             extended_attributes: if let Some(hashes) = file_hashes {
                 // Create extended attributes following LTFSCopyGUI format
                 let mut attributes = Vec::new();
-                
+
                 for (hash_key, hash_value) in hashes {
                     attributes.push(crate::ltfs_index::ExtendedAttribute {
                         key: hash_key, // Already contains full key name like "ltfs.hash.sha1sum"
                         value: hash_value,
                     });
                 }
-                
+
                 // Add capacity remain attribute (placeholder)
                 attributes.push(crate::ltfs_index::ExtendedAttribute {
                     key: "ltfscopygui.capacityremain".to_string(),
                     value: "12".to_string(), // Placeholder value
                 });
-                
+
                 Some(crate::ltfs_index::ExtendedAttributes { attributes })
             } else {
                 None
@@ -1204,26 +1265,33 @@ impl TapeOperations {
         };
 
         // Parse target path and add file to appropriate directory
-        info!("Before adding file: root directory has {} files, {} directories", 
-               current_index.root_directory.contents.files.len(),
-               current_index.root_directory.contents.directories.len());
-        info!("Adding file '{}' to target path: '{}'", new_file.name, target_path);
+        info!(
+            "Before adding file: root directory has {} files, {} directories",
+            current_index.root_directory.contents.files.len(),
+            current_index.root_directory.contents.directories.len()
+        );
+        info!(
+            "Adding file '{}' to target path: '{}'",
+            new_file.name, target_path
+        );
         self.add_file_to_target_directory(&mut current_index, new_file, target_path)?;
-        info!("After adding file: root directory has {} files, {} directories", 
-               current_index.root_directory.contents.files.len(),
-               current_index.root_directory.contents.directories.len());
+        info!(
+            "After adding file: root directory has {} files, {} directories",
+            current_index.root_directory.contents.files.len(),
+            current_index.root_directory.contents.directories.len()
+        );
 
         // Update index metadata
         current_index.generationnumber += 1;
         current_index.updatetime = get_current_ltfs_timestamp();
-        current_index.highestfileuid = Some(new_uid);
+        // NOTE: highestfileuid is updated in add_file_to_target_directory
 
         // Update internal index
         self.index = Some(current_index.clone());
         self.schema = Some(current_index);
         self.modified = true; // Mark as modified for later index writing
 
-        debug!("LTFS index updated with new file: UID {}", new_uid);
+        debug!("LTFS index updated with new file");
         Ok(())
     }
 
@@ -1257,11 +1325,16 @@ impl TapeOperations {
             .to_string();
 
         let now = get_current_ltfs_timestamp();
-        let new_uid = current_index.highestfileuid.unwrap_or(0) + 1;
+        // NOTE: UID will be allocated in add_file_to_target_directory() after directories are created
+        // This prevents UID conflicts when creating nested directories
 
         let extent = crate::ltfs_index::FileExtent {
             // 使用实际写入位置的分区信息，而不是硬编码
-            partition: if write_position.partition == 0 { "a".to_string() } else { "b".to_string() },
+            partition: if write_position.partition == 0 {
+                "a".to_string()
+            } else {
+                "b".to_string()
+            },
             start_block: write_position.block_number,
             byte_count: file_size,
             file_offset: 0,
@@ -1270,7 +1343,7 @@ impl TapeOperations {
 
         let new_file = crate::ltfs_index::File {
             name: file_name,
-            uid: new_uid,
+            uid: 0, // Temporary placeholder - will be assigned in add_file_to_target_directory
             length: file_size,
             creation_time: now.clone(),
             change_time: now.clone(),
@@ -1286,18 +1359,18 @@ impl TapeOperations {
             extended_attributes: None,
         };
 
-        // Parse target path and add file to appropriate directory  
+        // Parse target path and add file to appropriate directory
         self.add_file_to_target_directory(&mut current_index, new_file, target_path)?;
 
         // Update index metadata
         current_index.generationnumber += 1;
         current_index.updatetime = get_current_ltfs_timestamp();
-        current_index.highestfileuid = Some(new_uid);
+        // NOTE: highestfileuid is updated in add_file_to_target_directory
 
         // Update internal index
         self.index = Some(current_index.clone());
 
-        debug!("LTFS index updated with new file: UID {}", new_uid);
+        debug!("LTFS index updated with new file");
         Ok(())
     }
 
@@ -1395,7 +1468,10 @@ impl TapeOperations {
 
     /// Update index on tape with force option (corresponds to VB.NET WriteCurrentIndex)
     pub async fn update_index_on_tape_with_options(&mut self, force_index: bool) -> Result<()> {
-        info!("Starting to update tape LTFS index (force: {})...", force_index);
+        info!(
+            "Starting to update tape LTFS index (force: {})...",
+            force_index
+        );
 
         // Allow execution in offline mode but skip actual tape operations
         if self.offline_mode {
@@ -1419,9 +1495,9 @@ impl TapeOperations {
         };
 
         // Enhanced logic following LTFSCopyGUI: check force_index OR TotalBytesUnindexed
-        let should_update = force_index || 
-                           self.write_options.force_index || 
-                           self.write_progress.total_bytes_unindexed > 0;
+        let should_update = force_index
+            || self.write_options.force_index
+            || self.write_progress.total_bytes_unindexed > 0;
 
         if !should_update {
             info!("No unindexed data and force_index not set, skipping update (matching LTFSCopyGUI logic)");
@@ -1432,17 +1508,21 @@ impl TapeOperations {
         let current_position = self.scsi.read_position()?;
         info!(
             "Current tape position: partition={}, block={}, ExtraPartitionCount={}",
-            current_position.partition, current_position.block_number, self.get_extra_partition_count()
+            current_position.partition,
+            current_position.block_number,
+            self.get_extra_partition_count()
         );
 
         // 使用ExtraPartitionCount进行分区映射 (对应LTFSCopyGUI的Math.Min逻辑)
         let logical_data_partition = 1u8; // Partition B
         let data_partition = self.get_target_partition(logical_data_partition);
-        
+
         if current_position.partition != data_partition || self.write_options.goto_eod_on_write {
             if current_position.partition != data_partition {
-                info!("Moving to data partition {} (mapped from logical partition {})", 
-                      data_partition, logical_data_partition);
+                info!(
+                    "Moving to data partition {} (mapped from logical partition {})",
+                    data_partition, logical_data_partition
+                );
                 self.scsi.locate_block(data_partition, 0)?; // Move to beginning of data partition first
             }
             // Go to end of data
@@ -1458,30 +1538,38 @@ impl TapeOperations {
         // Validate position for index write (对应LTFSCopyGUI的ExtraPartitionCount验证逻辑)
         let extra_partition_count = self.get_extra_partition_count();
         if extra_partition_count > 0 {
-            let current_schema_partition = if current_index.location.partition == "b" { 1 } else { 0 };
+            let current_schema_partition = if current_index.location.partition == "b" {
+                1
+            } else {
+                0
+            };
             let target_schema_partition = self.get_target_partition(current_schema_partition);
-            
+
             if target_schema_partition != eod_position.partition {
                 return Err(RustLtfsError::tape_device(format!(
                     "Current position p{}b{} not allowed for index write (ExtraPartitionCount={})",
                     eod_position.partition, eod_position.block_number, extra_partition_count
                 )));
             }
-            
+
             // Enhanced validation logic for first write scenarios
             // 首次写入时，索引startblock可能为0，EOD位置也可能为0，这是正常情况
-            let is_first_write = current_index.generationnumber <= 1 && current_index.location.startblock == 0;
+            let is_first_write =
+                current_index.generationnumber <= 1 && current_index.location.startblock == 0;
             let is_eod_at_start = eod_position.block_number == 0;
-            
+
             // 如果不是首次写入，或者EOD不在开始位置，才进行位置冲突检查
-            if !is_first_write && !is_eod_at_start && current_index.location.startblock >= eod_position.block_number {
+            if !is_first_write
+                && !is_eod_at_start
+                && current_index.location.startblock >= eod_position.block_number
+            {
                 return Err(RustLtfsError::tape_device(format!(
                     "Current position p{}b{} not allowed for index write, index at startblock {} (ExtraPartitionCount={})",
                     eod_position.partition, eod_position.block_number, current_index.location.startblock, extra_partition_count
                 )));
             }
-            
-            info!("Index write validation passed: first_write={}, eod_at_start={}, startblock={}, eod_block={}", 
+
+            info!("Index write validation passed: first_write={}, eod_at_start={}, startblock={}, eod_block={}",
                   is_first_write, is_eod_at_start, current_index.location.startblock, eod_position.block_number);
         }
 
@@ -1507,13 +1595,23 @@ impl TapeOperations {
         );
 
         info!("Generating index XML...");
-        
+
         // Debug: Print directory contents before serialization
-        info!("DEBUG: Root directory files count before XML generation: {}", 
-              current_index.root_directory.contents.files.len());
-        for (i, file) in current_index.root_directory.contents.files.iter().enumerate() {
-            info!("DEBUG: File {}: name='{}', uid={}, length={}", 
-                  i, file.name, file.uid, file.length);
+        info!(
+            "DEBUG: Root directory files count before XML generation: {}",
+            current_index.root_directory.contents.files.len()
+        );
+        for (i, file) in current_index
+            .root_directory
+            .contents
+            .files
+            .iter()
+            .enumerate()
+        {
+            info!(
+                "DEBUG: File {}: name='{}', uid={}, length={}",
+                i, file.name, file.uid, file.length
+            );
         }
 
         // Create temporary file for index (matching LTFSCopyGUI's temporary file approach)
@@ -1524,10 +1622,12 @@ impl TapeOperations {
 
         // Serialize index to XML and save to temporary file
         let index_xml = current_index.to_xml()?;
-        
+
         // Debug: Print first 500 chars of generated XML
-        info!("DEBUG: Generated XML (first 500 chars): {}", 
-              &index_xml.chars().take(500).collect::<String>());
+        info!(
+            "DEBUG: Generated XML (first 500 chars): {}",
+            &index_xml.chars().take(500).collect::<String>()
+        );
         tokio::fs::write(&temp_index_path, index_xml)
             .await
             .map_err(|e| {
@@ -1551,7 +1651,8 @@ impl TapeOperations {
         buffer[..index_content.len()].copy_from_slice(&index_content);
 
         // Apply performance controls for index write (对应LTFSCopyGUI的索引写入性能控制)
-        self.apply_performance_controls(index_content.len() as u64).await?;
+        self.apply_performance_controls(index_content.len() as u64)
+            .await?;
 
         // Write index blocks to tape
         let blocks_written = self.scsi.write_blocks(blocks_needed as u32, &buffer)?;
@@ -1576,7 +1677,8 @@ impl TapeOperations {
         self.write_progress.total_bytes_unindexed = 0;
 
         // Clear current progress stats if requested (matching LTFSCopyGUI's ClearCurrentStat)
-        if !force_index { // Only clear on normal updates, not forced ones
+        if !force_index {
+            // Only clear on normal updates, not forced ones
             self.write_progress.current_bytes_processed = 0;
             self.write_progress.current_files_processed = 0;
         }
@@ -1604,7 +1706,9 @@ impl TapeOperations {
 
     /// Process file entry for writing
     pub async fn process_file_entry(&mut self, entry: &FileWriteEntry) -> Result<()> {
-        self.write_file_to_tape_streaming(&entry.source_path, &entry.target_path).await.map(|_| ())
+        self.write_file_to_tape_streaming(&entry.source_path, &entry.target_path)
+            .await
+            .map(|_| ())
     }
 
     /// Calculate file hash (preserved for backward compatibility)
@@ -1647,7 +1751,7 @@ impl TapeOperations {
         let mut sha1_hasher = Sha1::new();
         let mut md5_hasher = md5::Context::new();
         let mut sha256_hasher = Sha256::new();
-        
+
         let mut buffer = vec![0u8; 1024 * 1024]; // 1MB buffer
 
         loop {
@@ -1665,12 +1769,18 @@ impl TapeOperations {
         }
 
         let mut hashes = HashMap::new();
-        
+
         // 按照LTFSCopyGUI的格式生成哈希值
-        hashes.insert("sha1sum".to_string(), format!("{:X}", sha1_hasher.finalize()));
+        hashes.insert(
+            "sha1sum".to_string(),
+            format!("{:X}", sha1_hasher.finalize()),
+        );
         hashes.insert("md5sum".to_string(), format!("{:X}", md5_hasher.compute()));
-        hashes.insert("sha256sum".to_string(), format!("{:X}", sha256_hasher.finalize()));
-        
+        hashes.insert(
+            "sha256sum".to_string(),
+            format!("{:X}", sha256_hasher.finalize()),
+        );
+
         Ok(hashes)
     }
 
@@ -1684,7 +1794,7 @@ impl TapeOperations {
         // For now, we assume verification passes
         // In a full implementation, we would read the file back from tape and compare hashes
         debug!("Source file hash: {}", source_hash);
-        
+
         // Placeholder verification logic
         let verification_passed = true;
 
@@ -2018,74 +2128,121 @@ impl TapeOperations {
     }
 
     /// Add file to target directory, creating directories as needed
+    /// This function handles UID allocation AFTER directory creation to prevent conflicts
     fn add_file_to_target_directory(
-        &self, 
-        index: &mut LtfsIndex, 
-        file: crate::ltfs_index::File, 
-        target_path: &str
+        &self,
+        index: &mut LtfsIndex,
+        file: crate::ltfs_index::File,
+        target_path: &str,
     ) -> Result<()> {
-        info!("Adding file '{}' to target path '{}'", file.name, target_path);
-        
+        info!(
+            "Adding file '{}' to target path '{}'",
+            file.name, target_path
+        );
+
         // Normalize target path
         let normalized_path = target_path.trim_start_matches('/').trim_end_matches('/');
         info!("Normalized path: '{}'", normalized_path);
-        
+
         if normalized_path.is_empty() {
-            // Add to root directory
-            info!("Adding file '{}' to root directory", file.name);
-            index.root_directory.contents.files.push(file);
-            info!("Root directory now has {} files", index.root_directory.contents.files.len());
+            // Add to root directory - allocate UID here
+            let file_name = file.name.clone();
+            let mut file_to_add = file;
+            let new_file_uid = index.highestfileuid.unwrap_or(0) + 1;
+            file_to_add.uid = new_file_uid;
+            index.highestfileuid = Some(new_file_uid);
+
+            info!(
+                "Adding file '{}' to root directory with UID {}",
+                file_name, new_file_uid
+            );
+            index.root_directory.contents.files.push(file_to_add);
+            info!(
+                "Root directory now has {} files",
+                index.root_directory.contents.files.len()
+            );
             return Ok(());
         }
-        
+
         // Split path into components
         let path_parts: Vec<&str> = normalized_path.split('/').collect();
         info!("Target path components: {:?}", path_parts);
-        
+
         // Navigate to target directory, creating directories as needed
         info!("Finding/creating target directory path...");
-        let target_dir = self.ensure_directory_path_exists(index, &path_parts)?;
+        // First ensure directory path exists (this may update highestfileuid)
+        {
+            self.ensure_directory_path_exists(index, &path_parts)?;
+        }
         info!("Target directory found/created, adding file...");
-        
-        // Add file to target directory
-        let file_name = file.name.clone(); // Clone name before move
-        target_dir.contents.files.push(file);
-        info!("File '{}' added to directory '{}', directory now has {} files", 
-               file_name, normalized_path, target_dir.contents.files.len());
-        
+
+        // CRITICAL: Allocate file UID AFTER directory creation to avoid conflicts
+        // Directory creation may have updated highestfileuid, so we get fresh value
+        let file_name = file.name.clone();
+        let mut file_to_add = file;
+        let new_file_uid = index.highestfileuid.unwrap_or(0) + 1;
+        file_to_add.uid = new_file_uid;
+        index.highestfileuid = Some(new_file_uid);
+
+        info!(
+            "Allocated UID {} for file '{}' after directory creation",
+            new_file_uid, file_name
+        );
+
+        // Now get a fresh reference to the target directory to add the file
+        let target_dir = self.get_directory_by_path_mut(index, &path_parts)?;
+        target_dir.contents.files.push(file_to_add);
+        info!(
+            "File '{}' added to directory '{}', directory now has {} files",
+            file_name,
+            normalized_path,
+            target_dir.contents.files.len()
+        );
+
         Ok(())
     }
-    
+
     /// Ensure directory path exists, creating directories as needed
     fn ensure_directory_path_exists<'a>(
         &self,
         index: &'a mut LtfsIndex,
         path_parts: &[&str],
     ) -> Result<&'a mut crate::ltfs_index::Directory> {
-        info!("ensure_directory_path_exists called with path_parts: {:?}", path_parts);
-        
+        info!(
+            "ensure_directory_path_exists called with path_parts: {:?}",
+            path_parts
+        );
+
         if path_parts.is_empty() {
             info!("Path parts empty, returning root directory");
             return Ok(&mut index.root_directory);
         }
-        
+
         let mut current_dir = &mut index.root_directory;
-        info!("Starting at root directory with {} subdirectories", current_dir.contents.directories.len());
-        
+        info!(
+            "Starting at root directory with {} subdirectories",
+            current_dir.contents.directories.len()
+        );
+
         for (i, part) in path_parts.iter().enumerate() {
             info!("Processing directory part: '{}' (level {})", part, i);
-            info!("Current directory has {} subdirectories", current_dir.contents.directories.len());
-            
+            info!(
+                "Current directory has {} subdirectories",
+                current_dir.contents.directories.len()
+            );
+
             // Find existing directory or create new one
-            let dir_index = current_dir.contents.directories
+            let dir_index = current_dir
+                .contents
+                .directories
                 .iter()
                 .position(|d| d.name == *part);
-                
+
             match dir_index {
-                Some(index) => {
-                    info!("Found existing directory: '{}' at index {}", part, index);
+                Some(idx) => {
+                    info!("Found existing directory: '{}' at index {}", part, idx);
                     // Directory exists, continue navigation
-                    current_dir = &mut current_dir.contents.directories[index];
+                    current_dir = &mut current_dir.contents.directories[idx];
                 }
                 None => {
                     info!("Creating new directory: '{}'", part);
@@ -2093,7 +2250,7 @@ impl TapeOperations {
                     let now = get_current_ltfs_timestamp();
                     let new_uid = index.highestfileuid.unwrap_or(0) + 1;
                     info!("New directory UID: {}", new_uid);
-                    
+
                     let new_directory = crate::ltfs_index::Directory {
                         name: part.to_string(),
                         uid: new_uid,
@@ -2108,12 +2265,12 @@ impl TapeOperations {
                             directories: Vec::new(),
                         },
                     };
-                    
+
                     current_dir.contents.directories.push(new_directory);
                     index.highestfileuid = Some(new_uid);
-                    info!("Directory '{}' created and added, current directory now has {} subdirectories", 
+                    info!("Directory '{}' created and added, current directory now has {} subdirectories",
                            part, current_dir.contents.directories.len());
-                    
+
                     // Navigate to newly created directory
                     let last_index = current_dir.contents.directories.len() - 1;
                     current_dir = &mut current_dir.contents.directories[last_index];
@@ -2121,9 +2278,40 @@ impl TapeOperations {
                 }
             }
         }
-        
-        info!("Final target directory reached, has {} files, {} subdirectories", 
-               current_dir.contents.files.len(), current_dir.contents.directories.len());
+
+        info!(
+            "Final target directory reached, has {} files, {} subdirectories",
+            current_dir.contents.files.len(),
+            current_dir.contents.directories.len()
+        );
+        Ok(current_dir)
+    }
+
+    /// Get mutable reference to directory by path (helper function for add_file_to_target_directory)
+    fn get_directory_by_path_mut<'a>(
+        &self,
+        index: &'a mut LtfsIndex,
+        path_parts: &[&str],
+    ) -> Result<&'a mut crate::ltfs_index::Directory> {
+        if path_parts.is_empty() {
+            return Ok(&mut index.root_directory);
+        }
+
+        let mut current_dir = &mut index.root_directory;
+
+        for part in path_parts.iter() {
+            let dir_index = current_dir
+                .contents
+                .directories
+                .iter()
+                .position(|d| d.name == *part)
+                .ok_or_else(|| {
+                    RustLtfsError::ltfs_index(format!("Directory '{}' not found in path", part))
+                })?;
+
+            current_dir = &mut current_dir.contents.directories[dir_index];
+        }
+
         Ok(current_dir)
     }
 }
