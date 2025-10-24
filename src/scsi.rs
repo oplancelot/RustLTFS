@@ -1644,14 +1644,78 @@ impl ScsiInterface {
                     Some(&mut sense_buffer),
                 )?;
                 
-                // 🎯 精确复制LTFSCopyGUI的FileMark检测逻辑
+                // 🎯 精确复制LTFSCopyGUI的FileMark检测逻辑和DiffBytes计算
                 // LTFSCopyGUI: Dim Add_Key As UInt16 = CInt(sense(12)) << 8 Or sense(13)
                 let add_key = ((sense_buffer[12] as u16) << 8) | (sense_buffer[13] as u16);
-                debug!("🔍 Sense analysis: result={}, Add_Key=0x{:04X} (ASC=0x{:02X}, ASCQ=0x{:02X})", 
-                      result, add_key, sense_buffer[12], sense_buffer[13]);
+                
+                // 🔧 关键修复：实现LTFSCopyGUI的DiffBytes计算逻辑 (Line 638-641)
+                // For i As Integer = 3 To 6: DiffBytes <<= 8: DiffBytes = DiffBytes Or sense(i)
+                let mut diff_bytes: i32 = 0;
+                for i in 3..=6 {
+                    diff_bytes <<= 8;
+                    diff_bytes |= sense_buffer[i] as i32;
+                }
+                
+                debug!("🔍 Sense analysis: result={}, Add_Key=0x{:04X} (ASC=0x{:02X}, ASCQ=0x{:02X}), DiffBytes={}", 
+                      result, add_key, sense_buffer[12], sense_buffer[13], diff_bytes);
                 
                 if result {
-                    // 读取成功，将数据添加到缓冲区
+                    // 读取成功，检查是否需要自动回退 (LTFSCopyGUI Line 644-648)
+                    let block_size_limit_i32 = block_size_limit as i32;
+                    let global_block_limit = block_sizes::LTO_BLOCK_SIZE as i32;
+                    
+                    if diff_bytes < 0 && (block_size_limit_i32 - diff_bytes) < global_block_limit {
+                        info!("🔄 LTFSCopyGUI auto-backtrack triggered: DiffBytes={}, condition met", diff_bytes);
+                        
+                        // 🎯 关键修复：实现LTFSCopyGUI的自动回退逻辑
+                        // Dim p As New PositionData(handle): Locate(handle, p.BlockNumber - 1, p.PartitionNumber)
+                        if let Ok(current_pos) = self.read_position() {
+                            if current_pos.block_number > 0 {
+                                info!("🔧 Auto-backtrack: moving from P{} B{} to P{} B{}", 
+                                     current_pos.partition, current_pos.block_number,
+                                     current_pos.partition, current_pos.block_number - 1);
+                                
+                                // 回退到前一个Block
+                                self.locate_block(current_pos.partition, current_pos.block_number - 1)?;
+                                
+                                // 🔄 重新读取 (使用调整后的block size)
+                                let adjusted_block_size = std::cmp::max(0, block_size_limit_i32 - diff_bytes) as u32;
+                                let adjusted_limit = std::cmp::min(adjusted_block_size, actual_block_limit);
+                                
+                                info!("🔧 Re-reading with adjusted block size: {} bytes (was {})", adjusted_limit, actual_block_limit);
+                                
+                                let mut adjusted_buffer = vec![0u8; adjusted_limit as usize];
+                                let reread_result = self.scsi_io_control(
+                                    &cdb,
+                                    Some(&mut adjusted_buffer),
+                                    SCSI_IOCTL_DATA_IN,
+                                    300,
+                                    Some(&mut sense_buffer),
+                                )?;
+                                
+                                if reread_result && !adjusted_buffer.is_empty() {
+                                    buffer.extend_from_slice(&adjusted_buffer);
+                                    info!("✅ Auto-backtrack successful: {} bytes read from P{} B{}", 
+                                         adjusted_buffer.len(), current_pos.partition, current_pos.block_number - 1);
+                                }
+                                
+                                // 重新计算add_key用于FileMark检测
+                                let reread_add_key = ((sense_buffer[12] as u16) << 8) | (sense_buffer[13] as u16);
+                                debug!("🔍 Re-read Add_Key: 0x{:04X}", reread_add_key);
+                                
+                                // 🎯 使用重新读取后的add_key进行FileMark检测
+                                if reread_add_key >= 1 && reread_add_key != 4 {
+                                    info!("🎯 FileMark detected after auto-backtrack: Add_Key=0x{:04X}", reread_add_key);
+                                    break;
+                                }
+                                continue;
+                            } else {
+                                debug!("⚠️ Cannot backtrack: already at block 0");
+                            }
+                        }
+                    }
+                    
+                    // 正常情况：将数据添加到缓冲区
                     if !read_buffer.is_empty() {
                         buffer.extend_from_slice(&read_buffer);
                         debug!("📝 Added {} bytes to buffer, total: {} bytes", read_buffer.len(), buffer.len());
