@@ -1543,6 +1543,57 @@ impl ScsiInterface {
         }
     }
 
+    /// Space6 - SPACE(6) 命令实现 (对应LTFSCopyGUI的Space6)
+    /// 用于在磁带上进行相对定位操作
+    pub fn space6(&self, count: i32, code: u8) -> Result<u16> {
+        debug!("🔧 Space6: count={}, code={}", count, code);
+        
+        #[cfg(windows)]
+        {
+            let mut cdb = [0u8; 6];
+            cdb[0] = scsi_commands::SPACE; // 0x11
+            cdb[1] = code; // LocateDestType: 0=Block, 1=FileMark, 2=SequentialFileMark
+            
+            // Count是24位有符号数
+            if count < 0 {
+                // 对于负数，使用24位二进制补码表示
+                let abs_count = (-count) as u32;
+                let complement = (!abs_count + 1) & 0xFFFFFF; // 24位二进制补码
+                cdb[2] = ((complement >> 16) & 0xFF) as u8;
+                cdb[3] = ((complement >> 8) & 0xFF) as u8;
+                cdb[4] = (complement & 0xFF) as u8;
+            } else {
+                cdb[2] = ((count >> 16) & 0xFF) as u8;
+                cdb[3] = ((count >> 8) & 0xFF) as u8;
+                cdb[4] = (count & 0xFF) as u8;
+            }
+            
+            let mut sense_buffer = [0u8; SENSE_INFO_LEN];
+            let result = self.scsi_io_control(
+                &cdb,
+                None,
+                SCSI_IOCTL_DATA_UNSPECIFIED,
+                600, // 10分钟超时
+                Some(&mut sense_buffer),
+            )?;
+            
+            if result {
+                // 返回Add_Code (sense[12] << 8 | sense[13])
+                let add_code = ((sense_buffer[12] as u16) << 8) | (sense_buffer[13] as u16);
+                debug!("✅ Space6 completed with Add_Code: 0x{:04X}", add_code);
+                Ok(add_code)
+            } else {
+                Err(crate::error::RustLtfsError::scsi("Space6 command failed"))
+            }
+        }
+        
+        #[cfg(not(windows))]
+        {
+            let _ = (count, code);
+            Err(crate::error::RustLtfsError::unsupported("Non-Windows platform"))
+        }
+    }
+
     /// ReadFileMark - 跳过当前FileMark标记 (完全对应LTFSCopyGUI的ReadFileMark实现)
     /// 这个方法精确复制LTFSCopyGUI TapeUtils.ReadFileMark的行为
     pub fn read_file_mark(&self) -> Result<bool> {
@@ -1571,29 +1622,32 @@ impl ScsiInterface {
                 return Ok(true);
             }
             
-            // 3. 读取到数据，说明不在FileMark位置 - 无条件回退 (对应Line 791)
-            debug!("🔄 ReadFileMark: Data read, not at FileMark - executing unconditional backtrack");
+            // 3. 读取到数据，说明不在FileMark位置 - 使用LTFSCopyGUI回退策略
+            debug!("🔄 ReadFileMark: Data read, not at FileMark - executing LTFSCopyGUI backtrack strategy");
             
             // 获取当前位置
             let current_pos = self.read_position()?;
-            info!("📍 ReadFileMark current position: P{} B{} FM{} (will backtrack to B{})", 
-                  current_pos.partition, current_pos.block_number, current_pos.file_number,
-                  current_pos.block_number.saturating_sub(1));
+            info!("📍 ReadFileMark current position: P{} B{} FM{}", 
+                  current_pos.partition, current_pos.block_number, current_pos.file_number);
             
-            // 🎯 关键：LTFSCopyGUI无条件回退一个Block
-            // Locate(handle:=handle, BlockAddress:=p.BlockNumber - 1, Partition:=p.PartitionNumber)
-            if current_pos.block_number > 0 {
-                info!("🔧 ReadFileMark: Executing LTFSCopyGUI unconditional backtrack to Block {}", 
-                     current_pos.block_number - 1);
-                self.locate_block(current_pos.partition, current_pos.block_number - 1)?;
-                
-                // 验证回退后的位置
-                let new_pos = self.read_position()?;
-                info!("✅ ReadFileMark: Backtrack completed - now at P{} B{} FM{}", 
-                     new_pos.partition, new_pos.block_number, new_pos.file_number);
+            // 🎯 关键：根据AllowPartition状态选择回退策略 (对应LTFSCopyGUI Line 788-792)
+            if self.allow_partition {
+                // AllowPartition=true: 使用Locate命令回退
+                info!("🔧 ReadFileMark: Using AllowPartition mode - Locate backtrack to Block {}", 
+                     current_pos.block_number.saturating_sub(1));
+                if current_pos.block_number > 0 {
+                    self.locate_block(current_pos.partition, current_pos.block_number - 1)?;
+                }
             } else {
-                debug!("⚠️ ReadFileMark: Already at block 0, cannot backtrack further");
+                // AllowPartition=false: 使用Space6命令回退 (Space6(handle, -1, Block))
+                info!("🔧 ReadFileMark: Using non-AllowPartition mode - Space6 backtrack");
+                self.space6(-1, 0)?; // Count=-1, Code=0 (Block)
             }
+            
+            // 验证回退后的位置
+            let new_pos = self.read_position()?;
+            info!("✅ ReadFileMark: Backtrack completed - now at P{} B{} FM{}", 
+                 new_pos.partition, new_pos.block_number, new_pos.file_number);
             
             Ok(false) // 返回false表示执行了回退
         }
