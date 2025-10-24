@@ -1556,7 +1556,7 @@ impl ScsiInterface {
             let mut test_buffer = vec![0u8; block_sizes::LTO_BLOCK_SIZE as usize];
             
             let result = self.scsi_io_control(
-                &[scsi_commands::read_6, 0x00, 0x00, 0x00, 0x01, 0x00], // READ(6) 1 block
+                &[scsi_commands::READ_6, 0x00, 0x00, 0x00, 0x01, 0x00], // READ(6) 1 block
                 Some(&mut test_buffer),
                 SCSI_IOCTL_DATA_IN,
                 30,
