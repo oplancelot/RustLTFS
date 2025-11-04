@@ -766,8 +766,8 @@ impl TapeOperations {
             self.apply_performance_controls(self.block_size as u64)
                 .await?;
 
-            // Write to tape
-            let blocks_written = self.scsi.write_blocks(1, &buffer)?;
+            // Write to tape (variable-length for last/short block)
+            let blocks_written = self.scsi.write_blocks(1, &buffer[..bytes_read])?;
 
             if blocks_written != 1 {
                 return Err(RustLtfsError::scsi(format!(
@@ -777,7 +777,7 @@ impl TapeOperations {
             }
 
             total_blocks_written = blocks_written;
-            total_bytes_written = file_size;
+            total_bytes_written = bytes_read as u64;
         } else {
             // Large file: block-wise streaming processing
             info!(
@@ -832,8 +832,8 @@ impl TapeOperations {
                 // Apply comprehensive performance controls (对应LTFSCopyGUI的全面性能控制)
                 self.apply_performance_controls(bytes_read as u64).await?;
 
-                // Write block to tape
-                let blocks_written = self.scsi.write_blocks(1, &buffer)?;
+                // Write block to tape (use variable-length buffer slice to avoid ILI)
+                let blocks_written = self.scsi.write_blocks(1, &buffer[..bytes_read])?;
 
                 if blocks_written != 1 {
                     return Err(RustLtfsError::scsi(format!(
