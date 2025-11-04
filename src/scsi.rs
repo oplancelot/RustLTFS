@@ -1944,8 +1944,31 @@ impl ScsiInterface {
                             diff_bytes
                         );
 
-                        // 🎯 关键修复：实现LTFSCopyGUI的自动回退逻辑
-                        // Dim p As New PositionData(handle): Locate(handle, p.BlockNumber - 1, p.PartitionNumber)
+                        // Additional diagnostic logging to aid debugging when auto-backtrack triggers
+                        // Dump sense buffer hex, a preview of the read buffer, and write a temporary reread dump
+                        {
+                            // Sense hex
+                            let sense_hex = sense_buffer
+                                .iter()
+                                .map(|b| format!("{:02X}", b))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            debug!("🔍 Diagnostic - sense buffer HEX: {}", sense_hex);
+
+                            // Preview of the read_buffer (first and last up to 64 bytes)
+                            let preview_len = std::cmp::min(64, read_buffer.len());
+                            if preview_len > 0 {
+                                debug!(
+                                    "🔍 Diagnostic - read_buffer preview (first {} bytes): {:02X?}",
+                                    preview_len,
+                                    &read_buffer[..preview_len]
+                                );
+                            } else {
+                                debug!("🔍 Diagnostic - read_buffer is empty for this iteration");
+                            }
+                        }
+
+                        // 🎯 关键修复：实现LTFSCopyGUI的自动回退逻辑（同时增强诊断信息）
                         if let Ok(current_pos) = self.read_position() {
                             if current_pos.block_number > 0 {
                                 info!(
@@ -1961,6 +1984,18 @@ impl ScsiInterface {
                                     current_pos.partition,
                                     current_pos.block_number - 1,
                                 )?;
+
+                                // 再次记录回退后位置做对比诊断
+                                if let Ok(pos_after_locate) = self.read_position() {
+                                    info!(
+                                        "🔍 Diagnostic - position after locate: P{} B{} FM{}",
+                                        pos_after_locate.partition,
+                                        pos_after_locate.block_number,
+                                        pos_after_locate.file_number
+                                    );
+                                } else {
+                                    warn!("🔍 Diagnostic - failed to read position after locate");
+                                }
 
                                 // 🔄 重新读取 (使用调整后的block size)
                                 let adjusted_block_size =
@@ -1982,7 +2017,45 @@ impl ScsiInterface {
                                     Some(&mut sense_buffer),
                                 )?;
 
+                                // Log sense buffer after reread (hex)
+                                let sense_hex_after = sense_buffer
+                                    .iter()
+                                    .map(|b| format!("{:02X}", b))
+                                    .collect::<Vec<_>>()
+                                    .join(" ");
+                                debug!(
+                                    "🔍 Diagnostic - sense buffer after reread HEX: {}",
+                                    sense_hex_after
+                                );
+
                                 if reread_result && !adjusted_buffer.is_empty() {
+                                    // Write a short preview of reread buffer to logs for debugging
+                                    let preview_len = std::cmp::min(128, adjusted_buffer.len());
+                                    debug!(
+                                            "🔍 Diagnostic - reread buffer preview (first {} bytes): {:02X?}",
+                                            preview_len,
+                                            &adjusted_buffer[..preview_len]
+                                        );
+
+                                    // Try to persist the reread buffer to a temp file for offline analysis
+                                    // Use a simple timestamp-based name
+                                    let dump_filename = std::format!(
+                                        "reread_dump_{}.bin",
+                                        std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .map(|d| d.as_micros())
+                                            .unwrap_or(0)
+                                    );
+                                    let dump_path = std::env::temp_dir().join(dump_filename);
+                                    if let Err(e) = std::fs::write(&dump_path, &adjusted_buffer) {
+                                        warn!("🔍 Diagnostic - failed to write reread dump: {}", e);
+                                    } else {
+                                        info!(
+                                            "🔍 Diagnostic - reread dump written to: {:?}",
+                                            dump_path
+                                        );
+                                    }
+
                                     buffer.extend_from_slice(&adjusted_buffer);
                                     info!(
                                         "✅ Auto-backtrack successful: {} bytes read from P{} B{}",
@@ -1990,6 +2063,8 @@ impl ScsiInterface {
                                         current_pos.partition,
                                         current_pos.block_number - 1
                                     );
+                                } else {
+                                    warn!("⚠️ Auto-backtrack reread returned no data or failed");
                                 }
 
                                 // 重新计算add_key用于FileMark检测
