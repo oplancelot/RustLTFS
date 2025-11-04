@@ -778,6 +778,12 @@ impl TapeOperations {
 
             total_blocks_written = blocks_written;
             total_bytes_written = bytes_read as u64;
+
+            // Update write progress counters for small-file write
+            self.write_progress.current_bytes_processed += bytes_read as u64;
+            self.write_progress.current_files_processed += 1;
+            self.write_progress.files_written += 1;
+            self.write_progress.bytes_written += bytes_read as u64;
         } else {
             // Large file: block-wise streaming processing
             info!(
