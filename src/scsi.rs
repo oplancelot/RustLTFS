@@ -1979,10 +1979,11 @@ impl ScsiInterface {
                                     current_pos.block_number - 1
                                 );
 
-                                // 回退到前一个Block
-                                self.locate_block(
-                                    current_pos.partition,
+                                // 回退到前一个Block (use LOCATE(16) to match LTFSCopyGUI behavior)
+                                self.locate(
                                     current_pos.block_number - 1,
+                                    current_pos.partition,
+                                    LocateDestType::Block,
                                 )?;
 
                                 // 再次记录回退后位置做对比诊断
@@ -2038,28 +2039,44 @@ impl ScsiInterface {
                                         );
 
                                     // Try to persist the reread buffer to a temp file for offline analysis
-                                    // Use a simple timestamp-based name
-                                    let dump_filename = std::format!(
-                                        "reread_dump_{}.bin",
-                                        std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .map(|d| d.as_micros())
-                                            .unwrap_or(0)
-                                    );
-                                    let dump_path = std::env::temp_dir().join(dump_filename);
-                                    if let Err(e) = std::fs::write(&dump_path, &adjusted_buffer) {
-                                        warn!("🔍 Diagnostic - failed to write reread dump: {}", e);
-                                    } else {
-                                        info!(
-                                            "🔍 Diagnostic - reread dump written to: {:?}",
-                                            dump_path
+                                    // Only write dumps in debug builds to avoid polluting production temp dirs
+                                    #[cfg(debug_assertions)]
+                                    {
+                                        // Use a simple timestamp-based name
+                                        let dump_filename = std::format!(
+                                            "reread_dump_{}.bin",
+                                            std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .map(|d| d.as_micros())
+                                                .unwrap_or(0)
+                                        );
+                                        let dump_path = std::env::temp_dir().join(dump_filename);
+                                        if let Err(e) = std::fs::write(&dump_path, &adjusted_buffer)
+                                        {
+                                            warn!(
+                                                "🔍 Diagnostic - failed to write reread dump: {}",
+                                                e
+                                            );
+                                        } else {
+                                            info!(
+                                                "🔍 Diagnostic - reread dump written to: {:?}",
+                                                dump_path
+                                            );
+                                        }
+                                    }
+                                    #[cfg(not(debug_assertions))]
+                                    {
+                                        debug!(
+                                            "🔍 Diagnostic - reread dump skipped (release build)"
                                         );
                                     }
 
-                                    buffer.extend_from_slice(&adjusted_buffer);
+                                    // Replace the previously-read block data with the adjusted reread result
+                                    // (match LTFSCopyGUI recursive ReadBlock semantics instead of appending)
+                                    read_buffer = adjusted_buffer;
                                     info!(
-                                        "✅ Auto-backtrack successful: {} bytes read from P{} B{}",
-                                        adjusted_buffer.len(),
+                                        "✅ Auto-backtrack successful: {} bytes read (replaced previous block) from P{} B{}",
+                                        read_buffer.len(),
                                         current_pos.partition,
                                         current_pos.block_number - 1
                                     );
@@ -2084,8 +2101,11 @@ impl ScsiInterface {
                         }
                     }
 
-                    // 正常情况：将数据添加到缓冲区
+                    // 正常情况：将数据添加到缓冲区（使用当前的 `read_buffer`，它可能已经被 auto-backtrack 的重新读取替换）
+                    // 这里故意使用 `read_buffer` 变量以保证如果 auto-backtrack 已经将其替换为调整后的数据，
+                    // 我们将追加的是替换后的数据（匹配 LTFSCopyGUI 的行为语义：使用重读结果）。
                     if !read_buffer.is_empty() {
+                        // Append the current read_buffer (which may have been replaced by adjusted reread result)
                         buffer.extend_from_slice(&read_buffer);
                         debug!(
                             "📝 Added {} bytes to buffer, total: {} bytes",

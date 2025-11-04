@@ -1933,7 +1933,10 @@ impl crate::tape_ops::TapeOperations {
         let mut temp_file = std::fs::File::create(&temp_path)?;
         let mut total_bytes_read = 0u64;
         let mut blocks_read = 0;
-        let max_blocks = 200; // 对应LTFSCopyGUI的固定限制
+        // Start conservatively and expand if we detect a '<?xml' start tag in the temporary file.
+        // hard_max_blocks is an absolute safety cap (matches previous fixed limit).
+        let hard_max_blocks = 200u32; // 对应LTFSCopyGUI的固定限制上限（安全上限）
+        let mut max_blocks = 50u32; // 初始较小值，避免一次读太多无效数据
         let mut consecutive_errors = 0;
         const MAX_CONSECUTIVE_ERRORS: u32 = 3;
 
@@ -1987,6 +1990,34 @@ impl crate::tape_ops::TapeOperations {
                         "Read block {}: {} bytes, total: {} bytes",
                         blocks_read, block_size, total_bytes_read
                     );
+
+                    // 动态扩展策略：
+                    // 如果我们尚未扩大到硬上限，并且临时文件中检测到了 "<?xml"（意味着索引开始出现），
+                    // 则将 max_blocks 扩展到 hard_max_blocks，以便继续读取直至找到完整的 </ltfsindex>（或达到硬上限）。
+                    if max_blocks < hard_max_blocks {
+                        if let Ok(mut f) = std::fs::File::open(&temp_path) {
+                            use std::io::{Read, Seek, SeekFrom};
+                            if let Ok(file_len) = f.seek(SeekFrom::End(0)) {
+                                // 检查文件末尾的一小段（最多 4KB），通常足以检测 "<?xml" 或其他索引起始标识
+                                let check_len = std::cmp::min(4096, file_len) as usize;
+                                if check_len > 0 {
+                                    if f.seek(SeekFrom::End(-(check_len as i64))).is_ok() {
+                                        let mut tail_buf = vec![0u8; check_len];
+                                        if f.read_exact(&mut tail_buf).is_ok() {
+                                            if String::from_utf8_lossy(&tail_buf).contains("<?xml")
+                                            {
+                                                info!(
+                                                    "Detected '<?xml' in temporary index file; expanding max_blocks: {} -> {}",
+                                                    max_blocks, hard_max_blocks
+                                                );
+                                                max_blocks = hard_max_blocks;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     consecutive_errors += 1;

@@ -4,42 +4,36 @@
 
 ## Overview
 
-RustLTFS is an IBM LTFS tape direct read/write command-line tool written in Rust, supporting direct read/write access to LTO tapes without mounting the tape file system.
+RustLTFS is a CLI tool for direct LTFS tape access (read/write/space) written in Rust. It provides low-level tape operations without mounting the LTFS filesystem and focuses on the core workflows for writing data to tape, reading data from tape, and showing tape space information.
+
+This repository has been streamlined: only the `write`, `read`, and `space` commands remain. Other utility commands (index viewing, mkltfs/format, device management, diagnostics) were removed from the main CLI to reduce surface area. If you rely on removed features, use a prior release or keep a local copy of the removed modules.
 
 ## System Requirements
 
-- Windows 10/11 x64
-- Compatible LTO tape drives (LTO-3 to LTO-8)
-- Administrator privileges (for SCSI commands)
+- Windows 10/11 x64 (primary tested platform)
+- Compatible LTO tape drives (LTO-3 and newer)
+- Administrator privileges when performing low-level SCSI operations
 
 ## Development Environment Setup
 
 ### Required Tools
 
-- Rust compiler (nightly)
-- mingw-w64 or Visual Studio Build Tools
+- Rust (compatible stable or nightly depending on your toolchain)
+- Build tools for your target (MSVC or GNU toolchain on Windows)
 - Git
 
-### Installing Rust Development Environment
+### Installing Rust (example)
 
-```cmd
-# Install Rust
+```powershell
+# Install rustup and Rust toolchain
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Install nightly toolchain
-rustup install nightly
-rustup default nightly
-
-# Install Windows target platforms
-rustup target add x86_64-pc-windows-gnu
-rustup target add x86_64-pc-windows-msvc
+rustup install stable
+rustup default stable
 ```
 
 ## Building
 
-### Building from Source Code
-
-```cmd
+```powershell
 # Clone the project
 git clone https://github.com/oplancelot/RustLTFS.git
 cd RustLTFS
@@ -47,262 +41,161 @@ cd RustLTFS
 # Development build
 cargo build
 
-# Release build (optimized version)
+# Release build (optimized)
 cargo build --release
 
 # Run tests
 cargo test
 
-# Check code
+# Quick check
 cargo check
 ```
 
-### Direct Execution (Development Mode)
+## Usage
 
-```cmd
-# View help
-cargo run -- --help
+RustLTFS now exposes three primary subcommands:
 
-# View specific command help
-cargo run -- read --help
-cargo run -- write --help
-cargo run -- view-index --help
+- `write` — write files or directories to tape
+- `read` — read files or list directory contents from tape
+- `space` — show tape space information (total / used / available)
+
+Run `rustltfs --help` for the top-level help and `rustltfs <command> --help` for command-specific options.
+
+### Common option names
+
+- `--tape <DEVICE>` or `-t <DEVICE>` — tape device path (e.g. `\\.\TAPE0`)
+- `--skip-index` or `-s` — skip automatic index reading (offline mode)
+- `--index-file <FILE>` or `-f <FILE>` — load LTFS index from a local file instead of reading from tape
+- `--verify` — verify data after read/write (hash/compare)
+- `--progress` — show progress for long operations
+- `--detailed` or `-d` — show additional details in output
+
+### write — Write files or folders to tape
+
+Description:
+Write local files or directories to the tape. The command supports verification, progress reporting, exclusions and advanced write options.
+
+Basic examples:
+
+```powershell
+# Write a single file to tape (verify after write, show progress)
+rustltfs write C:\data\file.bin --tape \\.\TAPE0 /backup/file.bin --verify --progress
+
+# Write a directory to tape
+rustltfs write C:\data\backup_folder --tape \\.\TAPE0 /backup/folder --progress
+
+# Dry-run (show what would be done without writing)
+rustltfs write C:\data\project --tape \\.\TAPE0 /backup/project --dry-run
 ```
 
-## Installation
+Key options:
 
-### Method 1: Build and Install from Source
+- `<SOURCE>` — local file or directory to write
+- `--tape <DEVICE>` — target tape device
+- `<DESTINATION>` — target path on the tape
+- `--force` — overwrite existing files without confirmation
+- `--verify` — verify data integrity after write
+- `--skip-symlinks` — skip symbolic links
+- `--parallel` — enable parallel file processing (uses more memory)
+- `--speed-limit <MBPS>` — limit write speed (MiB/s)
+- `--exclude <EXTENSIONS>` — comma separated list of extensions to exclude
+- `--resume` — attempt to resume from previous interrupted operation
+- `--dry-run` — simulate the write without performing tape operations
+- `--compress/--encrypt` — compression/encryption toggles for future extensibility (implementation status may vary)
 
-```cmd
-# Build and install to ~/.cargo/bin/
-cargo install --path .
+Notes:
 
-# Use the installed version
-rustltfs --help
+- The tool attempts to read the LTFS index automatically unless `--skip-index` is used or `--index-file` is provided.
+- After successful writes, the tool may attempt to update the LTFS index on tape (if not in offline mode).
+
+### read — Read from tape
+
+Description:
+Read/list files and directories stored on the tape. Supports extracting files to local filesystem and displaying file content.
+
+Basic examples:
+
+```powershell
+# List root directory
+rustltfs read --tape \\.\TAPE0
+
+# Show a file content (first N lines)
+rustltfs read --tape \\.\TAPE0 /backup/file.txt --lines 50
+
+# Extract a file to the current directory
+rustltfs read --tape \\.\TAPE0 /backup/file.txt
+
+# Extract to a specific local destination
+rustltfs read --tape \\.\TAPE0 /backup/file.txt C:\restore\file.txt --verify
 ```
 
-### Method 2: Use Pre-built Binary
+Key options:
 
-1. Download the `rustltfs.exe` file
-2. Place it in a directory included in the PATH environment variable, or use the full path directly
+- `--tape <DEVICE>` — tape device path
+- `[SOURCE]` — tape path to file or directory (omit to list root)
+- `[DESTINATION]` — local destination path for extracted files
+- `--skip-index` — operate in offline mode (won't attempt to read index from tape)
+- `--index-file <FILE>` — load index from local file for offline operations
+- `--verify` — verify extracted data
+- `--lines <N>` — limit output when printing text files
+- `--detailed` — show extended file/directory metadata
 
-## Main Features
+Notes:
 
-### Smart Read Commands
+- If reading fails due to index issues, you may use `--index-file` to supply a previously saved LTFS index for offline extraction.
 
-```cmd
-# List tape root directory contents
-rustltfs read --tape TAPE0
+### space — Show tape space information
 
-# Display file content (first 50 lines)
-rustltfs read --tape TAPE0 /backup/file.txt
+Description:
+Show basic tape space metrics: total capacity, used space and available space.
 
-# Copy file to local
-rustltfs read --tape TAPE0 /backup/file.txt C:\restore\file.txt --verify
+Example:
 
-# List directory contents
-rustltfs read --tape TAPE0 /backup/documents/
+```powershell
+rustltfs space --tape \\.\TAPE0
 ```
 
-### Write Files to Tape
+Key options:
 
-```cmd
-# Write single file
-rustltfs write C:\data\file.txt --tape TAPE0 /backup/file.txt --verify --progress
+- `--tape <DEVICE>` — tape device path
+- `--detailed` / `-d` — show more detailed breakdown (if available)
+- `--skip-index` — skip index reading if you only need raw capacity values
 
-# Write entire directory
-rustltfs write C:\data\folder --tape TAPE0 /backup/folder --verify --progress
+## Offline workflows
+
+You can operate in offline mode by providing `--index-file <file>` or using `--skip-index`. This is useful when the tape drive is not available and you have a saved LTFS index file.
+
+```powershell
+# Use a saved index to extract files without connecting to the tape
+rustltfs read --tape \\.\TAPE0 --skip-index --index-file saved_index.schema /backup/myfile.txt C:\out\myfile.txt
 ```
 
-### View and Parse LTFS Index Files
+## Logging
 
-```cmd
-# Basic view of index information
-rustltfs view-index src/example/LTFSIndex_Load_71583245.schema
+The tool uses structured logging. Enable verbose logs with `-v` / `--verbose` and consult output for troubleshooting.
 
-# View detailed file information
-rustltfs view-index src/example/LTFSIndex_Load_71583245.schema --detailed
+## Notes about removed commands
 
-# Export as TSV format (Excel compatible)
-rustltfs view-index src/example/LTFSIndex_Load_71583245.schema --export-format tsv --output filelist.tsv
+To keep the CLI focused, the following previously-available commands have been removed from the main CLI:
 
-# Export as JSON format
-rustltfs view-index src/example/LTFSIndex_Load_71583245.schema --export-format json
+- `view-index` (index viewing utilities)
+- `mkltfs` (format / mkltfs)
+- `read-index`, `read-data-index` (specialized index-reading helpers)
+- `device` (device discovery and management)
+- `diagnose-block38`, `update-index` (diagnostics and manual index update utilities)
 
-# Export as XML format
-rustltfs view-index src/example/LTFSIndex_Load_71583245.schema --export-format xml
-```
+If you require any of these capabilities, check out an earlier release or maintain a local branch that preserves the removed modules. You can also reimplement the specific behaviors you need on top of the remaining `write`/`read`/`space` primitives.
 
-### Offline Mode Tape Operations
+## Contributing
 
-```cmd
-# View tape root directory in offline mode (using local index file)
-rustltfs read --tape TAPE0 --skip-index --index-file src/example/LTFSIndex_Load_71583245.schema
+- Fork the repository and open a pull request for proposed changes.
+- Include unit tests for new functionality where appropriate.
+- Keep changes focused and provide rationale in PR descriptions.
 
-# Simulate file write in offline mode
-rustltfs write src/example/README.md --tape TAPE0 /test/readme.md --skip-index
+## License
 
-# Simulate directory write in offline mode
-rustltfs write src/example/drivers/ --tape TAPE0 /test/drivers/ --skip-index
-```
+Apache-2.0
 
-### Tape Device Management
+---
 
-```cmd
-# List all available tape devices
-rustltfs device
-
-# List devices with detailed information
-rustltfs device --detailed
-
-# Check specific device status
-rustltfs device TAPE0 --status
-
-# View device configuration information
-rustltfs device TAPE0 --info
-
-# Show comprehensive device information
-rustltfs device TAPE0 --detailed
-```
-
-## Command Parameters
-
-### read Command
-
-- `--tape <DEVICE>`: Tape device name (e.g., TAPE0)
-- `[SOURCE]`: File/directory path on tape (optional)
-- `[DESTINATION]`: Local destination path (optional)
-- `--skip-index`: Skip automatic index reading (offline mode)
-- `--index-file <FILE>`: Load index from local file
-- `--verify`: Verify data integrity after reading
-- `--lines <N>`: Number of lines to display for text files (default 50)
-- `--detailed`: Show detailed file information
-
-### write Command
-
-- `<SOURCE>`: Local source file/directory path
-- `--tape <DEVICE>`: Tape device name
-- `<DESTINATION>`: Target path on tape
-- `--skip-index`: Skip automatic index reading (offline mode)
-- `--index-file <FILE>`: Load index from local file
-- `--verify`: Verify data integrity after writing
-- `--progress`: Show progress bar
-- `--force`: Skip confirmation prompt
-
-### view-index Command
-
-- `<INDEX_FILE>`: LTFS index file path (.schema file)
-- `--detailed`: Show detailed file information
-- `--export-format <FORMAT>`: Export file list format (tsv, json, xml, batch)
-- `--output <FILE>`: Export output file
-
-### Other Commands
-
-- `device [DEVICE] [OPTIONS]`: Unified device management command
-  - Without device path: List all devices
-  - `--detailed`: Show detailed information
-  - `--status`: Show device status
-  - `--info`: Show device configuration
-
-## Usage Examples
-
-### Backup Important Files
-
-```cmd
-# Backup Documents folder
-rustltfs write "C:\Users\%USERNAME%\Documents" --tape TAPE0 /backup/documents --verify --progress
-
-# Backup single large file
-rustltfs write "C:\data\database.bak" --tape TAPE0 /backup/database.bak --verify
-```
-
-### Restore Files
-
-```cmd
-# View what's on the tape
-rustltfs read --tape TAPE0
-
-# Download entire Documents folder to current directory
-rustltfs read --tape TAPE0 /backup/documents
-
-# Download to specific location
-rustltfs read --tape TAPE0 /backup/documents "C:\restore\documents"
-
-# Download single file to current directory
-rustltfs read --tape TAPE0 /backup/config.txt
-```
-
-### Tape Management
-
-```cmd
-# Check all available tape devices
-rustltfs device
-
-# Check specific tape status and capacity
-rustltfs device TAPE0 --status --detailed
-
-# View device configuration
-rustltfs device TAPE0 --info
-```
-
-## Technical Features
-
-- **Direct Access**: No mounting required, direct SCSI command access to tape
-- **LTFS Compatible**: Fully compatible with IBM LTFS format
-- **Offline Mode**: Support simulation operations and index parsing without tape devices
-- **Index Parsing**: Parse and export LTFS index files to multiple formats
-- **Smart Operations**: Automatic file/directory recognition with appropriate operations
-- **Capacity Management**: Automatic tape space checking before writing
-- **Data Verification**: Support data integrity verification after read/write
-- **Progress Display**: Progress bar for large file operations
-- **Error Handling**: Detailed error messages and recovery suggestions
-
-## Performance Optimization
-
-- Use 64KB block size to match LTO standards
-- Asynchronous I/O for improved transfer efficiency
-- Smart caching to reduce tape seeking
-- Batch operations to reduce overhead
-
-## Important Notes
-
-1. **Permission Requirements**: Administrator privileges required for SCSI commands
-2. **Device Compatibility**: Supports LTO-3 to LTO-8 drives
-3. **Data Safety**: Always recommend using `--verify` parameter
-4. **Capacity Limits**: Automatic tape space checking
-5. **Format Compatibility**: Generated tapes are interoperable with other LTFS tools
-
-## Troubleshooting
-
-### Common Issues
-
-1. **"Access denied" error**
-
-   - Run command prompt as administrator
-   - Ensure user has tape device access permissions
-
-2. **"No tape detected" error**
-
-   - Check if tape is properly inserted
-   - Confirm tape drive is working correctly
-
-3. **"Insufficient space" error**
-
-   - Use `rustltfs device TAPE0 --info` to check remaining space
-   - Consider using new tape or cleaning old data
-
-4. **Slow read/write speeds**
-   - Ensure using high-quality LTO tapes
-   - Avoid frequent small file operations
-   - Consider batch packaging before writing
-
-## Technical Support
-
-This tool references the IBM LTFSCopyGUI implementation to ensure full compatibility with standard LTFS format.
-
-## Version Information
-
-- Version: 0.1.0
-- Build Target: x86_64-pc-windows-gnu
-- Build Time: $(date)
-- Rust Version: $(rustc --version)
+If you want, I can also update `README_CN.md` and other documentation files to match these changes.
