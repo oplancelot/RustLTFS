@@ -1085,17 +1085,19 @@ impl ScsiInterface {
         );
 
         // 从sense数据的字节3-6提取DiffBytes (对应VB.NET代码的逻辑)
-        // For i As Integer = 3 To 6
-        //     DiffBytes <<= 8
-        //     DiffBytes = DiffBytes Or sense(i)
-        // Next
-        let mut diff_bytes: i32 = 0;
-        for i in 3..=6 {
-            diff_bytes <<= 8;
-            if i < sense_data.len() {
-                diff_bytes |= sense_data[i] as i32;
-            }
-        }
+        // 修复符号位扩展：直接构造 32 位有符号整数，并进行符号位扩展
+        // VB.NET 中 DiffBytes 是 Integer (32位有符号)，会自动处理符号位扩展
+        let diff_bytes = if sense_data.len() >= 7 {
+            // 构造 32 位大端序有符号整数
+            let mut bytes = [0u8; 4];
+            bytes[0] = sense_data[3];
+            bytes[1] = sense_data[4];
+            bytes[2] = sense_data[5];
+            bytes[3] = sense_data[6];
+            i32::from_be_bytes(bytes)
+        } else {
+            0
+        };
 
         info!(
             "🔍 DiffBytes from sense data: {} (requested {} bytes)",
