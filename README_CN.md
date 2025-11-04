@@ -1,391 +1,172 @@
-# RustLTFS - Rust 实现的 LTFS 磁带直接读写工具
+# RustLTFS - Rust 实现的 LTFS 磁带直接读写工具（精简版）
 
 **🇨🇳 中文** | [🇺🇸 English](README.md)
 
 ## 概述
 
-RustLTFS 是一个用 Rust 编写的 IBM LTFS 磁带直接读写命令行工具，支持无需挂载磁带文件系统即可直接读写 LTO 磁带。
+RustLTFS 是一个用 Rust 编写的 LTFS（Linear Tape File System）磁带直接读写命令行工具，支持无需挂载文件系统即可直接访问 LTO 磁带。本仓库已简化 CLI，仅保留三个核心命令：`write`、`read` 和 `space`。这些命令覆盖常用的写入、读取与容量查询场景，保留了与磁带读写直接相关的核心实现。
+
+> 注意：之前仓库中存在的其它子命令（例如 `device`、`mkltfs`、`view-index`、`read-index`、`diagnose-block38` 等）已从主 CLI 中移除。如果你需要这些功能，请查看项目历史分支或归档副本（如有）。
 
 ## 系统要求
 
-- Windows 10/11 x64
-- 兼容的 LTO 磁带驱动器（LTO-3 到 LTO-8）
-- 管理员权限（用于 SCSI 命令）
+- Windows 10/11 x64（其他平台也可编译，需自行测试）
+- 兼容的 LTO 磁带驱动器（LTO-3 到 LTO-9 等）
+- 管理员权限（发送 SCSI 命令时通常需要）
+- Rust 工具链（建议 nightly，但 stable 在多数情况下也能工作）
 
-## 开发环境配置
+## 开发与编译
 
-### 必需工具
+- 安装 Rust（rustup）
+- 常用命令：
+  - 开发构建：`cargo build`
+  - 发布构建：`cargo build --release`
+  - 运行帮助：`cargo run -- --help`
+  - 运行命令示例：`cargo run -- write --help`
 
-- Rust 编译器 (nightly)
-- mingw-w64 或 Visual Studio Build Tools
-- Git
-
-### 安装 Rust 开发环境
-
-```cmd
-# 安装 Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# 安装 nightly 工具链
-rustup install nightly
-rustup default nightly
-
-# 安装 Windows 目标平台
-rustup target add x86_64-pc-windows-gnu
-rustup target add x86_64-pc-windows-msvc
-```
-
-## 编译
-
-### 从源码编译
-
-```cmd
-# 克隆项目
-git clone https://github.com/oplancelot/RustLTFS.git
-cd RustLTFS
-
-# 开发构建
-cargo build
-
-# 发布构建（优化版本）
-cargo build --release
-cargo build --release --target x86_64-pc-windows-msvc
-
-# 运行测试
-cargo test
-
-# 检查代码
-cargo check
-```
-
-### 直接运行（开发模式）
-
-```cmd
-# 查看帮助
-cargo run -- --help
-
-# 查看具体命令帮助
-cargo run -- read --help
-cargo run -- write --help
-cargo run -- view-index --help
-```
+建议在你的开发环境或 CI 中运行 `cargo check` / `cargo test` 来验证更改。
 
 ## 安装
 
-### 方式一：从源码编译安装
+- 从源码安装：
+  - `cargo install --path .`
+  - 安装后使用 `rustltfs --help` 查看帮助
 
-```cmd
-# 编译并安装到 ~/.cargo/bin/
-cargo install --path .
+- 也可使用预编译的可执行文件（若提供）
 
-# 使用安装的版本
-rustltfs --help
-```
+## 精简后的主要命令
 
-### 方式二：使用预编译版本
+当前 CLI 仅保留以下三个子命令。命令设计尽量保持直观与兼容常见场景。
 
-1. 下载 `rustltfs.exe` 文件
-2. 将其放置在 PATH 环境变量包含的目录中，或直接使用完整路径
+- `write`：将本地文件或目录写入磁带（支持校验、进度显示、去重选项等）
+- `read`：从磁带列出或提取文件/目录（支持验证与离线索引模式）
+- `space`：查询磁带空间与容量信息
 
-## 主要功能
+下面分别说明用法与常见选项。
 
-### 智能读取命令
+### write 命令（写入到磁带）
 
-```cmd
-# 列出磁带根目录内容
-rustltfs read --tape TAPE0
+用途：将本地文件或目录写入到磁带上的目标路径。
 
-# 显示文件内容（前50行）
-rustltfs read --tape TAPE0 /backup/file.txt
+示例用法（命令行形式）：
 
-# 复制文件到本地
-rustltfs read --tape TAPE0 /backup/file.txt C:\restore\file.txt --verify
+- 写入单个文件：
+  `rustltfs write C:\data\file.txt --tape TAPE0 /backup/file.txt --verify --progress`
+- 写入目录：
+  `rustltfs write C:\data\folder --tape TAPE0 /backup/folder --verify --progress`
 
-# 列出目录内容
-rustltfs read --tape TAPE0 /backup/documents/
-```
+常用选项（示例）：
 
-### 写入文件到磁带
-
-```cmd
-# 写入单个文件
-rustltfs write C:\data\file.txt --tape TAPE0 /backup/file.txt --verify --progress
-
-# 写入整个目录
-rustltfs write C:\data\folder --tape TAPE0 /backup/folder --verify --progress
-```
-
-### 查看和解析 LTFS 索引文件
-
-```cmd
-# 基本查看索引信息
-rustltfs view-index src/example/LTFSIndex_Load_71583245.schema
-
-# 查看详细文件信息
-rustltfs view-index src/example/LTFSIndex_Load_71583245.schema --detailed
-
-# 导出为 TSV 格式（Excel 可打开）
-rustltfs view-index src/example/LTFSIndex_Load_71583245.schema --export-format tsv --output filelist.tsv
-
-# 导出为 JSON 格式
-rustltfs view-index src/example/LTFSIndex_Load_71583245.schema --export-format json
-
-# 导出为 XML 格式
-rustltfs view-index src/example/LTFSIndex_Load_71583245.schema --export-format xml
-```
-
-### 离线模式磁带操作
-
-```cmd
-# 离线模式查看磁带根目录（使用本地索引文件）
-rustltfs read --tape TAPE0 --skip-index --index-file src/example/LTFSIndex_Load_71583245.schema
-
-# 离线模式模拟写入文件
-rustltfs write src/example/README.md --tape TAPE0 /test/readme.md --skip-index
-
-# 离线模式模拟写入目录
-rustltfs write src/example/drivers/ --tape TAPE0 /test/drivers/ --skip-index
-```
-
-### 磁带设备管理（企业级）
-
-```cmd
-# 设备发现和枚举
-rustltfs device discover                    # 发现所有可用磁带设备
-rustltfs device discover --detailed        # 发现设备并显示详细信息
-
-# 设备状态监控
-rustltfs device status TAPE0               # 查看设备状态
-rustltfs device status TAPE0 --monitor     # 持续监控设备状态
-rustltfs device status TAPE0 --monitor --interval 30  # 每30秒监控一次
-
-# 设备报告生成
-rustltfs device report --type summary      # 生成设备摘要报告
-rustltfs device report --type detailed --device TAPE0  # 生成详细设备报告
-rustltfs device report --type inventory    # 生成设备清单（CSV格式）
-rustltfs device report --type performance  # 生成性能报告
-rustltfs device report --type health       # 生成健康状态报告
-
-# 设备健康检查
-rustltfs device health-check TAPE0         # 检查单个设备健康状态
-rustltfs device health-check all           # 检查所有设备健康状态
-rustltfs device health-check TAPE0 --comprehensive  # 全面健康检查
-
-# 导出报告到文件
-rustltfs device report --type summary --output report.txt
-rustltfs device report --type inventory --output devices.csv
-```
-
-### 高级LTFS操作
-
-```cmd
-# LTFS磁带格式化（MKLTFS）
-rustltfs mkltfs --tape TAPE0                           # 基本格式化
-rustltfs mkltfs --tape TAPE0 --barcode ABC123L8        # 设置条形码
-rustltfs mkltfs --tape TAPE0 --label "MyTape" --partition 1  # 双分区格式化
-rustltfs mkltfs --tape TAPE0 --block-size 524288 --progress  # 自定义块大小
-
-# 索引操作
-rustltfs read-index --tape TAPE0                       # 从磁带读取索引
-rustltfs read-index --tape TAPE0 --output index.schema # 保存索引到文件
-rustltfs read-data-index --tape TAPE0                  # 读取数据分区索引
-rustltfs update-index --tape TAPE0                     # 手动更新索引
-
-# 磁带空间管理
-rustltfs space --tape TAPE0                            # 查看磁带空间信息
-rustltfs space --tape TAPE0 --detailed                 # 详细空间分析
-```
-
-### 去重和性能优化
-
-```cmd
-# 启用文件去重（基于哈希）
-rustltfs write C:\data --tape TAPE0 /backup/data --dedupe --verify
-
-# 高级写入选项
-rustltfs write C:\data --tape TAPE0 /backup/data \
-    --parallel \                    # 并行处理
-    --speed-limit 100 \            # 限制速度为100MB/s
-    --index-interval 36 \          # 每36GB更新一次索引
-    --exclude .tmp,.log \          # 排除临时文件
-    --compression-level 2 \        # 启用压缩
-    --max-file-size 10 \          # 限制单文件大小（GB）
-    --checkpoint 1000 \           # 每1000个文件创建检查点
-    --progress                    # 显示进度
-
-# 数据验证和完整性检查
-rustltfs write C:\data --tape TAPE0 /backup/data --verify --hash-on-write
-rustltfs read --tape TAPE0 /backup/data C:\restore --verify
-```
-## 命令参数说明
-
-### read 命令
-
-- `--tape <DEVICE>`: 磁带设备名（如 TAPE0）
-- `[SOURCE]`: 磁带上的文件/目录路径（可选）
-- `[DESTINATION]`: 本地目标路径（可选）
-- `--skip-index`: 跳过自动索引读取（离线模式）
-- `--index-file <FILE>`: 从本地文件加载索引
-- `--verify`: 读取后验证数据完整性
-- `--lines <N>`: 文本文件显示行数（默认 50）
-- `--detailed`: 显示详细文件信息
-
-### write 命令
-
-- `<SOURCE>`: 本地源文件/目录路径
-- `--tape <DEVICE>`: 磁带设备名
-- `<DESTINATION>`: 磁带上的目标路径
-- `--skip-index`: 跳过自动索引读取（离线模式）
-- `--index-file <FILE>`: 从本地文件加载索引
-- `--verify`: 写入后验证数据完整性
-- `--progress`: 显示进度条
+- `--tape <DEVICE>`: 指定磁带设备，如 `TAPE0`
+- `--verify`: 写入后进行数据完整性校验
+- `--progress`: 显示写入进度
+- `--skip-index`: 跳过自动从磁带读取索引（用于离线模拟或索引不可用时）
+- `--index-file <FILE>`: 使用本地 LTFS 索引文件（离线模式）
 - `--force`: 跳过确认提示
+- （高级写入选项如去重、并行、压缩等在保留的实现中可能有支持，请参见命令帮助）
 
-### view-index 命令
+注意事项：
 
-- `<INDEX_FILE>`: LTFS 索引文件路径（.schema 文件）
+- 写入前会对磁带剩余空间进行基本检查以避免写入失败。
+- 对大规模写入，建议使用 `--progress` 并在必要时启用验证。
+
+### read 命令（从磁带读取或列出）
+
+用途：列出磁带根目录或读取指定文件/目录到本地。
+
+示例用法：
+
+- 列出磁带根目录：`rustltfs read --tape TAPE0`
+- 下载文件到当前目录：`rustltfs read --tape TAPE0 /backup/config.txt`
+- 下载文件到指定路径并校验：`rustltfs read --tape TAPE0 /backup/file.txt C:\restore\file.txt --verify`
+
+常用选项：
+
+- `--tape <DEVICE>`: 指定磁带设备
+- `[SOURCE]`: 磁带上的路径（可选，省略时列出根目录）
+- `[DESTINATION]`: 本地保存路径（可选）
+- `--skip-index`: 跳过读取磁带索引，使用离线模式
+- `--index-file <FILE>`: 指定本地索引文件用于离线操作
+- `--verify`: 读取后进行数据完整性验证
+- `--lines <N>`: 若读取文本，显示前 N 行（默认 50）
 - `--detailed`: 显示详细文件信息
-- `--export-format <FORMAT>`: 导出文件列表格式（tsv, json, xml, batch）
-- `--output <FILE>`: 导出输出文件
 
-### 其他命令
+注意：
 
-- `device [DEVICE] [OPTIONS]`: 统一的设备管理命令
-  - 不指定设备路径：列出所有设备
-  - `--detailed`: 显示详细信息
-  - `--status`: 显示设备状态
-  - `--info`: 显示设备配置信息
+- `read` 在无法读取磁带索引时支持离线索引文件以加速操作或进行模拟恢复。
+- 对于二进制大文件，建议提供目标路径并使用 `--verify` 做完整性检查。
 
-## 使用示例
+### space 命令（查询磁带空间）
 
-### 备份重要文件
+用途：显示磁带剩余空间、容量与分区信息（支持基本详细模式）。
 
-```cmd
-# 备份文档文件夹
-rustltfs write "C:\Users\%USERNAME%\Documents" --tape TAPE0 /backup/documents --verify --progress
+示例：
 
-# 备份单个大文件
-rustltfs write "C:\data\database.bak" --tape TAPE0 /backup/database.bak --verify
-```
+- `rustltfs space --tape TAPE0`
+- 详细分析（若支持）：`rustltfs space --tape TAPE0 --detailed`
 
-### 恢复文件
+常用选项：
 
-```cmd
-# 查看磁带上有什么
-rustltfs read --tape TAPE0
+- `--tape <DEVICE>`: 指定磁带设备
+- `--detailed`: 输出更详细的空间与分区统计
 
-# 下载整个文档文件夹到当前目录
-rustltfs read --tape TAPE0 /backup/documents
+备注：
 
-# 下载到指定位置
-rustltfs read --tape TAPE0 /backup/documents "C:\restore\documents"
+- 该命令用于在写入前评估可用容量，避免写入中断或失败。
 
-# 下载单个文件到当前目录
-rustltfs read --tape TAPE0 /backup/config.txt
-```
+## 离线模式与索引
 
-### 磁带管理
+由于磁带可能在不同环境下无法直接读取索引，工具保留了使用本地索引文件的能力（通过 `--index-file` 与 `--skip-index` 选项）。离线模式可用于：
 
-```cmd
-# 检查所有可用磁带设备
-rustltfs device
+- 在没有实际磁带设备时模拟读写
+- 使用从磁带导出的索引文件进行恢复或审计
 
-# 检查特定磁带状态和容量
-rustltfs device TAPE0 --status --detailed
+## 安全与权限
 
-# 查看设备配置
-rustltfs device TAPE0 --info
-```
+- 发送 SCSI 命令通常需要管理员权限或相应的系统权限。请在具备权限的环境下运行对磁带设备的操作。
+- 强烈建议在关键数据写入/读取时使用 `--verify` 选项。
 
-## 技术特性
+## 常见问题与故障排除
 
-- **直接读写**: 无需挂载，直接通过 SCSI 命令访问磁带
-- **LTFS 兼容**: 完全兼容 IBM LTFS 格式，与LTFSCopyGUI互操作
-- **企业级设备管理**: 设备发现、状态监控、健康评估、性能报告
-- **文件去重**: 基于SHA1/MD5/SHA256/Blake3/XxHash的智能去重系统
-- **双分区支持**: 正确处理LTFS双分区映射，数据写入数据分区
-- **离线模式**: 支持在无磁带设备时模拟操作和索引解析
-- **索引解析**: 可解析和导出 LTFS 索引文件为多种格式
-- **智能操作**: 自动识别文件/目录，提供相应操作
-- **容量管理**: 写入前自动检查磁带剩余空间
-- **数据验证**: 支持读写后的数据完整性验证
-- **进度显示**: 大文件操作时显示进度条
-- **错误处理**: 详细的错误信息和恢复建议
-- **跨平台编译**: 支持Linux、Windows GNU、Windows MSVC编译
+1. 权限不足（Access denied）
+   - 以管理员身份运行命令提示符或 PowerShell
+   - 检查用户对设备的访问权限
 
-## 性能优化
+2. 未检测到磁带（No tape detected）
+   - 确认磁带已正确插入并就绪
+   - 检查磁带驱动器连接与驱动程序状态
 
-- 使用 64KB 块大小匹配 LTO 标准
-- 异步 I/O 提高传输效率  
-- 智能缓存减少磁带寻址
-- 批量操作减少开销
-- 基于哈希的文件去重，节省磁带空间
-- 并行文件处理，提升写入速度
-- 可配置的索引更新间隔，减少磁带操作
-- 数据库持久化去重记录，避免重复计算
-
-## 注意事项
-
-1. **权限要求**: 需要管理员权限才能发送 SCSI 命令
-2. **设备兼容性**: 支持 LTO-3 到 LTO-9 驱动器
-3. **数据安全**: 建议总是使用 `--verify` 参数
-4. **容量限制**: 会自动检查磁带剩余空间
-5. **格式兼容**: 生成的磁带可与其他 LTFS 工具互操作
-6. **双分区磁带**: 自动检测并正确处理双分区LTFS格式
-7. **去重功能**: 启用去重时会创建本地数据库文件
-8. **设备监控**: 支持实时监控多个磁带设备的健康状态
-
-## 故障排除
-
-### 常见问题
-
-1. **"Access denied"错误**
-
-   - 以管理员身份运行命令提示符
-   - 确保用户有访问磁带设备的权限
-
-2. **"No tape detected"错误**
-
-   - 检查磁带是否正确插入
-   - 确认磁带驱动器工作正常
-
-3. **"Insufficient space"错误**
-
-   - 使用 `rustltfs device TAPE0 --info` 查看剩余空间
+3. 空间不足（Insufficient space）
+   - 使用 `rustltfs space --tape <DEVICE>` 检查剩余容量
    - 考虑使用新磁带或清理旧数据
 
-4. **读写速度慢**
-   - 确保使用高质量 LTO 磁带
-   - 避免频繁的小文件操作
-   - 考虑批量打包后再写入
-   - 启用并行处理和去重功能
+4. 读写速度慢
+   - 避免大量小文件直接写入，建议先打包或归档
+   - 确认磁带硬件与连接性能
 
-5. **设备发现失败**
-   - 确认磁带驱动器已正确安装
-   - 检查设备驱动程序是否最新
-   - 使用 `rustltfs device discover --detailed` 获取详细信息
+## 项目状态说明
 
-6. **去重数据库错误**
-   - 删除损坏的去重数据库文件
-   - 重新运行写入操作以重建数据库
+- 本仓库的 CLI 已精简为仅保留 `write`、`read` 与 `space` 三个高频命令，以便聚焦核心读写与空间管理能力。
+- 如果你依赖被移除的其它子命令（例如设备枚举、mkltfs 格式化、索引导出/查看或诊断工具），请在源码历史或归档分支中查找原始实现，或与维护者协商恢复策略。
+- 保留的代码路径包含写入/读取、索引解析、容量管理、数据完整性校验与 SCSI 交互层的核心功能。
 
-## 更新日志
+## 更新日志（摘要）
 
-### v0.1.0 (最新版本)
-- ✅ 修复关键分区映射问题，数据正确写入数据分区
-- ✅ 实现完整的文件去重系统（SHA1/MD5/SHA256/Blake3/XxHash）
-- ✅ 添加企业级设备管理和监控功能
-- ✅ 完整的CLI集成，支持设备发现、状态监控、报告生成
-- ✅ 跨平台编译支持（Linux/Windows GNU/MSVC）
-- ✅ 与LTFSCopyGUI达到同等功能水平
+- 精简 CLI：移除非核心子命令，保留 `write` / `read` / `space`
+- 保留核心读写逻辑、索引解析与容量检查等关键实现
+- 文档同步以反映当前可用命令与使用方式
 
-## 技术支持
+## 支持与贡献
 
-本工具参考了 IBM LTFSCopyGUI 的实现，确保与标准 LTFS 格式的完全兼容性。
+- 提交 issue 或 pull request 以报告 bug 或请求功能
+- 若需恢复被移除的功能，请在 issue 中说明使用场景与优先级
+- 欢迎社区贡献测试用例、平台支持和设备兼容性补丁
 
 ## 版本信息
 
-- 版本: 0.1.0
-- 编译目标: x86_64-pc-windows-gnu
-- 编译时间: $(date)
-- Rust 版本: $(rustc --version)
+- 版本：0.1.0（文档为精简 CLI 版本）
+- 构建目标和时间请参见实际构建输出：`rustc --version` 与 `cargo build` 的运行结果
+
+---
+
+若需进一步将 README 或其它本地化文档与英文版保持同步，我可以继续帮助整理或生成对应变更说明。
