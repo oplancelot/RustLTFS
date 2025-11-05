@@ -1167,11 +1167,11 @@ impl TapeOperations {
             capacity_info.p1_maximum = capacity_parser.get_maximum_capacity(1).unwrap_or(0);
         }
 
-        info!("Capacity refresh completed: P0({}/{}) P1({}/{}) GB", 
-              capacity_info.p0_remaining / 1048576,
-              capacity_info.p0_maximum / 1048576,
-              capacity_info.p1_remaining / 1048576, 
-              capacity_info.p1_maximum / 1048576);
+        info!("Capacity refresh completed: P0({:.2}/{:.2}) MB, P1({:.2}/{:.2}) GB", 
+              capacity_info.p0_remaining as f64 / 1024.0,
+              capacity_info.p0_maximum as f64 / 1024.0,
+              capacity_info.p1_remaining as f64 / (1024.0 * 1024.0), 
+              capacity_info.p1_maximum as f64 / (1024.0 * 1024.0));
 
         Ok(capacity_info)
     }
@@ -1203,13 +1203,13 @@ impl TapeOperations {
             let used_p1 = capacity_info
                 .p1_maximum
                 .saturating_sub(capacity_info.p1_remaining);
-            ((used_p1 << 20), (capacity_info.p1_maximum << 20)) // 转换为字节
+            ((used_p1 * 1024), (capacity_info.p1_maximum * 1024)) // KB转换为字节
         } else {
             // 单分区磁带：使用P0容量
             let used_p0 = capacity_info
                 .p0_maximum
                 .saturating_sub(capacity_info.p0_remaining);
-            ((used_p0 << 20), (capacity_info.p0_maximum << 20)) // 转换为字节
+            ((used_p0 * 1024), (capacity_info.p0_maximum * 1024)) // KB转换为字节
         };
 
         Ok(TapeSpaceInfo {

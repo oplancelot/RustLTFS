@@ -78,13 +78,14 @@ impl CapacityPageParser {
         // Bytes 0-1: Page code (0x31) + flags  
         // Bytes 2-3: Page length
         let page_length = u16::from_be_bytes([self.page_data[2], self.page_data[3]]) as usize;
-        debug!("Capacity log page length: {} bytes", page_length);
+        debug!("Capacity log page length: {} bytes, actual data length: {} bytes", page_length, self.page_data.len());
 
         // Parameter entries start at offset 4
         let mut offset = 4;
         
         while offset + 4 <= self.page_data.len() && offset < 4 + page_length {
             if offset + 3 >= self.page_data.len() {
+                warn!("Parameter header extends beyond page boundary at offset {}", offset);
                 break;
             }
 
@@ -98,7 +99,7 @@ impl CapacityPageParser {
             ]);
             let param_length = self.page_data[offset + 3] as usize;
 
-            debug!("Found parameter code: {}, length: {}", current_param_code, param_length);
+            debug!("Found parameter code: {}, length: {}, offset: {}", current_param_code, param_length, offset);
 
             if current_param_code == param_code as u16 {
                 debug!("Found target parameter code {}", param_code);
@@ -106,43 +107,65 @@ impl CapacityPageParser {
                 // 容量数据从parameter header之后开始（offset + 4）
                 let data_start = offset + 4;
                 
-                if data_start + param_length <= self.page_data.len() {
-                    let capacity = if param_length >= 8 {
-                        // 8字节容量值（标准SCSI格式）
-                        u64::from_be_bytes([
-                            self.page_data[data_start],
-                            self.page_data[data_start + 1], 
-                            self.page_data[data_start + 2],
-                            self.page_data[data_start + 3],
-                            self.page_data[data_start + 4],
-                            self.page_data[data_start + 5],
-                            self.page_data[data_start + 6],
-                            self.page_data[data_start + 7],
-                        ])
-                    } else if param_length >= 4 {
-                        // 4字节容量值（实际遇到的格式）
-                        u32::from_be_bytes([
-                            self.page_data[data_start],
-                            self.page_data[data_start + 1], 
-                            self.page_data[data_start + 2],
-                            self.page_data[data_start + 3],
-                        ]) as u64
-                    } else {
-                        warn!("Parameter data too short: {} bytes, need at least 4", param_length);
-                        return Ok(0);
-                    };
+                // 检查数据是否超出页面边界
+                if data_start + param_length > self.page_data.len() {
+                    warn!("Parameter {} data extends beyond page boundary: start={}, length={}, page_size={}", 
+                          param_code, data_start, param_length, self.page_data.len());
                     
-                    debug!("Extracted capacity value for param code {} ({} bytes): {} KB", param_code, param_length, capacity);
-                    return Ok(capacity);
-                } else {
-                    warn!("Parameter data extends beyond page boundary: start={}, length={}, page_size={}", 
-                          data_start, param_length, self.page_data.len());
-                    return Ok(0);
+                    // 如果数据被截断，尝试使用可用的数据
+                    let available_bytes = self.page_data.len().saturating_sub(data_start);
+                    if available_bytes >= 4 {
+                        warn!("Using truncated 4-byte capacity value for parameter {}", param_code);
+                        let capacity = u32::from_be_bytes([
+                            self.page_data[data_start],
+                            self.page_data[data_start + 1], 
+                            self.page_data[data_start + 2],
+                            self.page_data[data_start + 3],
+                        ]) as u64;
+                        debug!("Extracted truncated capacity value for param code {} (4 bytes): {} KB", param_code, capacity);
+                        return Ok(capacity);
+                    } else {
+                        warn!("Insufficient data for parameter {}: only {} bytes available", param_code, available_bytes);
+                        return Ok(0);
+                    }
                 }
+                
+                let capacity = if param_length >= 8 {
+                    // 8字节容量值（标准SCSI格式）
+                    u64::from_be_bytes([
+                        self.page_data[data_start],
+                        self.page_data[data_start + 1], 
+                        self.page_data[data_start + 2],
+                        self.page_data[data_start + 3],
+                        self.page_data[data_start + 4],
+                        self.page_data[data_start + 5],
+                        self.page_data[data_start + 6],
+                        self.page_data[data_start + 7],
+                    ])
+                } else if param_length >= 4 {
+                    // 4字节容量值（实际遇到的格式）
+                    u32::from_be_bytes([
+                        self.page_data[data_start],
+                        self.page_data[data_start + 1], 
+                        self.page_data[data_start + 2],
+                        self.page_data[data_start + 3],
+                    ]) as u64
+                } else {
+                    warn!("Parameter data too short: {} bytes, need at least 4", param_length);
+                    return Ok(0);
+                };
+                
+                debug!("Extracted capacity value for param code {} ({} bytes): {} KB", param_code, param_length, capacity);
+                return Ok(capacity);
             }
 
-            // 移动到下一个parameter entry
-            offset += 4 + param_length;
+            // 移动到下一个parameter entry，但要检查边界
+            let next_offset = offset + 4 + param_length;
+            if next_offset > self.page_data.len() {
+                debug!("Next parameter offset {} exceeds page boundary, stopping search", next_offset);
+                break;
+            }
+            offset = next_offset;
         }
 
         debug!("Parameter code {} not found in capacity log page", param_code);
