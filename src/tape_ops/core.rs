@@ -1199,16 +1199,22 @@ impl TapeOperations {
 
         // 根据ExtraPartitionCount决定使用哪个分区的容量
         let (used_space, total_capacity) = if self.get_extra_partition_count() > 0 {
-            // 多分区磁带：使用数据分区（P1）容量
-            if capacity_info.p1_maximum > 0 {
-                let used_p1 = capacity_info
-                    .p1_maximum
-                    .saturating_sub(capacity_info.p1_remaining);
-                ((used_p1 * 1024), (capacity_info.p1_maximum * 1024)) // KB转换为字节
+            // 多分区磁带：显示P0+P1的总容量（剩余容量）
+            let p0_remaining_bytes = capacity_info.p0_remaining * 1024; // KB转字节
+            let p1_remaining_bytes = capacity_info.p1_remaining * 1024; // KB转字节
+            let total_remaining = p0_remaining_bytes + p1_remaining_bytes;
+            
+            // 计算已使用空间（如果有最大容量数据）
+            let used_space = if capacity_info.p0_maximum > 0 && capacity_info.p1_maximum > 0 {
+                let p0_used = capacity_info.p0_maximum.saturating_sub(capacity_info.p0_remaining);
+                let p1_used = capacity_info.p1_maximum.saturating_sub(capacity_info.p1_remaining);
+                (p0_used + p1_used) * 1024 // KB转字节
             } else {
-                // 如果P1最大容量为0，只显示剩余容量，总容量使用剩余容量
-                (0, (capacity_info.p1_remaining * 1024))
-            }
+                // 如果没有最大容量数据，假设已使用很少
+                0
+            };
+            
+            (used_space, total_remaining)
         } else {
             // 单分区磁带：使用P0容量
             let used_p0 = capacity_info
