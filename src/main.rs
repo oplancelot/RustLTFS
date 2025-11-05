@@ -650,6 +650,9 @@ async fn run(args: Cli) -> Result<()> {
             // Create tape operations instance
             let mut ops = tape_ops::TapeOperations::new(&device, skip_index);
 
+            // Initialize tape device to read capacity information
+            ops.initialize().await?;
+
             // Get space information
             let space_info = ops.get_tape_capacity_info().await?;
 
