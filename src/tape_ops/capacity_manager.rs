@@ -106,23 +106,37 @@ impl CapacityPageParser {
                 // 容量数据从parameter header之后开始（offset + 4）
                 let data_start = offset + 4;
                 
-                if data_start + param_length <= self.page_data.len() && param_length >= 8 {
-                    // LTFSCopyGUI显示容量值是8字节大端整数（单位：KB）
-                    let capacity = u64::from_be_bytes([
-                        self.page_data[data_start],
-                        self.page_data[data_start + 1], 
-                        self.page_data[data_start + 2],
-                        self.page_data[data_start + 3],
-                        self.page_data[data_start + 4],
-                        self.page_data[data_start + 5],
-                        self.page_data[data_start + 6],
-                        self.page_data[data_start + 7],
-                    ]);
+                if data_start + param_length <= self.page_data.len() {
+                    let capacity = if param_length >= 8 {
+                        // 8字节容量值（标准SCSI格式）
+                        u64::from_be_bytes([
+                            self.page_data[data_start],
+                            self.page_data[data_start + 1], 
+                            self.page_data[data_start + 2],
+                            self.page_data[data_start + 3],
+                            self.page_data[data_start + 4],
+                            self.page_data[data_start + 5],
+                            self.page_data[data_start + 6],
+                            self.page_data[data_start + 7],
+                        ])
+                    } else if param_length >= 4 {
+                        // 4字节容量值（实际遇到的格式）
+                        u32::from_be_bytes([
+                            self.page_data[data_start],
+                            self.page_data[data_start + 1], 
+                            self.page_data[data_start + 2],
+                            self.page_data[data_start + 3],
+                        ]) as u64
+                    } else {
+                        warn!("Parameter data too short: {} bytes, need at least 4", param_length);
+                        return Ok(0);
+                    };
                     
-                    debug!("Extracted capacity value for param code {}: {} KB", param_code, capacity);
+                    debug!("Extracted capacity value for param code {} ({} bytes): {} KB", param_code, param_length, capacity);
                     return Ok(capacity);
                 } else {
-                    warn!("Parameter data too short: {} bytes, need at least 8", param_length);
+                    warn!("Parameter data extends beyond page boundary: start={}, length={}, page_size={}", 
+                          data_start, param_length, self.page_data.len());
                     return Ok(0);
                 }
             }
