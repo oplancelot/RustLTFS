@@ -428,126 +428,17 @@ async fn run(args: Cli) -> Result<()> {
         Commands::Read {
             device,
             source,
-            destination,
-            skip_index,
-            index_file,
-            verify,
-            lines: _,
-            detailed: _,
         } => {
             info!("Starting read operation: {} -> {:?}", device, source);
 
-            // Create tape operations instance
-            let mut ops = tape_ops::TapeOperations::new(&device, skip_index);
+            // Create tape operations instance (never skip index for read operations)
+            let mut ops = tape_ops::TapeOperations::new(&device, false);
 
-            // Initialize tape device with auto index reading (may fail for non-existent devices)
-            let device_initialized = match ops.initialize(Some(tape_ops::core::OperationType::Read)).await {
-                Ok(_) => {
-                    info!("Device initialized successfully");
-                    // Note: LTFS index was already loaded during initialization
-                    true
-                }
-                Err(e) => {
-                    warn!("Device initialization failed: {}", e);
+            // Initialize tape device with auto index reading
+            ops.initialize(Some(tape_ops::core::OperationType::Read)).await?;
 
-                    // Provide helpful suggestions for common errors
-                    if e.to_string().contains("Windows error code 0x00000002") {
-                        error!("Device not found: {}", device);
-                        info!("🔍 Suggestions:");
-                        info!("  1. Check if a tape drive is connected to your system");
-                        info!("  2. Try different device paths: \\\\.\\TAPE0, \\\\.\\TAPE1, etc.");
-                        info!(
-                            "  3. Check device status: rustltfs.exe device {} --status --detailed",
-                            device
-                        );
-                        info!("  4. Use --skip-index option for offline mode: rustltfs.exe read --tape {} --skip-index", device);
-                    } else if e.to_string().contains("No tape loaded") {
-                        error!("No tape cartridge detected in drive: {}", device);
-                        info!("🔍 Suggestions:");
-                        info!("  1. Insert a tape cartridge into the drive");
-                        info!("  2. Wait for the drive to recognize the tape");
-                        info!(
-                            "  3. Check device status: rustltfs.exe device {} --status --detailed",
-                            device
-                        );
-                    } else if e.to_string().contains("Direct block read operation failed") {
-                        error!("Failed to read LTFS index from tape: {}", device);
-                        info!("🔍 Possible causes: blank tape, incorrect position, hardware issue, SCSI problem");
-                        info!(
-                            "🔧 Try: --skip-index option, full diagnostics, or --index-file <path>"
-                        );
-                    }
-
-                    // Continue with offline operation if index file is provided
-                    if index_file.is_some() {
-                        info!("Continuing with offline operation using index file");
-                        false
-                    } else {
-                        return Err(e); // Fail if no index file provided
-                    }
-                }
-            };
-
-            // Load index from file if specified
-            if let Some(ref index_path) = index_file {
-                ops.load_index_from_file(index_path).await?;
-
-                // Auto save index to current directory after successful index loading
-                if !skip_index {
-                    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
-                    let index_filename = format!("LTFSIndex_Load_{}.schema", timestamp);
-                    info!(
-                        "Auto saving index file to current directory: {}",
-                        index_filename
-                    );
-
-                    match ops
-                        .save_index_to_file(&std::path::PathBuf::from(&index_filename))
-                        .await
-                    {
-                        Ok(_) => {
-                            println!("✅ Index file automatically saved: {}", index_filename);
-                            info!("Index file saved successfully: {}", index_filename);
-                        }
-                        Err(e) => {
-                            warn!("Failed to save index file: {}", e);
-                            println!("⚠️  Index file save failed: {}", e);
-                        }
-                    }
-                }
-            } else if !device_initialized {
-                return Err(crate::error::RustLtfsError::cli_error(
-                    "Neither device initialization nor index file loading succeeded".to_string(),
-                ));
-            }
-
-            // Auto save index to current directory if loaded from tape
-            if device_initialized && !skip_index && index_file.is_none() {
-                let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
-                let index_filename = format!("LTFSIndex_Load_{}.schema", timestamp);
-                info!(
-                    "Auto saving index file loaded from tape to current directory: {}",
-                    index_filename
-                );
-
-                match ops
-                    .save_index_to_file(&std::path::PathBuf::from(&index_filename))
-                    .await
-                {
-                    Ok(_) => {
-                        println!("✅ Index file automatically saved: {}", index_filename);
-                        info!("Index file saved successfully: {}", index_filename);
-                    }
-                    Err(e) => {
-                        warn!("Failed to save index file: {}", e);
-                        println!("⚠️  Index file save failed: {}", e);
-                    }
-                }
-            }
-
-            // Execute different read operations based on parameters
-            match (source, destination) {
-                (None, None) => {
+            match source {
+                None => {
                     // Display complete directory tree structure
                     info!("Displaying tape directory tree structure");
 
@@ -563,77 +454,11 @@ async fn run(args: Cli) -> Result<()> {
                     // Display complete directory tree
                     ops.print_directory_tree();
                 }
-                (Some(src_path), None) => {
-                    // Download file or directory to current directory
-                    info!("Downloading from tape: {:?} -> current directory", src_path);
-
-                    let current_dir = std::env::current_dir().map_err(|e| {
-                        crate::error::RustLtfsError::cli_error(format!(
-                            "Failed to get current directory: {}",
-                            e
-                        ))
-                    })?;
-
-                    // Extract files to current directory
-                    let extract_result = ops
-                        .extract_from_tape(&src_path.to_string_lossy(), &current_dir, verify)
-                        .await?;
-
-                    println!("✅ Download Completed:");
-                    println!("  Files Downloaded: {}", extract_result.files_extracted);
-                    println!(
-                        "  Directories Created: {}",
-                        extract_result.directories_created
-                    );
-                    println!("  Total Bytes: {} bytes", extract_result.total_bytes);
-                    println!("  Destination: {}", current_dir.display());
-
-                    if verify {
-                        println!(
-                            "  Verification Status: {}",
-                            if extract_result.verification_passed {
-                                "✅ Passed"
-                            } else {
-                                "❌ Failed"
-                            }
-                        );
-                    }
-                }
-                (Some(src_path), Some(dest_path)) => {
-                    // Extract files to local
-                    info!(
-                        "Extracting files to local: {:?} -> {:?}",
-                        src_path, dest_path
-                    );
-
-                    // Parse source path, support file and directory extraction
-                    let extract_result = ops
-                        .extract_from_tape(&src_path.to_string_lossy(), &dest_path, verify)
-                        .await?;
-
-                    println!("✅ Extraction Completed:");
-                    println!("  Files Extracted: {}", extract_result.files_extracted);
-                    println!(
-                        "  Directories Created: {}",
-                        extract_result.directories_created
-                    );
-                    println!("  Total Bytes: {} bytes", extract_result.total_bytes);
-
-                    if verify {
-                        println!(
-                            "  Verification Status: {}",
-                            if extract_result.verification_passed {
-                                "✅ Passed"
-                            } else {
-                                "❌ Failed"
-                            }
-                        );
-                    }
-                }
-                (None, Some(_)) => {
-                    return Err(crate::error::RustLtfsError::cli_error(
-                        "Source path must be specified to extract files".to_string(),
-                    ));
+                Some(src_path) => {
+                    // List specific directory contents
+                    info!("Listing directory contents: {:?}", src_path);
+                    
+                    ops.list_directory_contents(&src_path.to_string_lossy())?;
                 }
             }
 

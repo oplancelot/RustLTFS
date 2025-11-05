@@ -1094,32 +1094,73 @@ impl TapeOperations {
         }
     }
 
-    /// 从磁带提取文件
-    pub async fn extract_from_tape(
-        &mut self,
-        source_path: &str,
-        target_path: &std::path::Path,
-        verify: bool,
-    ) -> Result<ExtractResult> {
-        info!(
-            "Extracting '{}' to '{:?}' (verify: {})",
-            source_path, target_path, verify
-        );
-
-        if self.index.is_none() {
+    /// 列出指定目录的内容
+    pub fn list_directory_contents(&self, path: &str) -> Result<()> {
+        if let Some(ref index) = self.index {
+            if path.is_empty() || path == "/" {
+                // 列出根目录
+                self.print_directory_contents(&index.root_directory, 0);
+            } else {
+                // 查找指定目录
+                let target_dir = self.find_directory_by_path(&index.root_directory, path);
+                match target_dir {
+                    Some(dir) => {
+                        println!("📁 Contents of: {}", path);
+                        self.print_directory_contents(dir, 0);
+                    }
+                    None => {
+                        println!("❌ Directory not found: {}", path);
+                        return Err(RustLtfsError::ltfs_index(format!("Directory not found: {}", path)));
+                    }
+                }
+            }
+        } else {
             return Err(RustLtfsError::ltfs_index("No index loaded".to_string()));
         }
+        Ok(())
+    }
 
-        // 这里应该实现具体的文件提取逻辑
-        // 暂时返回模拟结果，实际实现需要根据LTFS规范读取文件数据
-        warn!("File extraction is not fully implemented yet");
+    /// 打印目录内容（不递归）
+    fn print_directory_contents(&self, dir: &crate::ltfs_index::Directory, depth: usize) {
+        let indent = "  ".repeat(depth);
+        
+        // 打印文件
+        for file in &dir.contents.files {
+            println!("{}📄 {} ({} bytes)", indent, file.name, file.length);
+        }
+        
+        // 打印子目录
+        for subdir in &dir.contents.directories {
+            println!("{}📁 {}/", indent, subdir.name);
+        }
+    }
 
-        Ok(ExtractResult {
-            files_extracted: 1,
-            directories_created: 0,
-            total_bytes: 1024,
-            verification_passed: verify, // 暂时假设验证通过
-        })
+    /// 根据路径查找目录
+    fn find_directory_by_path<'a>(&self, root: &'a crate::ltfs_index::Directory, path: &str) -> Option<&'a crate::ltfs_index::Directory> {
+        // 标准化路径
+        let path = path.trim_start_matches('/').trim_end_matches('/');
+        if path.is_empty() {
+            return Some(root);
+        }
+
+        let path_parts: Vec<&str> = path.split('/').collect();
+        self.find_directory_recursive(root, &path_parts, 0)
+    }
+
+    /// 递归查找目录
+    fn find_directory_recursive<'a>(&self, current_dir: &'a crate::ltfs_index::Directory, path_parts: &[&str], index: usize) -> Option<&'a crate::ltfs_index::Directory> {
+        if index >= path_parts.len() {
+            return Some(current_dir);
+        }
+
+        let target_name = path_parts[index];
+        for subdir in &current_dir.contents.directories {
+            if subdir.name == target_name {
+                return self.find_directory_recursive(subdir, path_parts, index + 1);
+            }
+        }
+
+        None
     }
 
     /// 手动更新磁带索引
