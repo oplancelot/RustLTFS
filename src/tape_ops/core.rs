@@ -1142,7 +1142,13 @@ impl TapeOperations {
         // 直接使用self.scsi来读取容量信息
         info!("Reading tape capacity log page (0x31)");
         let capacity_log_data = match self.scsi.log_sense(0x31, 1) {
-            Ok(data) => data,
+            Ok(data) => {
+                info!("📊 Capacity log data length: {} bytes", data.len());
+                if data.len() > 0 {
+                    info!("📊 Capacity log data preview: {:02X?}", &data[..std::cmp::min(32, data.len())]);
+                }
+                data
+            },
             Err(e) => {
                 warn!("Failed to read capacity log page: {}", e);
                 return Ok(capacity_info);

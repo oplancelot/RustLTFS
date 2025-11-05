@@ -47,64 +47,91 @@ impl CapacityPageParser {
         Self { page_data }
     }
 
-    /// 获取指定分区的剩余容量（对应VB.NET的TryGetPage功能）
+    /// 获取指定分区的剩余容量（精确对应LTFSCopyGUI的TryGetPage功能）
     pub fn get_remaining_capacity(&self, partition_id: u8) -> Result<u64> {
-        // 分区容量页面格式：
-        // - Page 1: P0剩余容量
-        // - Page 2: P1剩余容量  
-        // - Page 3: P0最大容量
-        // - Page 4: P1最大容量
-        
-        let page_number = partition_id + 1; // 页面编号从1开始
-        self.extract_capacity_value(page_number)
+        // 根据LTFSCopyGUI实现：
+        // - Parameter Code 1: P0剩余容量  
+        // - Parameter Code 2: P1剩余容量
+        let param_code = partition_id + 1;
+        self.extract_capacity_value(param_code)
     }
 
-    /// 获取指定分区的最大容量
+    /// 获取指定分区的最大容量（精确对应LTFSCopyGUI的TryGetPage功能）
     pub fn get_maximum_capacity(&self, partition_id: u8) -> Result<u64> {
-        let page_number = partition_id + 3; // 最大容量页面从3开始
-        self.extract_capacity_value(page_number)
+        // 根据LTFSCopyGUI实现：
+        // - Parameter Code 3: P0最大容量
+        // - Parameter Code 4: P1最大容量
+        let param_code = partition_id + 3;
+        self.extract_capacity_value(param_code)
     }
 
-    /// 从页面数据中提取容量值
-    fn extract_capacity_value(&self, page_number: u8) -> Result<u64> {
-        // 简化的页面解析逻辑，实际需要根据SCSI标准解析
-        if self.page_data.len() < 16 {
+    /// 从页面数据中提取容量值（精确对应LTFSCopyGUI的CapacityLogPage.TryGetPage）
+    fn extract_capacity_value(&self, param_code: u8) -> Result<u64> {
+        debug!("Searching for parameter code {} in capacity log page", param_code);
+        
+        if self.page_data.len() < 4 {
+            warn!("Capacity log page too short: {} bytes", self.page_data.len());
             return Ok(0);
         }
 
-        // 查找指定页面的数据位置
-        let mut offset = 4; // 跳过页面头部
-        
-        while offset + 4 < self.page_data.len() {
-            let current_page = self.page_data[offset + 1];
-            let param_length = u16::from_be_bytes([
-                self.page_data[offset + 2], 
-                self.page_data[offset + 3]
-            ]);
+        // SCSI log page format:
+        // Bytes 0-1: Page code (0x31) + flags  
+        // Bytes 2-3: Page length
+        let page_length = u16::from_be_bytes([self.page_data[2], self.page_data[3]]) as usize;
+        debug!("Capacity log page length: {} bytes", page_length);
 
-            if current_page == page_number {
-                // 找到目标页面，解析容量值
-                if offset + 4 + param_length as usize <= self.page_data.len() && param_length >= 8 {
-                    // 容量值通常是8字节的大端整数
-                    let capacity = u64::from_be_bytes([
-                        self.page_data[offset + 4],
-                        self.page_data[offset + 5], 
-                        self.page_data[offset + 6],
-                        self.page_data[offset + 7],
-                        self.page_data[offset + 8],
-                        self.page_data[offset + 9],
-                        self.page_data[offset + 10],
-                        self.page_data[offset + 11],
-                    ]);
-                    return Ok(capacity);
-                }
+        // Parameter entries start at offset 4
+        let mut offset = 4;
+        
+        while offset + 4 <= self.page_data.len() && offset < 4 + page_length {
+            if offset + 3 >= self.page_data.len() {
                 break;
             }
 
-            // 移动到下一个页面
-            offset += 4 + param_length as usize;
+            // Parameter entry format:
+            // Bytes 0-1: Parameter code (big-endian)
+            // Byte 2: Control flags
+            // Byte 3: Parameter length
+            let current_param_code = u16::from_be_bytes([
+                self.page_data[offset], 
+                self.page_data[offset + 1]
+            ]);
+            let param_length = self.page_data[offset + 3] as usize;
+
+            debug!("Found parameter code: {}, length: {}", current_param_code, param_length);
+
+            if current_param_code == param_code as u16 {
+                debug!("Found target parameter code {}", param_code);
+                
+                // 容量数据从parameter header之后开始（offset + 4）
+                let data_start = offset + 4;
+                
+                if data_start + param_length <= self.page_data.len() && param_length >= 8 {
+                    // LTFSCopyGUI显示容量值是8字节大端整数（单位：KB）
+                    let capacity = u64::from_be_bytes([
+                        self.page_data[data_start],
+                        self.page_data[data_start + 1], 
+                        self.page_data[data_start + 2],
+                        self.page_data[data_start + 3],
+                        self.page_data[data_start + 4],
+                        self.page_data[data_start + 5],
+                        self.page_data[data_start + 6],
+                        self.page_data[data_start + 7],
+                    ]);
+                    
+                    debug!("Extracted capacity value for param code {}: {} KB", param_code, capacity);
+                    return Ok(capacity);
+                } else {
+                    warn!("Parameter data too short: {} bytes, need at least 8", param_length);
+                    return Ok(0);
+                }
+            }
+
+            // 移动到下一个parameter entry
+            offset += 4 + param_length;
         }
 
+        debug!("Parameter code {} not found in capacity log page", param_code);
         Ok(0)
     }
 }
