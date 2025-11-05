@@ -1167,9 +1167,9 @@ impl TapeOperations {
             capacity_info.p1_maximum = capacity_parser.get_maximum_capacity(1).unwrap_or(0);
         }
 
-        info!("Capacity refresh completed: P0({:.2}/{:.2}) MB, P1({:.2}/{:.2}) GB", 
-              capacity_info.p0_remaining as f64 / 1024.0,
-              capacity_info.p0_maximum as f64 / 1024.0,
+        info!("Capacity refresh completed: P0({:.2}/{:.2}) GB, P1({:.2}/{:.2}) GB", 
+              capacity_info.p0_remaining as f64 / (1024.0 * 1024.0),
+              capacity_info.p0_maximum as f64 / (1024.0 * 1024.0),
               capacity_info.p1_remaining as f64 / (1024.0 * 1024.0), 
               capacity_info.p1_maximum as f64 / (1024.0 * 1024.0));
 
@@ -1200,10 +1200,15 @@ impl TapeOperations {
         // 根据ExtraPartitionCount决定使用哪个分区的容量
         let (used_space, total_capacity) = if self.get_extra_partition_count() > 0 {
             // 多分区磁带：使用数据分区（P1）容量
-            let used_p1 = capacity_info
-                .p1_maximum
-                .saturating_sub(capacity_info.p1_remaining);
-            ((used_p1 * 1024), (capacity_info.p1_maximum * 1024)) // KB转换为字节
+            if capacity_info.p1_maximum > 0 {
+                let used_p1 = capacity_info
+                    .p1_maximum
+                    .saturating_sub(capacity_info.p1_remaining);
+                ((used_p1 * 1024), (capacity_info.p1_maximum * 1024)) // KB转换为字节
+            } else {
+                // 如果P1最大容量为0，只显示剩余容量，总容量使用剩余容量
+                (0, (capacity_info.p1_remaining * 1024))
+            }
         } else {
             // 单分区磁带：使用P0容量
             let used_p0 = capacity_info
