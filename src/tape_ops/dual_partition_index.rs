@@ -283,37 +283,27 @@ impl TapeOperations {
         Ok(())
     }
 
-    /// Write XML content to tape
+    /// Write XML content to tape (following commit 3432483 variable-length pattern)
     async fn write_xml_to_tape(&mut self, xml_content: &str) -> Result<()> {
         // Convert XML to bytes
         let xml_bytes = xml_content.as_bytes();
-        let block_size = self.block_size as usize;
+        let xml_size = xml_bytes.len();
         
-        // Write XML in blocks
-        let mut offset = 0;
-        while offset < xml_bytes.len() {
-            let chunk_size = std::cmp::min(block_size, xml_bytes.len() - offset);
-            let mut block = vec![0u8; block_size];
-            
-            // Copy data to block
-            block[..chunk_size].copy_from_slice(&xml_bytes[offset..offset + chunk_size]);
-            
-            // Write block to tape
-            match self.scsi.write_blocks(1, &block) {
-                Ok(_) => {
-                    debug!("Wrote XML block: offset={}, size={}", offset, chunk_size);
-                }
-                Err(e) => {
-                    return Err(RustLtfsError::tape_device(format!(
-                        "Failed to write XML block at offset {}: {}", offset, e
-                    )));
-                }
-            }
-            
-            offset += chunk_size;
+        // Following commit 3432483 pattern: use variable-length write to avoid ILI warning
+        // LTFS indexes should be written as single variable-length blocks without padding
+        // This matches LTFSCopyGUI behavior and prevents the 0-padding issue
+        
+        // Write XML as single variable-length block (commit 3432483 style)
+        let blocks_written = self.scsi.write_blocks(1, &xml_bytes[..xml_size])?;
+        
+        if blocks_written != 1 {
+            return Err(RustLtfsError::tape_device(format!(
+                "Expected to write 1 block, but wrote {} blocks", blocks_written
+            )));
         }
         
-        info!("XML write completed: {} bytes written", xml_bytes.len());
+        debug!("Wrote XML as variable-length block: {} bytes (commit 3432483 pattern)", xml_size);
+        info!("XML write completed: {} bytes written", xml_size);
         Ok(())
     }
 }
