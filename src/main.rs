@@ -650,8 +650,20 @@ async fn run(args: Cli) -> Result<()> {
             // Create tape operations instance
             let mut ops = tape_ops::TapeOperations::new(&device, skip_index);
 
-            // Initialize tape device to read capacity information
-            ops.initialize().await?;
+            // Initialize tape device to read capacity information  
+            // For space command, we can skip index reading for better performance
+            if skip_index {
+                // Capacity-only initialization: open device but skip index reading
+                if !ops.offline_mode {
+                    ops.scsi.open_device(&device)?;
+                    info!("Device opened for capacity reading (index skipped)");
+                    ops.wait_for_device_ready().await?;
+                    ops.initialize_partition_detection().await?;
+                }
+            } else {
+                // Full initialization including index reading
+                ops.initialize().await?;
+            }
 
             // Get space information
             let space_info = ops.get_tape_capacity_info().await?;
