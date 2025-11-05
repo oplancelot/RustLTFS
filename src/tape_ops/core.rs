@@ -145,6 +145,14 @@ impl Default for PerformanceControlState {
     }
 }
 
+/// 操作类型枚举
+#[derive(Debug, Clone, Copy)]
+pub enum OperationType {
+    Space,  // 只需要设备初始化
+    Write,  // 需要设备初始化 + 索引加载
+    Read,   // 需要设备初始化 + 索引加载 + 内容显示
+}
+
 /// Tape operations - core functionality from LTFSCopyGUI
 pub struct TapeOperations {
     pub(crate) device_path: String,
@@ -969,72 +977,78 @@ impl TapeOperations {
     }
 
     /// Initialize tape operations
-    pub async fn initialize(&mut self) -> Result<()> {
-        info!("Initializing tape device: {}", self.device_path);
+    pub async fn initialize(&mut self, operation_type: Option<OperationType>) -> Result<()> {
+        let op_type = operation_type.unwrap_or(OperationType::Write); // 默认为写入模式
 
         if self.offline_mode {
-            info!("Offline mode, skipping device initialization");
+            if matches!(op_type, OperationType::Read | OperationType::Write) {
+                info!("Offline mode, skipping device initialization");
+            }
             return Ok(());
         }
 
-        // Open SCSI device
+        // 设备初始化（所有操作都需要）
         self.scsi.open_device(&self.device_path)?;
-        info!("Tape device opened successfully");
-
         self.wait_for_device_ready().await?;
-        info!("Device is ready for operations");
 
         match self.scsi.check_media_status()? {
             crate::scsi::MediaType::NoTape => {
-                warn!("No tape detected in drive");
                 return Err(RustLtfsError::tape_device("No tape loaded".to_string()));
             }
             crate::scsi::MediaType::Unknown(_) => {
-                warn!("Unknown media type detected, attempting to continue");
+                // Continue with unknown media
             }
-            media_type => {
-                info!("Detected media type: {}", media_type.description());
+            _ => {
+                // Media detected, continue
             }
         }
 
-        // 初始化分区检测 (对应LTFSCopyGUI的MODE SENSE检测逻辑)
         self.initialize_partition_detection().await?;
 
-        // 尝试加载现有的LTFS索引 (确保写入操作能累积添加文件而非覆盖)
-        info!("Attempting to load existing LTFS index from tape...");
-        match self.read_index_from_tape().await {
-            Ok(()) => {
-                let file_count = self
-                    .index
-                    .as_ref()
-                    .map(|idx| idx.root_directory.contents.files.len())
-                    .unwrap_or(0);
-                info!(
-                    "✅ Successfully loaded existing index with {} files",
-                    file_count
-                );
+        match op_type {
+            OperationType::Space => {
+                info!("Device initialization completed");
+                return Ok(());
             }
-            Err(e) => {
-                info!(
-                    "No existing index found or failed to load: {} - will create new index",
-                    e
-                );
-                // 这是正常情况，对于新磁带或空磁带
+            OperationType::Write => {
+                info!("Device initialization completed");
+                
+                // 尝试加载现有的LTFS索引
+                match self.read_index_from_tape().await {
+                    Ok(()) => {
+                        let file_count = self
+                            .index
+                            .as_ref()
+                            .map(|idx| idx.root_directory.contents.files.len())
+                            .unwrap_or(0);
+                        info!("Index loaded successfully ({} files)", file_count);
+                    }
+                    Err(_) => {
+                        info!("Will create new index");
+                    }
+                }
+            }
+            OperationType::Read => {
+                info!("Device initialization completed");
+                
+                // 读取操作必须成功加载索引
+                match self.read_index_from_tape().await {
+                    Ok(()) => {
+                        info!("Index loaded successfully");
+                        
+                        // 显示索引内容概览
+                        if let Some(stats) = self.get_index_statistics() {
+                            info!("Tape contents: {} files, {} directories", stats.total_files, stats.total_directories);
+                        }
+                    }
+                    Err(e) => {
+                        return Err(RustLtfsError::ltfs_index(format!("Index reading failed: {}", e)));
+                    }
+                }
             }
         }
 
-        // Keep default block_size of 524288 (set in constructor) for LTFSCopyGUI compatibility
-        // LTFSCopyGUI uses 524288 bytes per block for both read and write operations
-        // Using 65536 (LTO_BLOCK_SIZE) causes "Blocklen mismatch" warnings in LTFSCopyGUI
-        // Note: block_size can be updated later if partition label specifies a different size
         self.partition_label = Some(LtfsPartitionLabel::default());
-
-        // Note: LTFS index reading is available through the read_operations module
-        info!(
-            "Device opened successfully with ExtraPartitionCount = {}",
-            self.get_extra_partition_count()
-        );
-
         Ok(())
     }
 
