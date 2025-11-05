@@ -1168,10 +1168,10 @@ impl TapeOperations {
         }
 
         info!("Capacity refresh completed: P0({:.2}/{:.2}) GB, P1({:.2}/{:.2}) GB", 
-              capacity_info.p0_remaining as f64 / (1024.0 * 1024.0),
-              capacity_info.p0_maximum as f64 / (1024.0 * 1024.0),
-              capacity_info.p1_remaining as f64 / (1024.0 * 1024.0), 
-              capacity_info.p1_maximum as f64 / (1024.0 * 1024.0));
+              capacity_info.p0_remaining as f64 / 1024.0,
+              capacity_info.p0_maximum as f64 / 1024.0,
+              capacity_info.p1_remaining as f64 / 1024.0, 
+              capacity_info.p1_maximum as f64 / 1024.0);
 
         Ok(capacity_info)
     }
