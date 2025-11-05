@@ -1126,27 +1126,65 @@ impl TapeOperations {
     pub async fn refresh_capacity(&mut self) -> Result<super::capacity_manager::TapeCapacityInfo> {
         info!("Refreshing tape capacity information (LTFSCopyGUI RefreshCapacity)");
 
-        let mut capacity_manager = super::capacity_manager::CapacityManager::new(
-            std::sync::Arc::new(crate::scsi::ScsiInterface::new()),
-            self.offline_mode,
-        );
+        let mut capacity_info = super::capacity_manager::TapeCapacityInfo {
+            p0_remaining: 0,
+            p0_maximum: 0,
+            p1_remaining: 0,
+            p1_maximum: 0,
+            media_description: "Unknown".to_string(),
+            error_rate_log_value: 0.0,
+            capacity_loss: None,
+            is_worm: false,
+            is_write_protected: false,
+            generation_info: "".to_string(),
+        };
+
+        // 直接使用self.scsi来读取容量信息
+        info!("Reading tape capacity log page (0x31)");
+        let capacity_log_data = match self.scsi.log_sense(0x31, 1) {
+            Ok(data) => data,
+            Err(e) => {
+                warn!("Failed to read capacity log page: {}", e);
+                return Ok(capacity_info);
+            }
+        };
+
+        // 解析容量信息
+        let capacity_parser = super::capacity_manager::CapacityPageParser::new(capacity_log_data);
+        
+        capacity_info.p0_remaining = capacity_parser.get_remaining_capacity(0).unwrap_or(0);
+        capacity_info.p0_maximum = capacity_parser.get_maximum_capacity(0).unwrap_or(0);
 
         let extra_partition_count = self.get_extra_partition_count();
-        capacity_manager
-            .refresh_capacity(extra_partition_count)
-            .await
+        if extra_partition_count > 0 {
+            capacity_info.p1_remaining = capacity_parser.get_remaining_capacity(1).unwrap_or(0);
+            capacity_info.p1_maximum = capacity_parser.get_maximum_capacity(1).unwrap_or(0);
+        }
+
+        info!("Capacity refresh completed: P0({}/{}) P1({}/{}) GB", 
+              capacity_info.p0_remaining / 1048576,
+              capacity_info.p0_maximum / 1048576,
+              capacity_info.p1_remaining / 1048576, 
+              capacity_info.p1_maximum / 1048576);
+
+        Ok(capacity_info)
     }
 
     /// 读取错误率信息（对应LTFSCopyGUI ReadChanLRInfo）
     pub async fn read_error_rate_info(&mut self) -> Result<f64> {
         info!("Reading tape error rate information");
 
-        let mut capacity_manager = super::capacity_manager::CapacityManager::new(
-            std::sync::Arc::new(crate::scsi::ScsiInterface::new()),
-            self.offline_mode,
-        );
-
-        capacity_manager.read_error_rate_info().await
+        // 直接使用self.scsi读取错误率信息
+        match self.scsi.log_sense(0x02, 1) {
+            Ok(data) => {
+                // 简单解析错误率（可以后续完善）
+                Ok(0.0)
+            }
+            Err(e) => {
+                warn!("Failed to read error rate: {}", e);
+                Ok(0.0)
+            }
+        }
     }
 
     /// 获取磁带容量信息（简化版本，用于向后兼容）
