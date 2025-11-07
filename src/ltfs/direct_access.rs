@@ -9,6 +9,18 @@ use super::performance::{PerformanceMonitor, CacheConfig, BatchConfig};
 use tracing::{info, debug, warn};
 use std::path::PathBuf;
 use tokio::fs;
+use uuid::Uuid;
+use chrono;
+
+/// Generate LTFS-compatible Z-format timestamp
+fn format_ltfs_timestamp(datetime: chrono::DateTime<chrono::Utc>) -> String {
+    format!("{}Z", datetime.format("%Y-%m-%dT%H:%M:%S%.9f"))
+}
+
+/// Get current timestamp in LTFS-compatible format
+fn get_current_ltfs_timestamp() -> String {
+    format_ltfs_timestamp(chrono::Utc::now())
+}
 
 /// IBM LTFS direct read/write operations interface
 pub struct LtfsDirectAccess {
@@ -228,13 +240,40 @@ impl LtfsDirectAccess {
     
     /// Create minimal LTFS index
     fn create_minimal_ltfs_index(&self) -> LtfsIndex {
-        // This would create a basic LTFS index structure
-        // For now, return a placeholder
-        warn!("Creating minimal LTFS index - not fully implemented");
+        warn!("Creating minimal LTFS index");
         
-        // Would need to create proper LtfsIndex with all required fields
-        // This is a placeholder that won't compile without proper implementation
-        todo!("Implement minimal LTFS index creation")
+        let now = get_current_ltfs_timestamp();
+        let volume_uuid = Uuid::new_v4();
+
+        LtfsIndex {
+            version: "2.4.0".to_string(),
+            creator: "RustLTFS".to_string(),
+            volumeuuid: volume_uuid.to_string(),
+            generationnumber: 1,
+            updatetime: now.clone(),
+            location: crate::ltfs_index::Location {
+                partition: "b".to_string(), // Data partition
+                startblock: 0,
+            },
+            previousgenerationlocation: None,
+            allowpolicyupdate: Some(true),
+            volumelockstate: None,
+            highestfileuid: Some(1),
+            root_directory: crate::ltfs_index::Directory {
+                name: "".to_string(),
+                uid: 1,
+                creation_time: now.clone(),
+                change_time: now.clone(),
+                modify_time: now.clone(),
+                access_time: now.clone(),
+                backup_time: now,
+                read_only: false,
+                contents: crate::ltfs_index::DirectoryContents {
+                    files: Vec::new(),
+                    directories: Vec::new(),
+                },
+            },
+        }
     }
     
     /// Create file entry for LTFS index

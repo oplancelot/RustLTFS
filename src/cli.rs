@@ -77,25 +77,9 @@ pub enum Commands {
         #[arg(long = "exclude", value_name = "EXTENSIONS")]
         exclude_extensions: Option<String>,
 
-        /// Resume write from previous interruption
-        #[arg(long = "resume")]
-        resume: bool,
-
         /// Dry run mode - show what would be written without actual operation
         #[arg(long = "dry-run")]
         dry_run: bool,
-
-        /// Set compression level (0=none, 1=low, 2=medium, 3=high)
-        #[arg(long = "compress", value_name = "LEVEL")]
-        compression_level: Option<u8>,
-
-        /// Enable encryption with password prompt
-        #[arg(long = "encrypt")]
-        encrypt: bool,
-
-        /// Create checkpoint every N files (useful for large operations)
-        #[arg(long = "checkpoint", value_name = "COUNT")]
-        checkpoint_interval: Option<u32>,
 
         /// Maximum file size to process in one operation (in GiB)
         #[arg(long = "max-file-size", value_name = "GIB")]

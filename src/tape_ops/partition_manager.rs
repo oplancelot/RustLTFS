@@ -2316,7 +2316,6 @@ impl crate::tape_ops::TapeOperations {
         match self.scsi.locate_block(data_partition, 0) {
             Ok(()) => {
                 // 注意：这里需要实现EOD定位逻辑，目前作为占位符
-                // TODO: 实现 scsi.space(EndOfData) 和相关的文件标记定位功能
                 info!("Data partition positioning - EOD logic placeholder");
 
                 // 搜索数据分区的一些常见索引位置

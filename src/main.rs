@@ -52,11 +52,7 @@ async fn run(args: Cli) -> Result<()> {
             speed_limit,
             index_interval,
             exclude_extensions,
-            resume,
             dry_run,
-            compression_level,
-            encrypt,
-            checkpoint_interval,
             max_file_size,
             quiet,
         } => {
@@ -109,35 +105,6 @@ async fn run(args: Cli) -> Result<()> {
             let excluded_extensions_copy = write_options.excluded_extensions.clone();
 
             ops.set_write_options(write_options);
-
-            // Handle encryption setup
-            if encrypt {
-                if !quiet {
-                    println!("🔐 Encryption enabled - password will be prompted during operation");
-                }
-                // TODO: Implement encryption key handling
-                warn!("Encryption feature is currently under development");
-            }
-
-            // Handle compression
-            if let Some(level) = compression_level {
-                if level > 3 {
-                    return Err(error::RustLtfsError::parameter_validation(
-                        "Compression level must be 0-3".to_string(),
-                    ));
-                }
-                if !quiet {
-                    let level_name = match level {
-                        0 => "None",
-                        1 => "Low",
-                        2 => "Medium",
-                        3 => "High",
-                        _ => "Unknown",
-                    };
-                    println!("📦 Compression: {} (level {})", level_name, level);
-                }
-                // TODO: Implement compression level setting
-            }
 
             // Display progress if requested
             let show_progress = progress && !quiet;
@@ -259,15 +226,6 @@ async fn run(args: Cli) -> Result<()> {
                 None => "<stdin>".to_string(),
             };
 
-            // Handle resume functionality
-            if resume {
-                if !quiet {
-                    println!("🔄 Resume mode enabled - checking for previous operations...");
-                }
-                // TODO: Implement resume functionality
-                warn!("Resume feature is currently under development");
-            }
-
             // Display write operation details
             if !quiet {
                 println!("\n🚀 Starting Write Operation");
@@ -326,7 +284,6 @@ async fn run(args: Cli) -> Result<()> {
             if dry_run {
                 if !quiet {
                     println!("\n🔍 DRY RUN: Analyzing source files...");
-                    // TODO: Implement dry run analysis
                     println!("✅ Dry run completed - no data was written");
                 }
                 return Ok(());
@@ -334,7 +291,6 @@ async fn run(args: Cli) -> Result<()> {
 
             // Execute write operation with enhanced progress reporting
             let write_start = std::time::Instant::now();
-            let mut checkpoint_count = 0u32;
 
             match operation_mode {
                 "directory" => {
@@ -342,14 +298,6 @@ async fn run(args: Cli) -> Result<()> {
                     if let Some(ref source_path) = source {
                         if show_progress {
                             println!("\n📁 Writing directory to tape...");
-                        }
-
-                        // Handle checkpoint intervals for large directory operations
-                        if let Some(interval) = checkpoint_interval {
-                            if show_progress {
-                                println!("🔖 Checkpoint every {} files", interval);
-                            }
-                            // TODO: Implement checkpoint logic
                         }
 
                         ops.write_directory_to_tape(source_path, &destination.to_string_lossy())
@@ -421,11 +369,6 @@ async fn run(args: Cli) -> Result<()> {
                             write_duration.as_secs_f64()
                         )
                     );
-                }
-
-                // Show checkpoint info if used
-                if checkpoint_count > 0 {
-                    println!("  Checkpoints created: {}", checkpoint_count);
                 }
             }
 

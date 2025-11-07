@@ -797,7 +797,6 @@ impl LtfsIndex {
         }
 
         // For simplicity, just insert into root for now
-        // TODO: Implement proper directory traversal later
         info!(
             "Simplified implementation: inserting '{}' into root directory",
             file.name
