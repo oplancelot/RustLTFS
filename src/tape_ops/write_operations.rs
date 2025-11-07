@@ -1231,9 +1231,6 @@ impl TapeOperations {
                 self.write_queue.push(write_entry);
             }
 
-            // 简化写入处理 - 直接处理文件，无需复杂队列
-            info!("Processing files directly without queue complexity");
-            // TODO: 这里需要实现简化的文件处理逻辑
         } else {
             // Sequential file processing (对应LTFSCopyGUI的串行处理)
             info!("Processing {} files sequentially", files.len());
@@ -1320,8 +1317,6 @@ impl TapeOperations {
         // Add all entries to write queue
         self.write_queue.extend(file_entries);
 
-        // 简化写入处理 - 移除复杂队列逻辑
-        info!("Simplified async write operation completed");
         Ok(())
     }
 
@@ -1986,11 +1981,6 @@ impl TapeOperations {
         self.write_progress.current_bytes_processed = bytes_processed;
     }
 
-    // 复杂写入队列处理功能已移除 - 遵循YAGNI原则，专注核心功能
-
-    // ================== 辅助函数 ==================
-
-    // 重复的文件数据写入功能已移除 - 直接使用核心的写入流功能
 
     /// Check available space on tape
     fn check_available_space(&self, required_size: u64) -> Result<()> {
@@ -2017,9 +2007,6 @@ impl TapeOperations {
         Ok(())
     }
 
-    // 复杂的文件索引查找功能已移除 - 遵循YAGNI原则，简化核心功能
-
-    // 复杂的文件比较功能已移除 - 遵循YAGNI原则，简化核心功能
 
     /// Enhanced apply speed limiting with intelligent control (对应LTFSCopyGUI的SpeedLimit功能增强版)
     async fn apply_speed_limit(&mut self, bytes_to_write: u64, speed_limit_mbps: u32) {
@@ -2049,7 +2036,6 @@ impl TapeOperations {
         }
     }
 
-    // 目录存在性检查功能已移除 - 遵循YAGNI原则，简化核心功能
 
     /// Create new empty LTFS index
     fn create_new_ltfs_index(&self) -> LtfsIndex {
