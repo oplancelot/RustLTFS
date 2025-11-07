@@ -881,7 +881,7 @@ impl TapeOperations {
 
     /// Wait for device ready using TestUnitReady retry logic (对应LTFSCopyGUI的TestUnitReady重试逻辑)
     pub async fn wait_for_device_ready(&self) -> Result<()> {
-        info!("Starting TestUnitReady retry logic (LTFSCopyGUI compatible)");
+        info!("Starting TestUnitReady retry logic");
 
         let max_retries = 5; // 对应LTFSCopyGUI的5次重试
         let retry_delay_ms = 200; // 对应LTFSCopyGUI的200ms延迟
@@ -1179,7 +1179,7 @@ impl TapeOperations {
 
     /// 刷新磁带容量信息（精确对应LTFSCopyGUI RefreshCapacity）
     pub async fn refresh_capacity(&mut self) -> Result<super::capacity_manager::TapeCapacityInfo> {
-        info!("Refreshing tape capacity information (LTFSCopyGUI RefreshCapacity)");
+        info!("Refreshing tape capacity information");
 
         let mut capacity_info = super::capacity_manager::TapeCapacityInfo {
             p0_remaining: 0,

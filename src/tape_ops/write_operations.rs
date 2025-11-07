@@ -1669,7 +1669,7 @@ impl TapeOperations {
             || self.write_progress.total_bytes_unindexed > 0;
 
         if !should_update {
-            info!("No unindexed data and force_index not set, skipping update (matching LTFSCopyGUI logic)");
+            info!("No unindexed data and force_index not set, skipping update");
             return Ok(());
         }
 

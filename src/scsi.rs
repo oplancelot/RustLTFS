@@ -1429,7 +1429,7 @@ impl ScsiInterface {
             cdb[4] = (actual_count & 0xFF) as u8;
             cdb[5] = 0x00;
 
-            debug!("LTFSCopyGUI compatible SPACE command: {:02X?}", &cdb[..]);
+            debug!("SPACE command: {:02X?}", &cdb[..]);
 
             let result = self.scsi_io_control(
                 &cdb,
@@ -1460,7 +1460,7 @@ impl ScsiInterface {
 
     /// Read tape position information (LTFSCopyGUI compatible implementation)
     pub fn read_position(&self) -> Result<TapePosition> {
-        debug!("Reading tape position using LTFSCopyGUI compatible method");
+        debug!("Reading tape position");
 
         #[cfg(windows)]
         {
@@ -1497,7 +1497,7 @@ impl ScsiInterface {
                 );
 
                 // 🔍 详细分析SCSI返回数据的每个字节段 (对应LTFSCopyGUI TapeUtils.vb)
-                debug!("🔍 Raw data analysis (LTFSCopyGUI format):");
+                debug!("🔍 Raw data analysis:");
                 debug!("  Flags (byte 0): 0x{:02X}", data_buffer[0]);
                 debug!(
                     "  Bytes 1-3: {:02X} {:02X} {:02X}",
@@ -1577,7 +1577,7 @@ impl ScsiInterface {
                 };
 
                 // 🔍 显示解析后的值与LTFSCopyGUI格式对比
-                debug!("🔍 Parsed values (LTFSCopyGUI compatible):");
+                debug!("🔍 Parsed values:");
                 debug!(
                     "  - Flags: 0x{:02X} (BOP={}, EOD={})",
                     flags, position.beginning_of_partition, position.end_of_data
@@ -1793,7 +1793,7 @@ impl ScsiInterface {
     /// ReadFileMark - 跳过当前FileMark标记 (完全对应LTFSCopyGUI的ReadFileMark实现)
     /// 这个方法精确复制LTFSCopyGUI TapeUtils.ReadFileMark的行为
     pub fn read_file_mark(&self) -> Result<bool> {
-        debug!("🔧 ReadFileMark: Starting LTFSCopyGUI compatible FileMark detection");
+        debug!("🔧 ReadFileMark: Starting FileMark detection");
 
         #[cfg(windows)]
         {
@@ -1823,7 +1823,7 @@ impl ScsiInterface {
             }
 
             // 3. 读取到数据，说明不在FileMark位置 - 使用LTFSCopyGUI回退策略
-            debug!("🔄 ReadFileMark: Data read, not at FileMark - executing LTFSCopyGUI backtrack strategy");
+            debug!("🔄 ReadFileMark: Data read, not at FileMark - executing backtrack strategy");
 
             // 获取当前位置
             let current_pos = self.read_position()?;
@@ -2120,7 +2120,7 @@ impl ScsiInterface {
                 // 🎯 关键的FileMark检测规则 (精确对应LTFSCopyGUI)
                 // LTFSCopyGUI: If (Add_Key >= 1 And Add_Key <> 4) Then Exit While
                 if add_key >= 1 && add_key != 4 {
-                    info!("🎯 FileMark detected: Add_Key=0x{:04X} matches LTFSCopyGUI criteria (>=1 and !=4)", add_key);
+                    info!("🎯 FileMark detected: Add_Key=0x{:04X} matches criteria (>=1 and !=4)", add_key);
                     break;
                 }
 
@@ -2214,7 +2214,7 @@ impl ScsiInterface {
         //     Space6(handle:=handle, Count:=BlockAddress, Code:=LocateDestType.FileMark)
         match dest_type {
             LocateDestType::FileMark => {
-                info!("🔧 Using LTFSCopyGUI FileMark strategy: Locate(0,0) + Space6({}) in partition {}", block_address, partition);
+                info!("🔧 Using FileMark strategy: Locate(0,0) + Space6({}) in partition {}", block_address, partition);
 
                 // Step 1: 先定位到指定分区的开头 (对应Locate(handle, 0, 0))
                 self.locate(0, partition, LocateDestType::Block)?;
@@ -2551,7 +2551,7 @@ impl ScsiInterface {
     /// MODE SENSE command to read partition page 0x11 (对应LTFSCopyGUI的ModeSense实现)
     /// 这个方法复制LTFSCopyGUI的精确实现：TapeUtils.ModeSense(handle, &H11)
     pub fn mode_sense_partition_page_0x11(&self) -> Result<Vec<u8>> {
-        debug!("Executing MODE SENSE page 0x11 for partition detection (LTFSCopyGUI compatible)");
+        debug!("Executing MODE SENSE page 0x11 for partition detection");
 
         #[cfg(windows)]
         {

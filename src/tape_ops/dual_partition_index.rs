@@ -17,7 +17,7 @@ fn get_current_ltfs_timestamp() -> String {
 impl TapeOperations {
     /// Update index on tape with force option (corresponds to VB.NET WriteCurrentIndex + RefreshIndexPartition)
     pub async fn update_index_on_tape_with_options_dual_partition(&mut self, force_index: bool) -> Result<()> {
-        info!("Starting to update tape LTFS index (LTFSCopyGUI WriteCurrentIndex + RefreshIndexPartition)...");
+        info!("Starting to update tape LTFS index...");
 
         // Allow execution in offline mode but skip actual tape operations
         if self.offline_mode {
@@ -121,7 +121,7 @@ impl TapeOperations {
         let logical_data_partition = 1u8; // DataPartition = 1 (Partition B)
         let data_partition = self.get_target_partition(logical_data_partition);
         
-        info!("Moving to data partition {} EOD (LTFSCopyGUI: TapeUtils.Locate(driveHandle, 0UL, DataPartition, EOD))", 
+        info!("Moving to data partition {} EOD", 
               data_partition);
         
         // 精确对应：TapeUtils.Locate(driveHandle, 0UL, DataPartition, TapeUtils.LocateDestType.EOD)
@@ -217,7 +217,7 @@ impl TapeOperations {
         let index_partition = self.get_target_partition(logical_index_partition);
 
         // 精确对应LTFSCopyGUI：TapeUtils.Locate(driveHandle, 3UL, IndexPartition, TapeUtils.LocateDestType.FileMark)
-        info!("Locating to index partition {} at 3rd filemark (LTFSCopyGUI: TapeUtils.Locate(driveHandle, 3UL, IndexPartition, FileMark))", 
+        info!("Locating to index partition {} at 3rd filemark", 
               index_partition);
         
         // 使用LTFSCopyGUI的精确参数：3UL (第3个文件标记)
