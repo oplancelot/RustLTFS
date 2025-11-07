@@ -1,7 +1,6 @@
 use super::partition_manager::LtfsPartitionLabel;
 use super::{FileWriteEntry, LtfsAccess, WriteOptions, WriteProgress};
 use crate::error::{Result, RustLtfsError};
-use crate::ltfs::performance::{BatchConfig, CacheConfig, PerformanceMonitor};
 use crate::ltfs_index::LtfsIndex;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -175,7 +174,6 @@ pub struct TapeOperations {
     pub(crate) max_extra_partition_allowed: u8, // 对应LTFSCopyGUI的MaxExtraPartitionAllowed
 
     // === 新增性能控制组件（对应LTFSCopyGUI的性能管理） ===
-    pub(crate) performance_monitor: Option<PerformanceMonitor>, // 性能监控器
     pub(crate) performance_state: PerformanceControlState,      // 性能控制状态
     pub(crate) operation_semaphore: Option<Arc<Semaphore>>,     // 并发控制信号量
     pub(crate) memory_usage_tracker: Arc<Mutex<u64>>,           // 内存使用跟踪器
@@ -212,7 +210,6 @@ impl TapeOperations {
             max_extra_partition_allowed: 1, // LTO standard maximum
 
             // 性能控制组件初始化
-            performance_monitor: None,
             performance_state,
             operation_semaphore: Some(Arc::new(Semaphore::new(max_concurrent))),
             memory_usage_tracker: Arc::new(Mutex::new(0)),
@@ -223,33 +220,13 @@ impl TapeOperations {
         }
     }
 
-    /// Initialize performance monitoring with custom configuration
-    /// 启用性能监控（对应LTFSCopyGUI的性能监控功能）
-    pub fn enable_performance_monitoring(
-        &mut self,
-        cache_config: Option<CacheConfig>,
-        batch_config: Option<BatchConfig>,
-    ) {
-        if let (Some(cache_cfg), Some(batch_cfg)) = (cache_config, batch_config) {
-            self.performance_monitor = Some(PerformanceMonitor::with_configs(cache_cfg, batch_cfg));
-        } else {
-            self.performance_monitor = Some(PerformanceMonitor::new());
-        }
-
-        self.performance_state.monitoring_enabled = true;
-        info!(
-            "Performance monitoring enabled for device: {}",
-            self.device_path
-        );
-    }
-
-    /// Set speed limit (对应LTFSCopyGUI的SpeedLimit设置)
-    pub fn set_speed_limit(&mut self, speed_limit_mbps: Option<u32>) {
-        if let Some(limit) = speed_limit_mbps {
+    /// Set speed limit (对应LTFSCopyGUI的速度限制)
+    pub fn set_speed_limit(&mut self, limit: Option<u32>) {
+        if let Some(limit) = limit {
             self.speed_limiter = Some(SpeedLimiter::new(limit));
             self.performance_state.target_speed_limit = Some((limit as u64) * 1024 * 1024);
             info!(
-                "Speed limit set to {} MB/s for device: {}",
+                "Speed limit enabled: {} MB/s for device: {}",
                 limit, self.device_path
             );
         } else {
@@ -316,10 +293,7 @@ impl TapeOperations {
         // 4. 暂停和停止检查
         self.check_pause_and_stop().await?;
 
-        // 5. 性能监控记录
-        if let Some(ref mut perf_monitor) = self.performance_monitor {
-            perf_monitor.record_operation(bytes_processed);
-        }
+        // 性能监控记录功能已移除
 
         Ok(())
     }
@@ -410,10 +384,7 @@ impl TapeOperations {
     async fn force_memory_cleanup(&mut self) -> Result<()> {
         info!("Performing emergency memory cleanup");
 
-        // 清理性能监控缓存
-        if let Some(ref mut perf_monitor) = self.performance_monitor {
-            perf_monitor.cache().clear();
-        }
+        // 性能监控缓存清理功能已移除
 
         // 清理写入队列中不必要的数据
         if self.write_queue.len() > 100 {
@@ -443,10 +414,7 @@ impl TapeOperations {
         usage += self.write_queue.len() as u64 * 1024; // 估算每个写入条目1KB
         usage += self.block_size as u64; // SCSI缓冲区
 
-        if let Some(ref perf_monitor) = self.performance_monitor {
-            let stats = perf_monitor.get_performance_stats();
-            usage += stats.cache_stats.total_size as u64;
-        }
+        // 性能监控内存统计功能已移除
 
         if let Some(ref speed_limiter) = self.speed_limiter {
             usage += speed_limiter.transfer_history.len() as u64 * 16; // 每个记录约16字节
@@ -494,65 +462,9 @@ impl TapeOperations {
             perf_state.queued_operations
         ));
 
-        // 性能监控统计
-        if let Some(ref perf_monitor) = self.performance_monitor {
-            let stats = perf_monitor.get_performance_stats();
-            report.push_str("\n--- Performance Monitoring ---\n");
-            report.push_str(&format!(
-                "Monitoring enabled: {}\n",
-                perf_state.monitoring_enabled
-            ));
-            report.push_str(&format!("Total operations: {}\n", stats.total_operations));
-            report.push_str(&format!(
-                "Total data processed: {:.2} MB\n",
-                stats.total_bytes as f64 / (1024.0 * 1024.0)
-            ));
-            report.push_str(&format!(
-                "Average throughput: {:.2} MB/s\n",
-                stats.throughput_bytes_per_sec / (1024.0 * 1024.0)
-            ));
-            report.push_str(&format!(
-                "Operations per second: {:.2}\n",
-                stats.operations_per_second
-            ));
-
-            // 缓存统计
-            report.push_str("\n--- Cache Performance ---\n");
-            report.push_str(&format!("Cache entries: {}\n", stats.cache_stats.entries));
-            report.push_str(&format!(
-                "Cache size: {:.2} MB / {:.2} MB\n",
-                stats.cache_stats.total_size as f64 / (1024.0 * 1024.0),
-                stats.cache_stats.max_size as f64 / (1024.0 * 1024.0)
-            ));
-            report.push_str(&format!(
-                "Cache hit rate: {:.1}%\n",
-                stats.cache_stats.hit_rate
-            ));
-            report.push_str(&format!("Cache hits: {}\n", stats.cache_stats.hit_count));
-            report.push_str(&format!("Cache misses: {}\n", stats.cache_stats.miss_count));
-
-            // 队列统计
-            report.push_str("\n--- Operation Queue ---\n");
-            report.push_str(&format!(
-                "Pending reads: {}\n",
-                stats.queue_stats.pending_reads
-            ));
-            report.push_str(&format!(
-                "Pending writes: {}\n",
-                stats.queue_stats.pending_writes
-            ));
-            report.push_str(&format!(
-                "Oldest read wait: {:.2}s\n",
-                stats.queue_stats.oldest_read_wait.as_secs_f64()
-            ));
-            report.push_str(&format!(
-                "Oldest write wait: {:.2}s\n",
-                stats.queue_stats.oldest_write_wait.as_secs_f64()
-            ));
-        } else {
-            report.push_str("\n--- Performance Monitoring ---\n");
-            report.push_str("Monitoring: Disabled\n");
-        }
+        // 性能监控统计功能已移除
+        report.push_str("\n--- Performance Monitoring ---\n");
+        report.push_str("Monitoring: Disabled (功能已移除)\n");
 
         // 速度限制器详细信息
         if let Some(ref speed_limiter) = self.speed_limiter {
@@ -626,9 +538,7 @@ impl TapeOperations {
 
     /// 重置性能统计（对应LTFSCopyGUI的统计重置功能）
     pub fn reset_performance_stats(&mut self) {
-        if let Some(ref mut perf_monitor) = self.performance_monitor {
-            perf_monitor.cache().clear();
-        }
+        // 性能监控缓存清理功能已移除
 
         if let Some(ref mut speed_limiter) = self.speed_limiter {
             speed_limiter.transfer_history.clear();
@@ -659,10 +569,7 @@ impl TapeOperations {
 
         self.set_max_concurrent_operations(optimal_concurrent);
 
-        // 启用性能监控
-        if self.performance_monitor.is_none() {
-            self.enable_performance_monitoring(None, None);
-        }
+        // 性能监控功能已移除，保留自适应并发控制
 
         info!(
             "Adaptive performance optimization enabled for device: {}",

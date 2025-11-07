@@ -2,7 +2,6 @@ mod cli;
 mod display;
 mod error;
 mod logger;
-mod ltfs;
 mod ltfs_index;
 mod scsi;
 mod tape;

@@ -7,7 +7,6 @@ pub mod cli;
 pub mod display;
 pub mod error;
 pub mod logger;
-pub mod ltfs;
 pub mod ltfs_index;
 pub mod scsi;
 pub mod tape;
