@@ -2,6 +2,7 @@ use super::{FileWriteEntry, TapeOperations, WriteOptions, WriteResult};
 use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::LtfsIndex;
 use std::collections::HashMap;
+use std::io::BufRead;
 use std::path::Path;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, BufReader};
@@ -960,6 +961,158 @@ impl TapeOperations {
         Ok(WriteResult {
             position: write_start_position,
             blocks_written: total_blocks_written,
+            bytes_written: total_bytes_written,
+        })
+    }
+
+    /// Write data from a BufRead stream to tape (supports stdin and files)
+    pub async fn write_reader_to_tape(
+        &mut self,
+        mut reader: Box<dyn BufRead + Send>,
+        target_path: &str,
+        estimated_size: Option<u64>,
+    ) -> Result<WriteResult> {
+        info!("Writing from reader stream to tape: {}", target_path);
+
+        // Check stop flag
+        if self.stop_flag {
+            return Err(RustLtfsError::operation_cancelled(
+                "Write operation stopped by user".to_string(),
+            ));
+        }
+
+        // Offline mode handling
+        if self.offline_mode {
+            info!("Offline mode: simulating stream write operation");
+            self.write_progress.current_files_processed += 1;
+            return Ok(WriteResult {
+                position: crate::scsi::TapePosition {
+                    partition: 1,
+                    block_number: 0,
+                    file_number: 0,
+                    set_number: 0,
+                    end_of_data: false,
+                    beginning_of_partition: false,
+                },
+                blocks_written: 0,
+                bytes_written: 0,
+            });
+        }
+
+        // Prepare for writing to tape
+        self.scsi.locate_to_eod(1)?;
+
+        let write_start_position = self.scsi.read_position()?;
+
+        // Create file entry in index
+        let current_time = chrono::Utc::now();
+        let file_uid = if let Some(ref index) = self.index {
+            index.highestfileuid.unwrap_or(0) + 1
+        } else {
+            1
+        };
+
+        // Calculate file size if not provided (read data to memory for accurate size)
+        let mut data_buffer = Vec::new();
+        let actual_size = match estimated_size {
+            Some(_size) => {
+                // If size is estimated, still need to read all data for writing
+                let bytes_read = reader.read_to_end(&mut data_buffer).map_err(|e| {
+                    RustLtfsError::file_operation(format!("Failed to read from input stream: {}", e))
+                })?;
+                bytes_read as u64
+            },
+            None => {
+                // Read all data to determine size
+                let bytes_read = reader.read_to_end(&mut data_buffer).map_err(|e| {
+                    RustLtfsError::file_operation(format!("Failed to read from input stream: {}", e))
+                })?;
+                bytes_read as u64
+            }
+        };
+
+        info!("Stream data size: {} bytes", actual_size);
+
+        // Write data to tape in chunks
+        const CHUNK_SIZE: usize = 1024 * 1024; // 1 MB chunks
+        let mut total_bytes_written = 0u64;
+        let mut total_blocks_written = 0u64;
+
+        for chunk in data_buffer.chunks(CHUNK_SIZE) {
+            let blocks_written = self.scsi.write_blocks(1, chunk)? as u64;
+            
+            total_blocks_written += blocks_written;
+            total_bytes_written += chunk.len() as u64;
+
+            // Update progress
+            self.write_progress.current_bytes_processed += chunk.len() as u64;
+        }
+
+        // Add file to index
+        if let Some(ref mut index) = self.index {
+            // Create file entry
+            let file_extent = crate::ltfs_index::FileExtent {
+                file_offset: 0,
+                start_block: write_start_position.block_number,
+                byte_count: actual_size,
+                byte_offset: 0,
+                partition: write_start_position.partition.to_string(),
+            };
+
+            let new_file = crate::ltfs_index::File {
+                name: target_path.split('/').last().unwrap_or("unknown").to_string(),
+                length: actual_size,
+                creation_time: format_ltfs_timestamp(current_time),
+                change_time: format_ltfs_timestamp(current_time),
+                access_time: format_ltfs_timestamp(current_time),
+                backup_time: format_ltfs_timestamp(current_time),
+                modify_time: format_ltfs_timestamp(current_time),
+                read_only: false,
+                uid: file_uid,
+                extent_info: crate::ltfs_index::ExtentInfo {
+                    extents: vec![file_extent],
+                },
+                openforwrite: false,
+                symlink: None,
+                extended_attributes: None,
+            };
+
+            // Update highest file uid
+            index.highestfileuid = Some(file_uid);
+            
+            // Add to root directory (simplified for stdin)
+            index.root_directory.contents.files.push(new_file);
+        }
+
+        // Update progress counters
+        self.write_progress.current_files_processed += 1;
+        self.write_progress.total_bytes_unindexed += actual_size;
+
+        info!(
+            "Stream write completed: {} bytes in {} blocks",
+            total_bytes_written, total_blocks_written
+        );
+
+        // Check if we should update the index
+        let should_force_index = if self.write_progress.current_files_processed == 1 {
+            true
+        } else {
+            self.write_progress.total_bytes_unindexed >= self.write_options.index_write_interval
+        };
+
+        if should_force_index {
+            info!(
+                "Updating index: total_unindexed={} >= interval={}",
+                self.write_progress.total_bytes_unindexed,
+                self.write_options.index_write_interval
+            );
+            self.update_index_on_tape_with_options_dual_partition(should_force_index)
+                .await?;
+        }
+
+        Ok(WriteResult {
+            position: write_start_position,
+            blocks_written: total_blocks_written as u32,
             bytes_written: total_bytes_written,
         })
     }

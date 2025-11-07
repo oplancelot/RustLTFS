@@ -25,17 +25,17 @@ pub enum Commands {
     ///
     /// 将本地文件或目录写入到LTFS磁带，写入完成后自动更新索引
     Write {
-        /// Source file or folder path
-        #[arg(value_name = "SOURCE")]
-        source: PathBuf,
-
         /// Tape device path (e.g. \\.\TAPE0)
         #[arg(short = 't', long = "tape", value_name = "DEVICE")]
         device: String,
 
         /// Target tape path
-        #[arg(value_name = "DESTINATION")]
+        #[arg(short = 'o', long = "output", value_name = "DESTINATION")]
         destination: PathBuf,
+
+        /// Source file or folder path (if not provided, read from stdin)
+        #[arg(value_name = "SOURCE")]
+        source: Option<PathBuf>,
 
         /// Skip automatic index reading (offline mode)
         #[arg(short = 's', long = "skip-index")]

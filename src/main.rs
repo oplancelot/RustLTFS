@@ -11,6 +11,8 @@ mod tape_ops;
 
 use crate::cli::{Cli, Commands};
 use crate::error::{Result, RustLtfsError};
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, Read};
 use tracing::{error, info, warn};
 
 #[tokio::main]
@@ -60,7 +62,9 @@ async fn run(args: Cli) -> Result<()> {
         } => {
             info!(
                 "Starting write operation: {:?} -> {}:{:?}",
-                source, device, destination
+                source.as_ref().map(|s| s.as_path()).unwrap_or_else(|| std::path::Path::new("<stdin>")), 
+                device, 
+                destination
             );
 
             // Handle conflicting options
@@ -200,34 +204,60 @@ async fn run(args: Cli) -> Result<()> {
                 }
             }
 
-            // Check if source exists and get size info
-            if !source.exists() {
-                return Err(error::RustLtfsError::file_operation(format!(
-                    "Source path does not exist: {:?}",
-                    source
-                )));
-            }
-
-            // Handle max file size check
-            if let Some(max_size_gib) = max_file_size {
-                let max_size_bytes = (max_size_gib as u64) * 1024 * 1024 * 1024;
-                if source.is_file() {
-                    let file_size = source.metadata()?.len();
-                    if file_size > max_size_bytes {
-                        if !quiet {
-                            println!(
-                                "❌ File size ({}) exceeds maximum allowed size ({})",
-                                rust_ltfs::utils::format_bytes(file_size),
-                                rust_ltfs::utils::format_bytes(max_size_bytes)
-                            );
-                        }
-                        return Err(error::RustLtfsError::parameter_validation(format!(
-                            "File too large: {} > {} GiB",
-                            file_size, max_size_gib
+            // Create unified input reader and determine operation type
+            let (estimated_size, operation_mode): (Option<u64>, &str) = match &source {
+                Some(source_path) => {
+                    // File or directory input
+                    if !source_path.exists() {
+                        return Err(error::RustLtfsError::file_operation(format!(
+                            "Source path does not exist: {:?}",
+                            source_path
                         )));
                     }
+
+                    if source_path.is_dir() {
+                        // Directory mode
+                        (None, "directory") 
+                    } else {
+                        // File mode
+                        let metadata = source_path.metadata().map_err(|e| {
+                            error::RustLtfsError::file_operation(format!(
+                                "Cannot get file metadata {:?}: {}", source_path, e
+                            ))
+                        })?;
+                        let file_size = metadata.len();
+                        
+                        // Handle max file size check
+                        if let Some(max_size_gib) = max_file_size {
+                            let max_size_bytes = (max_size_gib as u64) * 1024 * 1024 * 1024;
+                            if file_size > max_size_bytes {
+                                if !quiet {
+                                    println!(
+                                        "❌ File size ({}) exceeds maximum allowed size ({})",
+                                        rust_ltfs::utils::format_bytes(file_size),
+                                        rust_ltfs::utils::format_bytes(max_size_bytes)
+                                    );
+                                }
+                                return Err(error::RustLtfsError::parameter_validation(format!(
+                                    "File too large: {} > {} GiB",
+                                    file_size, max_size_gib
+                                )));
+                            }
+                        }
+                        
+                        (Some(file_size), "file")
+                    }
+                },
+                None => {
+                    // Stdin mode
+                    (None, "stdin")
                 }
-            }
+            };
+
+            let source_display = match &source {
+                Some(path) => format!("{:?}", path),
+                None => "<stdin>".to_string(),
+            };
 
             // Handle resume functionality
             if resume {
@@ -241,7 +271,7 @@ async fn run(args: Cli) -> Result<()> {
             // Display write operation details
             if !quiet {
                 println!("\n🚀 Starting Write Operation");
-                println!("  Source: {:?}", source);
+                println!("  Source: {}", source_display);
                 println!("  Device: {}", device);
                 println!("  Target: {:?}", destination);
 
@@ -306,28 +336,62 @@ async fn run(args: Cli) -> Result<()> {
             let write_start = std::time::Instant::now();
             let mut checkpoint_count = 0u32;
 
-            if source.is_dir() {
-                if show_progress {
-                    println!("\n📁 Writing directory to tape...");
-                }
+            match operation_mode {
+                "directory" => {
+                    // Directory mode - use existing directory write logic
+                    if let Some(ref source_path) = source {
+                        if show_progress {
+                            println!("\n📁 Writing directory to tape...");
+                        }
 
-                // Handle checkpoint intervals for large directory operations
-                if let Some(interval) = checkpoint_interval {
-                    if show_progress {
-                        println!("🔖 Checkpoint every {} files", interval);
+                        // Handle checkpoint intervals for large directory operations
+                        if let Some(interval) = checkpoint_interval {
+                            if show_progress {
+                                println!("🔖 Checkpoint every {} files", interval);
+                            }
+                            // TODO: Implement checkpoint logic
+                        }
+
+                        ops.write_directory_to_tape(source_path, &destination.to_string_lossy())
+                            .await?;
                     }
-                    // TODO: Implement checkpoint logic
+                },
+                "file" => {
+                    // File mode - use existing file-based method
+                    if let Some(ref source_path) = source {
+                        if show_progress {
+                            println!("\n📄 Writing file to tape...");
+                        }
+                        ops.write_file_to_tape_streaming(source_path, &destination.to_string_lossy())
+                            .await
+                            .map(|_| ())?;
+                    }
+                },
+                "stdin" => {
+                    // Stdin mode - read from stdin and write to tape
+                    if show_progress {
+                        println!("\n📄 Writing from stdin to tape...");
+                    }
+                    
+                    // Read all data from stdin
+                    let mut stdin_data = Vec::new();
+                    io::stdin().read_to_end(&mut stdin_data).map_err(|e| {
+                        error::RustLtfsError::file_operation(format!("Failed to read from stdin: {}", e))
+                    })?;
+                    
+                    // Create a cursor for the data
+                    let cursor = std::io::Cursor::new(stdin_data);
+                    let reader: Box<dyn BufRead + Send> = Box::new(BufReader::new(cursor));
+                    
+                    ops.write_reader_to_tape(reader, &destination.to_string_lossy(), estimated_size)
+                        .await
+                        .map(|_| ())?;
+                },
+                _ => {
+                    return Err(error::RustLtfsError::parameter_validation(
+                        "Invalid operation mode".to_string()
+                    ));
                 }
-
-                ops.write_directory_to_tape(&source, &destination.to_string_lossy())
-                    .await?;
-            } else {
-                if show_progress {
-                    println!("\n📄 Writing file to tape...");
-                }
-                ops.write_file_to_tape_streaming(&source, &destination.to_string_lossy())
-                    .await
-                    .map(|_| ())?;
             }
 
             let write_duration = write_start.elapsed();
