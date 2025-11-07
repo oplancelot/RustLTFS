@@ -80,7 +80,7 @@ dirs = "5.0"
 winapi = { version = "0.3", features = [
     "winbase",
     "fileapi",
-    "handleapi", 
+    "handleapi",
     "ioapiset",
     "winnt",
     "errhandlingapi",
@@ -104,8 +104,8 @@ opt-level = 0
 debug = true
 
 # 交叉编译配置
-[target.x86_64-pc-windows-gnu]
-linker = "x86_64-w64-mingw32-gcc"
+# [target.x86_64-pc-windows-gnu]
+# linker = "x86_64-w64-mingw32-gcc"
 
-[target.x86_64-pc-windows-msvc]
-linker = "lld-link"
+# [target.x86_64-pc-windows-msvc]
+# linker = "lld-link"
