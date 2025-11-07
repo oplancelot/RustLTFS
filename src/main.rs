@@ -1,7 +1,6 @@
 mod cli;
 mod display;
 mod error;
-mod file_ops;
 mod logger;
 mod ltfs;
 mod ltfs_index;

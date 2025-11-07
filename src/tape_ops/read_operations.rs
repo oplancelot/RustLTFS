@@ -2458,6 +2458,8 @@ impl super::TapeOperations {
         }
     }
 
+    
+
     /// 智能索引读取 - 在指定位置使用优化方法
     fn try_read_index_intelligently(&self, block: u64) -> Result<String> {
         info!("🎯 Trying intelligent index read at block {}", block);
