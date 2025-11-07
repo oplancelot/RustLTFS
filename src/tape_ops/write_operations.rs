@@ -1056,7 +1056,11 @@ impl TapeOperations {
                 start_block: write_start_position.block_number,
                 byte_count: actual_size,
                 byte_offset: 0,
-                partition: write_start_position.partition.to_string(),
+                partition: if write_start_position.partition == 0 {
+                    "a".to_string()
+                } else {
+                    "b".to_string()
+                },
             };
 
             let new_file = crate::ltfs_index::File {
