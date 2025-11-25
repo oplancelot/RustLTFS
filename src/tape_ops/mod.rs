@@ -268,7 +268,7 @@ impl Default for WriteOptions {
             compression: false,
             verify_writes: true,
             preserve_permissions: true,
-            block_size: crate::scsi::block_sizes::LTO_BLOCK_SIZE,
+            block_size: crate::scsi::block_sizes::LTO_BLOCK_SIZE_512K,
             buffer_size: 1024 * 1024, // 1MB
             max_retry_attempts: 3,
 

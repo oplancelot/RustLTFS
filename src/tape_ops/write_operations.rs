@@ -1034,11 +1034,11 @@ impl TapeOperations {
         info!("Stream data size: {} bytes", actual_size);
 
         // Write data to tape in chunks
-        const CHUNK_SIZE: usize = 1024 * 1024; // 1 MB chunks
+        let chunk_size = self.write_options.block_size as usize;
         let mut total_bytes_written = 0u64;
         let mut total_blocks_written = 0u64;
 
-        for chunk in data_buffer.chunks(CHUNK_SIZE) {
+        for chunk in data_buffer.chunks(chunk_size) {
             let blocks_written = self.scsi.write_blocks(1, chunk)? as u64;
             
             total_blocks_written += blocks_written;
