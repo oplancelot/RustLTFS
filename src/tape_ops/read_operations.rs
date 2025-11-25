@@ -15,16 +15,16 @@ use super::TapeFormatAnalysis; // 导入增强版VOL1验证需要的枚举
 impl super::TapeOperations {
     /// 验证并处理索引 - 增强版本：添加详细调试信息
     pub async fn validate_and_process_index(&mut self, xml_content: &str) -> Result<bool> {
-        info!("🔍 Validating index content: {} bytes", xml_content.len());
+        debug!("🔍 Validating index content: {} bytes", xml_content.len());
 
         // 🔍 添加详细的验证日志
         let preview = xml_content.chars().take(300).collect::<String>();
-        info!("🔍 Index content preview: {:?}", preview);
+        debug!("🔍 Index content preview: {:?}", preview);
 
         // 基本验证XML格式
         if !xml_content.contains("<ltfsindex") || !xml_content.contains("</ltfsindex>") {
-            warn!("❌ Basic XML validation failed - missing LTFS index tags");
-            info!(
+            debug!("❌ Basic XML validation failed - missing LTFS index tags");
+            debug!(
                 "🔍 Missing tags check: contains('<ltfsindex'): {}, contains('</ltfsindex>'): {}",
                 xml_content.contains("<ltfsindex"),
                 xml_content.contains("</ltfsindex>")
@@ -36,15 +36,15 @@ impl super::TapeOperations {
             return Ok(false);
         }
 
-        info!("✅ Basic XML validation passed - LTFS index tags found");
+        debug!("✅ Basic XML validation passed - LTFS index tags found");
 
         // 解析并设置索引
         match crate::ltfs_index::LtfsIndex::from_xml(xml_content) {
             Ok(index) => {
-                info!("✅ XML parsing successful - setting index");
-                info!("   Volume UUID: {}", index.volumeuuid);
-                info!("   Generation: {}", index.generationnumber);
-                info!(
+                debug!("✅ XML parsing successful - setting index");
+                debug!("   Volume UUID: {}", index.volumeuuid);
+                debug!("   Generation: {}", index.generationnumber);
+                debug!(
                     "   Files count: {}",
                     self.count_files_in_directory(&index.root_directory)
                 );
@@ -53,7 +53,7 @@ impl super::TapeOperations {
             }
             Err(e) => {
                 warn!("❌ XML parsing failed: {}", e);
-                info!("🔍 Failed XML content length: {} bytes", xml_content.len());
+                debug!("🔍 Failed XML content length: {} bytes", xml_content.len());
                 debug!(
                     "Failed XML content preview: {}",
                     &xml_content[..std::cmp::min(500, xml_content.len())]
@@ -74,27 +74,27 @@ impl super::TapeOperations {
 
     /// 检测分区策略 - 修复版本：直接使用已打开的SCSI设备
     pub async fn detect_partition_strategy(&self) -> Result<PartitionStrategy> {
-        info!("🔧 Detecting partition strategy using opened SCSI device (fixing device handle inconsistency)");
+        debug!("🔧 Detecting partition strategy using opened SCSI device (fixing device handle inconsistency)");
 
         // 直接使用已初始化的ExtraPartitionCount，避免创建新的PartitionManager实例
         let extra_partition_count = self.get_extra_partition_count();
 
-        info!(
+        debug!(
             "Determining partition strategy based on ExtraPartitionCount = {}",
             extra_partition_count
         );
 
         match extra_partition_count {
             0 => {
-                info!("Single-partition strategy (ExtraPartitionCount = 0)");
+                debug!("Single-partition strategy (ExtraPartitionCount = 0)");
                 Ok(PartitionStrategy::SinglePartitionFallback)
             }
             1 => {
-                info!("Dual-partition strategy (ExtraPartitionCount = 1)");
+                debug!("Dual-partition strategy (ExtraPartitionCount = 1)");
                 Ok(PartitionStrategy::StandardMultiPartition)
             }
             _ => {
-                warn!(
+                debug!(
                     "Unexpected ExtraPartitionCount value: {}, using dual-partition strategy",
                     extra_partition_count
                 );
@@ -112,32 +112,33 @@ impl super::TapeOperations {
             return Ok(());
         }
 
-        info!("=== LTFSCopyGUI Compatible Index Reading Process ===");
+        debug!("=== LTFSCopyGUI Compatible Index Reading Process ===");
 
         // Step 1 (最高优先级): LTFSCopyGUI兼容方法
-        info!("Step 1 (Highest Priority): LTFSCopyGUI compatible method");
+        debug!("Step 1 (Highest Priority): LTFSCopyGUI compatible method");
 
         // 检测分区策略并决定读取顺序
         let extra_partition_count = self.get_extra_partition_count();
 
         if extra_partition_count > 0 {
             // 双分区磁带：使用LTFSCopyGUI方法从数据分区读取索引
-            info!("Dual-partition detected, using LTFSCopyGUI method from data partition");
+            debug!("Dual-partition detected, using LTFSCopyGUI method from data partition");
 
             match self.search_index_copies_in_data_partition() {
                 Ok(xml_content) => {
-                    info!(
+                    debug!(
                         "🔍 LTFSCopyGUI method returned {} bytes of content",
                         xml_content.len()
                     );
                     match self.validate_and_process_index(&xml_content).await? {
                         true => {
-                            info!("✅ Step 1 succeeded - LTFS index read using LTFSCopyGUI method (dual-partition)");
+                            debug!("✅ Step 1 succeeded - LTFS index read using LTFSCopyGUI method (dual-partition)");
+                            info!("Index loaded successfully ({} files)", self.index.as_ref().map(|i| self.count_files_in_directory(&i.root_directory)).unwrap_or(0));
                             return Ok(());
                         }
                         false => {
                             warn!("⚠️ LTFSCopyGUI method read data but XML validation failed");
-                            info!("🔍 This suggests the data at FileMark 1 position is not valid LTFS XML");
+                            debug!("🔍 This suggests the data at FileMark 1 position is not valid LTFS XML");
                             // 不要立即fallback到单分区逻辑，先尝试dual-partition的backup策略
                         }
                     }
@@ -149,11 +150,12 @@ impl super::TapeOperations {
             }
 
             // 🔧 双分区backup策略：尝试从索引分区(partition 0) EOD读取
-            info!("🔧 Trying dual-partition backup strategy: index partition EOD");
+            debug!("🔧 Trying dual-partition backup strategy: index partition EOD");
             match self.try_read_latest_index_from_eod(0).await {
                 Ok(xml_content) => {
                     if self.validate_and_process_index(&xml_content).await? {
-                        info!("✅ Step 1 succeeded - index read from index partition EOD (dual-partition fallback)");
+                        debug!("✅ Step 1 succeeded - index read from index partition EOD (dual-partition fallback)");
+                        info!("Index loaded successfully ({} files)", self.index.as_ref().map(|i| self.count_files_in_directory(&i.root_directory)).unwrap_or(0));
                         return Ok(());
                     }
                 }
@@ -163,12 +165,13 @@ impl super::TapeOperations {
             }
         } else {
             // 单分区磁带：从partition=0读取索引
-            info!("Single-partition detected, reading from partition 0");
+            debug!("Single-partition detected, reading from partition 0");
 
             match self.try_read_latest_index_from_eod(0).await {
                 Ok(xml_content) => {
                     if self.validate_and_process_index(&xml_content).await? {
-                        info!("✅ Step 1 succeeded - index read from partition 0 EOD (single-partition logic)");
+                        debug!("✅ Step 1 succeeded - index read from partition 0 EOD (single-partition logic)");
+                        info!("Index loaded successfully ({} files)", self.index.as_ref().map(|i| self.count_files_in_directory(&i.root_directory)).unwrap_or(0));
                         return Ok(());
                     }
                 }
@@ -179,7 +182,7 @@ impl super::TapeOperations {
         }
 
         // Step 2: 标准流程作为备用策略
-        info!("Step 2: Standard LTFS reading process as fallback");
+        debug!("Step 2: Standard LTFS reading process as fallback");
 
         // 定位到索引分区并读取VOL1标签
         self.scsi.locate_block(0, 0)?;
@@ -189,7 +192,7 @@ impl super::TapeOperations {
         let vol1_valid = self.parse_vol1_label(&label_buffer)?;
 
         if vol1_valid {
-            info!("VOL1 label validation passed, trying standard reading");
+            debug!("VOL1 label validation passed, trying standard reading");
 
             let partition_strategy = self.detect_partition_strategy().await?;
 
@@ -199,7 +202,8 @@ impl super::TapeOperations {
                     match self.try_read_latest_index_from_data_partition_eod().await {
                         Ok(xml_content) => {
                             if self.validate_and_process_index(&xml_content).await? {
-                                info!("✅ Standard reading (data partition EOD) succeeded");
+                                debug!("✅ Standard reading (data partition EOD) succeeded");
+                                info!("Index loaded successfully ({} files)", self.index.as_ref().map(|i| self.count_files_in_directory(&i.root_directory)).unwrap_or(0));
                                 return Ok(());
                             }
                         }
@@ -210,7 +214,8 @@ impl super::TapeOperations {
                     match self.read_index_xml_from_tape_with_file_mark() {
                         Ok(xml_content) => {
                             if self.validate_and_process_index(&xml_content).await? {
-                                info!("✅ Standard reading strategy succeeded");
+                                debug!("✅ Standard reading strategy succeeded");
+                                info!("Index loaded successfully ({} files)", self.index.as_ref().map(|i| self.count_files_in_directory(&i.root_directory)).unwrap_or(0));
                                 return Ok(());
                             }
                         }
@@ -227,7 +232,7 @@ impl super::TapeOperations {
         }
 
         // Step 3: 最后的多分区策略回退
-        info!("Step 3: Final multi-partition strategy fallback");
+        debug!("Step 3: Final multi-partition strategy fallback");
 
         let partition_strategy = self
             .detect_partition_strategy()
@@ -250,12 +255,13 @@ impl super::TapeOperations {
                 let standard_locations = vec![6, 5, 2, 0]; // block 6仍然保留以兼容特殊情况
 
                 for &block in &standard_locations {
-                    info!("Trying final fallback at p0 block {}", block);
+                    debug!("Trying final fallback at p0 block {}", block);
                     match self.scsi.locate_block(0, block) {
                         Ok(()) => match self.read_index_xml_from_tape_with_file_mark() {
                             Ok(xml_content) => {
                                 if self.validate_and_process_index(&xml_content).await? {
-                                    info!("✅ Successfully read index from p0 block {} (final fallback)", block);
+                                    debug!("✅ Successfully read index from p0 block {} (final fallback)", block);
+                                    info!("Index loaded successfully ({} files)", self.index.as_ref().map(|i| self.count_files_in_directory(&i.root_directory)).unwrap_or(0));
                                     return Ok(());
                                 }
                             }
@@ -269,7 +275,7 @@ impl super::TapeOperations {
                     }
                 }
 
-                info!(
+                debug!(
                     "🔄 All standard locations failed, falling back to single-partition strategy"
                 );
                 self.read_index_from_single_partition_tape().await

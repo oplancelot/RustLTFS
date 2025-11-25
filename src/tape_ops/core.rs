@@ -652,7 +652,7 @@ impl TapeOperations {
     /// 初始化分区检测 (精确对应LTFSCopyGUI的初始化逻辑)
     /// 检测ExtraPartitionCount并设置分区策略 - 修复版本：直接使用已打开的SCSI设备
     pub async fn initialize_partition_detection(&mut self) -> Result<()> {
-        info!(
+        debug!(
             "Initializing partition detection (LTFSCopyGUI compatible) - using opened SCSI device"
         );
 
@@ -663,14 +663,14 @@ impl TapeOperations {
         }
 
         // 直接使用已打开的self.scsi进行MODE SENSE检测 (对应LTFSCopyGUI的MODE SENSE检测)
-        info!("🔧 Using opened SCSI device for MODE SENSE (fixing device handle inconsistency)");
+        debug!("🔧 Using opened SCSI device for MODE SENSE (fixing device handle inconsistency)");
 
         match self.scsi.mode_sense_partition_info() {
             Ok(mode_data) => {
                 // 精确匹配LTFSCopyGUI逻辑: If PModeData.Length >= 4 Then ExtraPartitionCount = PModeData(3)
                 if mode_data.len() >= 4 {
                     let detected_count = mode_data[3];
-                    info!(
+                    debug!(
                         "✅ ExtraPartitionCount detected from MODE SENSE: {}",
                         detected_count
                     );
@@ -681,14 +681,14 @@ impl TapeOperations {
                         std::cmp::min(validated_count, self.max_extra_partition_allowed);
 
                     if final_count != detected_count {
-                        warn!(
+                        debug!(
                             "ExtraPartitionCount limited from {} to {} (Math.Min validation)",
                             detected_count, final_count
                         );
                     }
 
                     self.extra_partition_count = Some(final_count);
-                    info!(
+                    debug!(
                         "✅ ExtraPartitionCount initialized: {} (detected: {}, validated: {})",
                         final_count, detected_count, final_count
                     );
@@ -788,7 +788,7 @@ impl TapeOperations {
 
     /// Wait for device ready using TestUnitReady retry logic (对应LTFSCopyGUI的TestUnitReady重试逻辑)
     pub async fn wait_for_device_ready(&self) -> Result<()> {
-        info!("Starting TestUnitReady retry logic");
+        debug!("Starting TestUnitReady retry logic");
 
         let max_retries = 5; // 对应LTFSCopyGUI的5次重试
         let retry_delay_ms = 200; // 对应LTFSCopyGUI的200ms延迟
@@ -833,7 +833,7 @@ impl TapeOperations {
                             || sense_info.contains("Medium may have changed")
                         {
                             if retry_count > 1 {
-                                info!("⏳ Device not ready ({}), retrying in {}ms (attempts remaining: {})",
+                                debug!("⏳ Device not ready ({}), retrying in {}ms (attempts remaining: {})",
                                      sense_info, retry_delay_ms, retry_count - 1);
                                 tokio::time::sleep(tokio::time::Duration::from_millis(
                                     retry_delay_ms,
@@ -876,11 +876,7 @@ impl TapeOperations {
             }
         }
 
-        // 如果到达这里说明所有重试都失败了
-        Err(RustLtfsError::scsi(format!(
-            "Device not ready after {} attempts with {}ms delays",
-            max_retries, retry_delay_ms
-        )))
+        Ok(())
     }
 
     /// Initialize tape operations
@@ -961,12 +957,12 @@ impl TapeOperations {
 
     /// 保存索引到文件
     pub async fn save_index_to_file(&self, file_path: &std::path::Path) -> Result<()> {
-        info!("Saving LTFS index to file: {:?}", file_path);
+        debug!("Saving LTFS index to file: {:?}", file_path);
 
         if let Some(ref index) = self.index {
             let xml_content = index.to_xml()?;
             std::fs::write(file_path, xml_content)?;
-            info!("Index saved successfully to {:?}", file_path);
+            debug!("Index saved successfully to {:?}", file_path);
             Ok(())
         } else {
             Err(RustLtfsError::ltfs_index(

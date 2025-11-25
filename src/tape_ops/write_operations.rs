@@ -1031,7 +1031,7 @@ impl TapeOperations {
             }
         };
 
-        info!("Stream data size: {} bytes", actual_size);
+        debug!("Stream data size: {} bytes", actual_size);
 
         // Write data to tape in chunks
         let chunk_size = self.write_options.block_size as usize;
@@ -1095,7 +1095,7 @@ impl TapeOperations {
         self.write_progress.current_files_processed += 1;
         self.write_progress.total_bytes_unindexed += actual_size;
 
-        info!(
+        debug!(
             "Stream write completed: {} bytes in {} blocks",
             total_bytes_written, total_blocks_written
         );
@@ -1108,7 +1108,7 @@ impl TapeOperations {
         };
 
         if should_force_index {
-            info!(
+            debug!(
                 "Updating index: total_unindexed={} >= interval={}",
                 self.write_progress.total_bytes_unindexed,
                 self.write_options.index_write_interval
@@ -1431,17 +1431,17 @@ impl TapeOperations {
         };
 
         // Parse target path and add file to appropriate directory
-        info!(
+        debug!(
             "Before adding file: root directory has {} files, {} directories",
             current_index.root_directory.contents.files.len(),
             current_index.root_directory.contents.directories.len()
         );
-        info!(
+        debug!(
             "Adding file '{}' to target path: '{}'",
             new_file.name, target_path
         );
         self.add_file_to_target_directory(&mut current_index, new_file, target_path)?;
-        info!(
+        debug!(
             "After adding file: root directory has {} files, {} directories",
             current_index.root_directory.contents.files.len(),
             current_index.root_directory.contents.directories.len()
@@ -2068,14 +2068,14 @@ impl TapeOperations {
         file: crate::ltfs_index::File,
         target_path: &str,
     ) -> Result<()> {
-        info!(
+        debug!(
             "Adding file '{}' to target path '{}'",
             file.name, target_path
         );
 
         // Normalize target path
         let normalized_path = target_path.trim_start_matches('/').trim_end_matches('/');
-        info!("Normalized path: '{}'", normalized_path);
+        debug!("Normalized path: '{}'", normalized_path);
 
         if normalized_path.is_empty() {
             // Add to root directory - allocate UID here
@@ -2085,12 +2085,12 @@ impl TapeOperations {
             file_to_add.uid = new_file_uid;
             index.highestfileuid = Some(new_file_uid);
 
-            info!(
+            debug!(
                 "Adding file '{}' to root directory with UID {}",
                 file_name, new_file_uid
             );
             index.root_directory.contents.files.push(file_to_add);
-            info!(
+            debug!(
                 "Root directory now has {} files",
                 index.root_directory.contents.files.len()
             );
@@ -2099,15 +2099,15 @@ impl TapeOperations {
 
         // Split path into components
         let path_parts: Vec<&str> = normalized_path.split('/').collect();
-        info!("Target path components: {:?}", path_parts);
+        debug!("Target path components: {:?}", path_parts);
 
         // Navigate to target directory, creating directories as needed
-        info!("Finding/creating target directory path...");
+        debug!("Finding/creating target directory path...");
         // First ensure directory path exists (this may update highestfileuid)
         {
             self.ensure_directory_path_exists(index, &path_parts)?;
         }
-        info!("Target directory found/created, adding file...");
+        debug!("Target directory found/created, adding file...");
 
         // CRITICAL: Allocate file UID AFTER directory creation to avoid conflicts
         // Directory creation may have updated highestfileuid, so we get fresh value
@@ -2117,7 +2117,7 @@ impl TapeOperations {
         file_to_add.uid = new_file_uid;
         index.highestfileuid = Some(new_file_uid);
 
-        info!(
+        debug!(
             "Allocated UID {} for file '{}' after directory creation",
             new_file_uid, file_name
         );
@@ -2125,7 +2125,7 @@ impl TapeOperations {
         // Now get a fresh reference to the target directory to add the file
         let target_dir = self.get_directory_by_path_mut(index, &path_parts)?;
         target_dir.contents.files.push(file_to_add);
-        info!(
+        debug!(
             "File '{}' added to directory '{}', directory now has {} files",
             file_name,
             normalized_path,
@@ -2141,25 +2141,25 @@ impl TapeOperations {
         index: &'a mut LtfsIndex,
         path_parts: &[&str],
     ) -> Result<&'a mut crate::ltfs_index::Directory> {
-        info!(
+        debug!(
             "ensure_directory_path_exists called with path_parts: {:?}",
             path_parts
         );
 
         if path_parts.is_empty() {
-            info!("Path parts empty, returning root directory");
+            debug!("Path parts empty, returning root directory");
             return Ok(&mut index.root_directory);
         }
 
         let mut current_dir = &mut index.root_directory;
-        info!(
+        debug!(
             "Starting at root directory with {} subdirectories",
             current_dir.contents.directories.len()
         );
 
         for (i, part) in path_parts.iter().enumerate() {
-            info!("Processing directory part: '{}' (level {})", part, i);
-            info!(
+            debug!("Processing directory part: '{}' (level {})", part, i);
+            debug!(
                 "Current directory has {} subdirectories",
                 current_dir.contents.directories.len()
             );
@@ -2173,16 +2173,16 @@ impl TapeOperations {
 
             match dir_index {
                 Some(idx) => {
-                    info!("Found existing directory: '{}' at index {}", part, idx);
+                    debug!("Found existing directory: '{}' at index {}", part, idx);
                     // Directory exists, continue navigation
                     current_dir = &mut current_dir.contents.directories[idx];
                 }
                 None => {
-                    info!("Creating new directory: '{}'", part);
+                    debug!("Creating new directory: '{}'", part);
                     // Create new directory
                     let now = get_current_ltfs_timestamp();
                     let new_uid = index.highestfileuid.unwrap_or(0) + 1;
-                    info!("New directory UID: {}", new_uid);
+                    debug!("New directory UID: {}", new_uid);
 
                     let new_directory = crate::ltfs_index::Directory {
                         name: part.to_string(),
@@ -2201,18 +2201,18 @@ impl TapeOperations {
 
                     current_dir.contents.directories.push(new_directory);
                     index.highestfileuid = Some(new_uid);
-                    info!("Directory '{}' created and added, current directory now has {} subdirectories",
+                    debug!("Directory '{}' created and added, current directory now has {} subdirectories",
                            part, current_dir.contents.directories.len());
 
                     // Navigate to newly created directory
                     let last_index = current_dir.contents.directories.len() - 1;
                     current_dir = &mut current_dir.contents.directories[last_index];
-                    info!("Navigated to newly created directory '{}'", part);
+                    debug!("Navigated to newly created directory '{}'", part);
                 }
             }
         }
 
-        info!(
+        debug!(
             "Final target directory reached, has {} files, {} subdirectories",
             current_dir.contents.files.len(),
             current_dir.contents.directories.len()

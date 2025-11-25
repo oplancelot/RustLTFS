@@ -76,10 +76,10 @@ impl PartitionManager {
     /// 检测ExtraPartitionCount (精确对应LTFSCopyGUI逻辑)
     /// 使用MODE SENSE 0x11命令从磁带直接读取分区配置
     pub async fn detect_extra_partition_count(&self) -> Result<u8> {
-        info!("Detecting ExtraPartitionCount using MODE SENSE 0x11 (LTFSCopyGUI exact logic)");
+        debug!("Detecting ExtraPartitionCount using MODE SENSE 0x11 (LTFSCopyGUI exact logic)");
 
         if self.offline_mode {
-            info!("Offline mode: assuming dual-partition (ExtraPartitionCount = 1)");
+            debug!("Offline mode: assuming dual-partition (ExtraPartitionCount = 1)");
             return Ok(1);
         }
 
@@ -89,7 +89,7 @@ impl PartitionManager {
                 // 精确匹配LTFSCopyGUI逻辑: If PModeData.Length >= 4 Then ExtraPartitionCount = PModeData(3)
                 if mode_data.len() >= 4 {
                     let extra_partition_count = mode_data[3];
-                    info!(
+                    debug!(
                         "✅ ExtraPartitionCount detected from MODE SENSE: {}",
                         extra_partition_count
                     );
@@ -128,18 +128,18 @@ impl PartitionManager {
         &self,
         extra_partition_count: u8,
     ) -> PartitionStrategy {
-        info!(
+        debug!(
             "Determining partition strategy based on ExtraPartitionCount = {}",
             extra_partition_count
         );
 
         match extra_partition_count {
             0 => {
-                info!("Single-partition strategy (ExtraPartitionCount = 0)");
+                debug!("Single-partition strategy (ExtraPartitionCount = 0)");
                 PartitionStrategy::SinglePartitionFallback
             }
             1 => {
-                info!("Dual-partition strategy (ExtraPartitionCount = 1)");
+                debug!("Dual-partition strategy (ExtraPartitionCount = 1)");
                 PartitionStrategy::StandardMultiPartition
             }
             _ => {
@@ -255,13 +255,13 @@ impl PartitionManager {
                     Ok((p0_size, p1_size)) => {
                         let has_multi_partition = p1_size > 0;
                         if has_multi_partition {
-                            info!(
+                            debug!(
                                 "✅ Multi-partition detected via MODE SENSE: p0={}GB, p1={}GB",
                                 p0_size / 1_000_000_000,
                                 p1_size / 1_000_000_000
                             );
                         } else {
-                            info!(
+                            debug!(
                                 "📋 Single partition detected via MODE SENSE: total={}GB",
                                 p0_size / 1_000_000_000
                             );
@@ -297,7 +297,7 @@ impl PartitionManager {
                 debug!("Successfully positioned to partition 1 - multi-partition supported");
 
                 // 不依赖数据读取，仅测试定位能力
-                info!("✅ Multi-partition support confirmed (can position to partition 1)");
+                debug!("✅ Multi-partition support confirmed (can position to partition 1)");
 
                 // 返回partition 0以继续正常流程
                 if let Err(e) = self.scsi.locate_block(0, 0) {
@@ -320,13 +320,13 @@ impl PartitionManager {
 
     /// 检测分区大小 (对应LTFSCopyGUI的分区大小检测逻辑)
     pub async fn detect_partition_sizes(&self) -> Result<PartitionInfo> {
-        info!("Detecting partition sizes (LTFSCopyGUI compatible)");
+        debug!("Detecting partition sizes (LTFSCopyGUI compatible)");
 
         // 首先检查是否有多分区支持
         let has_multi_partition = self.check_multi_partition_support().await.unwrap_or(false);
 
         if !has_multi_partition {
-            info!("Single partition detected, using full capacity");
+            debug!("Single partition detected, using full capacity");
             let total_capacity = self.estimate_tape_capacity_bytes();
             return Ok(PartitionInfo {
                 partition_0_size: total_capacity,
@@ -335,7 +335,7 @@ impl PartitionManager {
             });
         }
 
-        info!("Multi-partition detected, reading partition sizes");
+        debug!("Multi-partition detected, reading partition sizes");
 
         // 对于多分区磁带，尝试从不同位置获取分区信息
         // 对应LTFSCopyGUI中的分区大小检测逻辑
@@ -346,7 +346,7 @@ impl PartitionManager {
         // 方法2：尝试从磁带读取实际分区信息（如果支持的话）
         match self.read_partition_info_from_tape().await {
             Ok((actual_p0, actual_p1)) => {
-                info!(
+                debug!(
                     "✅ Successfully read actual partition sizes from tape: p0={}GB, p1={}GB",
                     actual_p0 / 1_000_000_000,
                     actual_p1 / 1_000_000_000
@@ -362,7 +362,7 @@ impl PartitionManager {
                     "Failed to read actual partition info: {}, using estimates",
                     e
                 );
-                info!(
+                debug!(
                     "📊 Using estimated partition sizes: p0={}GB, p1={}GB",
                     p0_size / 1_000_000_000,
                     p1_size / 1_000_000_000
@@ -449,13 +449,13 @@ impl PartitionManager {
                 // 解析MODE SENSE返回的分区信息
                 match self.scsi.parse_partition_info(&mode_sense_data) {
                     Ok((p0_size, p1_size)) => {
-                        info!("✅ Successfully parsed partition sizes from MODE SENSE:");
-                        info!(
+                        debug!("✅ Successfully parsed partition sizes from MODE SENSE:");
+                        debug!(
                             "   - p0 (index): {}GB ({} bytes)",
                             p0_size / 1_000_000_000,
                             p0_size
                         );
-                        info!(
+                        debug!(
                             "   - p1 (data):  {}GB ({} bytes)",
                             p1_size / 1_000_000_000,
                             p1_size
@@ -538,29 +538,29 @@ impl PartitionManager {
 
     /// 切换到指定分区
     pub fn switch_to_partition(&self, partition: u8) -> Result<()> {
-        info!("Switching to partition {}", partition);
+        debug!("Switching to partition {}", partition);
 
         if self.offline_mode {
-            info!("Offline mode: simulating partition switch");
+            debug!("Offline mode: simulating partition switch");
             return Ok(());
         }
 
         self.scsi.locate_block(partition, 0)?;
-        info!("Successfully switched to partition {}", partition);
+        debug!("Successfully switched to partition {}", partition);
         Ok(())
     }
 
     /// 定位到指定分区的指定块
     pub fn position_to_partition(&self, partition: u8, block: u64) -> Result<()> {
-        info!("Positioning to partition {}, block {}", partition, block);
+        debug!("Positioning to partition {}, block {}", partition, block);
 
         if self.offline_mode {
-            info!("Offline mode: simulating partition positioning");
+            debug!("Offline mode: simulating partition positioning");
             return Ok(());
         }
 
         self.scsi.locate_block(partition, block)?;
-        info!(
+        debug!(
             "Successfully positioned to partition {}, block {}",
             partition, block
         );
@@ -574,7 +574,7 @@ impl PartitionManager {
 
     /// 读取分区标签
     pub async fn read_partition_labels(&mut self) -> Result<LtfsPartitionLabel> {
-        info!("Reading LTFS partition label from tape");
+        debug!("Reading LTFS partition label from tape");
 
         if self.offline_mode {
             return Ok(LtfsPartitionLabel::default());
@@ -632,7 +632,7 @@ impl PartitionManager {
 
     /// Strictly validate VOL1 label according to VB.NET logic
     fn parse_vol1_label(&self, buffer: &[u8]) -> Result<bool> {
-        info!("Strictly validating VOL1 label (VB.NET logic)...");
+        debug!("Strictly validating VOL1 label (VB.NET logic)...");
 
         // Condition 1: Buffer length check - must be at least 80 bytes to contain VOL1 label
         if buffer.len() < 80 {
@@ -694,7 +694,7 @@ impl PartitionManager {
             return Ok(false);
         }
 
-        info!("✅ VOL1 label validation passed: 80-byte label found in {}-byte buffer, VOL1 prefix and LTFS identifier correct", buffer.len());
+        debug!("✅ VOL1 label validation passed: 80-byte label found in {}-byte buffer, VOL1 prefix and LTFS identifier correct", buffer.len());
         Ok(true)
     }
 
@@ -722,7 +722,7 @@ impl PartitionManager {
         } else {
             // 默认使用常见的512KB
             plabel.blocksize = 524288;
-            info!("Using default 512KB blocksize");
+            debug!("Using default 512KB blocksize");
         }
 
         Ok(plabel)
@@ -744,7 +744,7 @@ impl PartitionManager {
                 return Ok(false);
             }
 
-            info!(
+            debug!(
                 "Multi-partition configuration validated: p0={}GB, p1={}GB",
                 partition_info.partition_0_size / 1_000_000_000,
                 partition_info.partition_1_size / 1_000_000_000
@@ -752,7 +752,7 @@ impl PartitionManager {
             Ok(true)
         } else {
             // 单分区配置
-            info!(
+            debug!(
                 "Single partition configuration validated: {}GB",
                 partition_info.partition_0_size / 1_000_000_000
             );
@@ -771,10 +771,10 @@ impl PartitionManager {
 
     /// 分区健康检查
     pub async fn partition_health_check(&self) -> Result<bool> {
-        info!("Performing partition health check");
+        debug!("Performing partition health check");
 
         if self.offline_mode {
-            info!("Offline mode: simulating partition health check");
+            debug!("Offline mode: simulating partition health check");
             return Ok(true);
         }
 
@@ -1150,10 +1150,11 @@ impl crate::tape_ops::TapeOperations {
     pub async fn try_alternative_index_reading_strategies_partition_async(
         &mut self,
     ) -> Result<String> {
-        info!("🔄 Starting complete LTFSCopyGUI alternative index reading strategies (using opened SCSI device)");
+        debug!("RustLTFS CLI starting");
+        debug!("🔄 Starting complete LTFSCopyGUI alternative index reading strategies (using opened SCSI device)");
 
         // 直接使用已打开的self.scsi进行分区检测，避免创建新实例
-        info!("🔧 Using opened SCSI device for partition detection (fixing device handle inconsistency)");
+        debug!("🔧 Using opened SCSI device for partition detection (fixing device handle inconsistency)");
 
         // 使用我们已经修复的initialize_partition_detection结果
         let partition_count = if self.get_extra_partition_count() > 0 {

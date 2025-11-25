@@ -11,7 +11,7 @@ use crate::cli::{Cli, Commands};
 use crate::error::{Result, RustLtfsError};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -20,7 +20,7 @@ async fn main() -> Result<()> {
     // Initialize logging system
     logger::init(args.verbose)?;
 
-    info!("RustLTFS CLI starting");
+    debug!("RustLTFS CLI starting");
 
     match run(args).await {
         Ok(_) => {
