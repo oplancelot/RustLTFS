@@ -114,14 +114,14 @@ impl TapeOperations {
         info!("=== WriteCurrentIndex: Writing to Data Partition ===");
 
         let current_position = self.scsi.read_position()?;
-        info!("Current tape position: partition={}, block={}", 
+        debug!("Current tape position: partition={}, block={}", 
               current_position.partition, current_position.block_number);
 
         // 使用LTFSCopyGUI精确逻辑：定位到DataPartition的EOD
         let logical_data_partition = 1u8; // DataPartition = 1 (Partition B)
         let data_partition = self.get_target_partition(logical_data_partition);
         
-        info!("Moving to data partition {} EOD", 
+        debug!("Moving to data partition {} EOD", 
               data_partition);
         
         // 精确对应：TapeUtils.Locate(driveHandle, 0UL, DataPartition, TapeUtils.LocateDestType.EOD)
@@ -131,7 +131,7 @@ impl TapeOperations {
         self.scsi.space(crate::scsi::SpaceType::EndOfData, 0)?; // Go to EOD
 
         let eod_position = self.scsi.read_position()?;
-        info!("End of data position: partition={}, block={}", 
+        debug!("End of data position: partition={}, block={}", 
               eod_position.partition, eod_position.block_number);
 
         // Enhanced LTFSCopyGUI validation logic for first write scenarios
@@ -158,12 +158,12 @@ impl TapeOperations {
                 )));
             }
             
-            info!("Index write validation passed: first_write={}, eod_at_start={}, startblock={}, eod_block={}", 
+            debug!("Index write validation passed: first_write={}, eod_at_start={}, startblock={}, eod_block={}", 
                   is_first_write, is_eod_at_start, current_index.location.startblock, eod_position.block_number);
         }
 
         // Write filemark before index (对应LTFSCopyGUI WriteFileMark)
-        info!("Writing filemark before index");
+        debug!("Writing filemark before index");
         self.scsi.write_filemarks(1)?;
 
         // Update index metadata (对应LTFSCopyGUI的索引元数据更新)
@@ -180,22 +180,22 @@ impl TapeOperations {
         let index_position = self.scsi.read_position()?;
         current_index.location.startblock = index_position.block_number;
         
-        info!("Index will be written at position: partition={}, block={}", 
+        debug!("Index will be written at position: partition={}, block={}", 
               index_position.partition, index_position.block_number);
 
         // Generate and write index XML
-        info!("Generating index XML...");
+        debug!("Generating index XML...");
         
         let index_xml = current_index.to_xml()?;
         
-        info!("Writing index to tape...");
+        debug!("Writing index to tape...");
         self.write_xml_to_tape(&index_xml).await?;
 
         // Write filemark after index (对应LTFSCopyGUI WriteFileMark)
         self.scsi.write_filemarks(1)?;
 
         let final_position = self.scsi.read_position()?;
-        info!("Index write completed at position: partition={}, block={}", 
+        debug!("Index write completed at position: partition={}, block={}", 
               final_position.partition, final_position.block_number);
 
         Ok(())
@@ -209,18 +209,18 @@ impl TapeOperations {
         let index_partition = self.get_target_partition(logical_index_partition);
 
         // 精确对应LTFSCopyGUI：TapeUtils.Locate(driveHandle, 3UL, IndexPartition, TapeUtils.LocateDestType.FileMark)
-        info!("Locating to index partition {} at 3rd filemark", 
+        debug!("Locating to index partition {} at 3rd filemark", 
               index_partition);
         
         // 使用LTFSCopyGUI的精确参数：3UL (第3个文件标记)
         self.scsi.locate_to_filemark(3, index_partition)?;
 
         let locate_position = self.scsi.read_position()?;
-        info!("Located to position: partition={}, block={}", 
+        debug!("Located to position: partition={}, block={}", 
               locate_position.partition, locate_position.block_number);
 
         // Write filemark (对应LTFSCopyGUI WriteFileMark)
-        info!("Writing filemark at index partition");
+        debug!("Writing filemark at index partition");
         self.scsi.write_filemarks(1)?;
 
         // Update index location to index partition
@@ -235,26 +235,26 @@ impl TapeOperations {
         current_index.location.startblock = write_position.block_number;
         current_index.location.partition = "a".to_string(); // Index partition
 
-        info!("Updated index location to index partition: partition={}, block={}", 
+        debug!("Updated index location to index partition: partition={}, block={}", 
               write_position.partition, write_position.block_number);
 
         // Generate and write index XML to index partition
-        info!("Generating index XML for index partition...");
+        debug!("Generating index XML for index partition...");
         
         let index_xml = current_index.to_xml()?;
         
-        info!("Writing index to index partition...");
+        debug!("Writing index to index partition...");
         self.write_xml_to_tape(&index_xml).await?;
 
         // Write filemark after index
         self.scsi.write_filemarks(1)?;
 
         let final_position = self.scsi.read_position()?;
-        info!("Index partition write completed at position: partition={}, block={}", 
+        debug!("Index partition write completed at position: partition={}, block={}", 
               final_position.partition, final_position.block_number);
 
         // Write VCI (Volume Coherency Information) - 对应LTFSCopyGUI WriteVCI
-        info!("Writing VCI (Volume Coherency Information)");
+        debug!("Writing VCI (Volume Coherency Information)");
         self.write_volume_coherency_info(current_index).await?;
 
         Ok(())
@@ -263,7 +263,7 @@ impl TapeOperations {
     /// Write Volume Coherency Information (对应LTFSCopyGUI WriteVCI)
     async fn write_volume_coherency_info(&mut self, _current_index: &LtfsIndex) -> Result<()> {
         // VCI写入逻辑 - 这是LTFSCopyGUI的高级功能，暂时实现基础版本
-        info!("VCI write completed (basic implementation)");
+        debug!("VCI write completed (basic implementation)");
         Ok(())
     }
 

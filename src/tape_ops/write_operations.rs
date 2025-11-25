@@ -1735,7 +1735,7 @@ impl TapeOperations {
                 )));
             }
 
-            info!("Index write validation passed: first_write={}, eod_at_start={}, startblock={}, eod_block={}",
+            debug!("Index write validation passed: first_write={}, eod_at_start={}, startblock={}, eod_block={}",
                   is_first_write, is_eod_at_start, current_index.location.startblock, eod_position.block_number);
         }
 
@@ -1755,12 +1755,12 @@ impl TapeOperations {
         // Get position for index write location
         let index_position = self.scsi.read_position()?;
         current_index.location.startblock = index_position.block_number;
-        info!(
+        debug!(
             "Index will be written at position: partition={}, block={}",
             index_position.partition, index_position.block_number
         );
 
-        info!("Generating index XML...");
+        debug!("Generating index XML...");
 
         // Create temporary file for index (matching LTFSCopyGUI's temporary file approach)
         let temp_index_path = std::env::temp_dir().join(format!(
@@ -1772,8 +1772,8 @@ impl TapeOperations {
         let index_xml = current_index.to_xml()?;
 
         // Debug: Print first 500 chars of generated XML
-        info!(
-            "DEBUG: Generated XML (first 500 chars): {}",
+        debug!(
+            "Generated XML (first 500 chars): {}",
             &index_xml.chars().take(500).collect::<String>()
         );
         tokio::fs::write(&temp_index_path, index_xml)
@@ -1782,7 +1782,7 @@ impl TapeOperations {
                 RustLtfsError::file_operation(format!("Cannot write temporary index file: {}", e))
             })?;
 
-        info!("Writing index to tape...");
+        debug!("Writing index to tape...");
 
         // Write index file to tape (matching LTFSCopyGUI's TapeUtils.Write approach)
         let index_content = tokio::fs::read(&temp_index_path).await.map_err(|e| {
@@ -1836,7 +1836,7 @@ impl TapeOperations {
 
         // Update current position tracking
         let final_position = self.scsi.read_position()?;
-        info!(
+        debug!(
             "Index write completed at position: partition={}, block={}",
             final_position.partition, final_position.block_number
         );
