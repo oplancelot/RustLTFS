@@ -1049,7 +1049,7 @@ impl TapeOperations {
         }
 
         // Add file to index
-        if let Some(ref mut index) = self.index {
+        if let Some(mut index) = self.index.take() {
             // Create file entry
             let file_extent = crate::ltfs_index::FileExtent {
                 file_offset: 0,
@@ -1084,8 +1084,11 @@ impl TapeOperations {
             // Update highest file uid
             index.highestfileuid = Some(file_uid);
             
-            // Add to root directory (simplified for stdin)
-            index.root_directory.contents.files.push(new_file);
+            // Add to target directory using helper function
+            self.add_file_to_target_directory(&mut index, new_file, target_path)?;
+
+            // Put index back
+            self.index = Some(index);
         }
 
         // Update progress counters
