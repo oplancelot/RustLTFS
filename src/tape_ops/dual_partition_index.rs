@@ -186,14 +186,6 @@ impl TapeOperations {
         // Generate and write index XML
         info!("Generating index XML...");
         
-        // Debug: Print directory contents before serialization
-        info!("DEBUG: Root directory files count before XML generation: {}", 
-              current_index.root_directory.contents.files.len());
-        for (i, file) in current_index.root_directory.contents.files.iter().enumerate() {
-            info!("DEBUG: File {}: name='{}', uid={}, length={}", 
-                  i, file.name, file.uid, file.length);
-        }
-        
         let index_xml = current_index.to_xml()?;
         
         info!("Writing index to tape...");
@@ -248,14 +240,6 @@ impl TapeOperations {
 
         // Generate and write index XML to index partition
         info!("Generating index XML for index partition...");
-        
-        // Debug: Print directory contents before index partition serialization
-        info!("DEBUG: Index partition - Root directory files count: {}", 
-              current_index.root_directory.contents.files.len());
-        for (i, file) in current_index.root_directory.contents.files.iter().enumerate() {
-            info!("DEBUG: Index partition File {}: name='{}', uid={}, length={}", 
-                  i, file.name, file.uid, file.length);
-        }
         
         let index_xml = current_index.to_xml()?;
         

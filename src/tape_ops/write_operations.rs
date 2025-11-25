@@ -1762,24 +1762,6 @@ impl TapeOperations {
 
         info!("Generating index XML...");
 
-        // Debug: Print directory contents before serialization
-        info!(
-            "DEBUG: Root directory files count before XML generation: {}",
-            current_index.root_directory.contents.files.len()
-        );
-        for (i, file) in current_index
-            .root_directory
-            .contents
-            .files
-            .iter()
-            .enumerate()
-        {
-            info!(
-                "DEBUG: File {}: name='{}', uid={}, length={}",
-                i, file.name, file.uid, file.length
-            );
-        }
-
         // Create temporary file for index (matching LTFSCopyGUI's temporary file approach)
         let temp_index_path = std::env::temp_dir().join(format!(
             "LWI_{}.tmp",
