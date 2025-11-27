@@ -314,20 +314,18 @@ async fn run(args: Cli) -> Result<()> {
                     }
                 },
                 "stdin" => {
-                    // Stdin mode - read from stdin and write to tape
+                    // Stdin mode - stream from stdin to tape (IMPORTANT: Don't read_to_end - streams are huge!)
                     if show_progress {
                         println!("\n📄 Writing from stdin to tape...");
                     }
                     
-                    // Read all data from stdin
-                    let mut stdin_data = Vec::new();
-                    io::stdin().read_to_end(&mut stdin_data).map_err(|e| {
-                        error::RustLtfsError::file_operation(format!("Failed to read from stdin: {}", e))
-                    })?;
-                    
-                    // Create a cursor for the data
-                    let cursor = std::io::Cursor::new(stdin_data);
-                    let reader: Box<dyn BufRead + Send> = Box::new(BufReader::new(cursor));
+                    // Create a buffered reader directly from stdin for true streaming
+                    // This avoids loading the entire tar stream (potentially 200GB+) into memory
+                    let stdin = io::stdin();
+                    let reader: Box<dyn BufRead + Send> = Box::new(BufReader::with_capacity(
+                        8 * 1024 * 1024, // 8MB buffer - good balance for tape write performance
+                        stdin
+                    ));
                     
                     ops.write_reader_to_tape(reader, &destination.to_string_lossy(), estimated_size)
                         .await

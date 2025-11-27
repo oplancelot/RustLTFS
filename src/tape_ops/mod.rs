@@ -268,7 +268,7 @@ impl Default for WriteOptions {
             compression: false,
             verify_writes: true,
             preserve_permissions: true,
-            block_size: crate::scsi::block_sizes::LTO_BLOCK_SIZE_512K,
+            block_size: crate::scsi::block_sizes::LTO_BLOCK_SIZE,  // 64KB (LTFSCopyGUI standard)
             buffer_size: 1024 * 1024, // 1MB
             max_retry_attempts: 3,
 

@@ -254,7 +254,7 @@ impl LtfsIndex {
                     index_section = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{}", index_section);
                 }
                 
-                info!(
+                debug!(
                     "Successfully extracted LTFS index section: {} bytes (from {} bytes total)",
                     index_section.len(),
                     xml_content.len()
@@ -567,7 +567,7 @@ impl LtfsIndex {
 
         Self::collect_and_validate_uids(&index.root_directory, &mut used_uids)?;
 
-        info!(
+        debug!(
             "UID validation passed, found {} unique UIDs",
             used_uids.len()
         );

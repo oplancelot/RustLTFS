@@ -1401,7 +1401,7 @@ impl crate::tape_ops::TapeOperations {
     /// 精确复制LTFSCopyGUI的索引读取逻辑 (一比一实现)
     /// 支持单分区和多分区磁带的统一处理策略
     fn read_index_ltfscopygui_method(&self) -> Result<String> {
-        info!("🎯 Executing LTFSCopyGUI exact index reading method");
+        debug!("🎯 Executing LTFSCopyGUI exact index reading method");
 
         // 步骤1: 检测ExtraPartitionCount (对应LTFSCopyGUI的分区检测)
         let extra_partition_count = if self.offline_mode {
@@ -1410,11 +1410,11 @@ impl crate::tape_ops::TapeOperations {
             match self.scsi.mode_sense_partition_page_0x11() {
                 Ok(mode_data) if mode_data.len() >= 4 => {
                     let count = mode_data[3];
-                    info!("📊 ExtraPartitionCount detected from MODE SENSE: {}", count);
+                    debug!("📊 ExtraPartitionCount detected from MODE SENSE: {}", count);
                     count
                 }
                 _ => {
-                    info!("📊 Cannot read ExtraPartitionCount, assuming single partition");
+                    debug!("📊 Cannot read ExtraPartitionCount, assuming single partition");
                     0
                 }
             }
@@ -1422,11 +1422,11 @@ impl crate::tape_ops::TapeOperations {
 
         if extra_partition_count == 0 {
             // 🔧 单分区磁带策略 (对应LTFSCopyGUI的ExtraPartitionCount = 0逻辑)
-            info!("🎯 Single partition tape detected (ExtraPartitionCount=0)");
+            debug!("🎯 Single partition tape detected (ExtraPartitionCount=0)");
             self.read_index_single_partition_ltfscopygui()
         } else {
             // 🔧 多分区磁带策略 (对应LTFSCopyGUI的数据分区索引读取)
-            info!(
+            debug!(
                 "🎯 Multi-partition tape detected (ExtraPartitionCount={})",
                 extra_partition_count
             );
@@ -1436,17 +1436,17 @@ impl crate::tape_ops::TapeOperations {
 
     /// LTFSCopyGUI单分区索引读取策略 (精确复制"读取索引ToolStripMenuItem_Click"的单分区逻辑)
     fn read_index_single_partition_ltfscopygui(&self) -> Result<String> {
-        info!("🔧 LTFSCopyGUI single partition index reading (ExtraPartitionCount=0)");
+        debug!("🔧 LTFSCopyGUI single partition index reading (ExtraPartitionCount=0)");
 
         // 步骤1: 定位到分区0的EOD
-        info!("Step 1: Locating to partition 0 EOD");
+        debug!("Step 1: Locating to partition 0 EOD");
         self.scsi.locate_to_eod(0)?;
 
         // 步骤2: 获取当前FileMark编号
         let position = self.scsi.read_position()?;
         let current_fm = position.file_number;
 
-        info!(
+        debug!(
             "🔍 Current position at EOD: P{} B{} FM{} SET{}",
             position.partition, position.block_number, position.file_number, position.set_number
         );
@@ -1461,15 +1461,15 @@ impl crate::tape_ops::TapeOperations {
 
         // 步骤4: LTFSCopyGUI真实策略 - 定位到FileMark 1 (不是FM-1!)
         // 对应LTFSCopyGUI代码: TapeUtils.Locate(driveHandle, 1UL, partition, TapeUtils.LocateDestType.FileMark)
-        info!("Step 4: Locating to FileMark 1 (LTFSCopyGUI standard strategy)");
+        debug!("Step 4: Locating to FileMark 1 (LTFSCopyGUI standard strategy)");
         self.scsi.locate_to_filemark(0, 1)?; // partition=0, filemark=1
 
         // 步骤5: ReadFileMark - 跳过FileMark标记
-        info!("Step 5: Skipping FileMark using ReadFileMark method");
+        debug!("Step 5: Skipping FileMark using ReadFileMark method");
         self.scsi.read_file_mark()?;
 
         // 步骤6: ReadToFileMark - 读取索引内容
-        info!("Step 6: Reading index content using ReadToFileMark");
+        debug!("Step 6: Reading index content using ReadToFileMark");
         let index_data = self
             .scsi
             .read_to_file_mark(block_sizes::LTO_BLOCK_SIZE_512K)?;
@@ -1477,12 +1477,12 @@ impl crate::tape_ops::TapeOperations {
         // 🎯 完全按照LTFSCopyGUI的验证逻辑：检查是否包含"XMLSchema"
         let xml_content = String::from_utf8_lossy(&index_data).to_string();
         if xml_content.contains("XMLSchema") {
-            info!("✅ Successfully read LTFS index using single partition method: {} bytes (contains XMLSchema)", xml_content.len());
+            debug!("✅ Successfully read LTFS index using single partition method: {} bytes (contains XMLSchema)", xml_content.len());
             Ok(xml_content)
         } else {
             // 🔧 LTFSCopyGUI备选路径：FromSchemaText处理
             let processed_content = self.ltfscopygui_from_schema_text(xml_content)?;
-            info!(
+            debug!(
                 "✅ Successfully processed LTFS schema text format: {} bytes",
                 processed_content.len()
             );
@@ -1492,31 +1492,31 @@ impl crate::tape_ops::TapeOperations {
 
     /// LTFSCopyGUI多分区索引读取策略 (精确复制"读取数据区索引ToolStripMenuItem_Click"逻辑)
     fn read_index_multi_partition_ltfscopygui(&self, extra_partition_count: u8) -> Result<String> {
-        info!(
+        debug!(
             "🔧 LTFSCopyGUI multi-partition index reading (ExtraPartitionCount={})",
             extra_partition_count
         );
 
         // 🎯 关键修复：明确使用数据分区进行索引读取 (对应LTFSCopyGUI Line 4636逻辑)
         let data_partition = 1u8; // 数据分区固定为1
-        info!("🔧 Step 1: Targeting data partition {} for index reading (LTFSCopyGUI data partition strategy)", data_partition);
+        debug!("🔧 Step 1: Targeting data partition {} for index reading (LTFSCopyGUI data partition strategy)", data_partition);
 
         // 步骤1a: 先切换到数据分区Block 0 (对应LTFSCopyGUI Line 4635)
-        info!(
+        debug!(
             "Step 1a: Switching to data partition {} Block 0 (LTFSCopyGUI prerequisite)",
             data_partition
         );
         self.scsi.locate_block(data_partition, 0)?;
 
         // 步骤1b: 然后定位到数据分区的EOD (对应LTFSCopyGUI Line 4636)
-        info!("Step 1b: Locating to data partition EOD");
+        debug!("Step 1b: Locating to data partition EOD");
         self.scsi.locate_to_eod(data_partition)?;
 
         // 步骤3: 获取当前FileMark编号
         let position = self.scsi.read_position()?;
         let current_fm = position.file_number;
 
-        info!(
+        debug!(
             "🔍 Data partition EOD position: P{} B{} FM{} SET{}",
             position.partition, position.block_number, position.file_number, position.set_number
         );
@@ -1524,15 +1524,15 @@ impl crate::tape_ops::TapeOperations {
         // 🎯 应用LTFSCopyGUI Line 7138的核心逻辑：TapeUtils.Locate(driveHandle, CULng(FM - 1), DataPartition, TapeUtils.LocateDestType.FileMark)
         if current_fm > 1 {
             let target_fm = current_fm - 1;
-            info!("Step 2: Using LTFSCopyGUI FM-1 strategy: locating to FileMark {} on data partition", target_fm);
+            debug!("Step 2: Using LTFSCopyGUI FM-1 strategy: locating to FileMark {} on data partition", target_fm);
             self.scsi.locate_to_filemark(target_fm, data_partition)?;
 
             // 步骤3: ReadFileMark - 跳过FileMark
-            info!("Step 3: Skipping FileMark using ReadFileMark");
+            debug!("Step 3: Skipping FileMark using ReadFileMark");
             self.scsi.read_file_mark()?;
 
             // 步骤4: ReadToFileMark - 读取索引 (使用动态blocksize)
-            info!(
+            debug!(
                 "Step 4: Reading data partition index using ReadToFileMark (LTFSCopyGUI blocksize)"
             );
 
@@ -1543,14 +1543,14 @@ impl crate::tape_ops::TapeOperations {
                 .map(|label| label.blocksize)
                 .unwrap_or(block_sizes::LTO_BLOCK_SIZE);
 
-            info!(
+            debug!(
                 "🔧 Using dynamic blocksize: {} bytes (from partition label)",
                 dynamic_blocksize
             );
 
             // 🔍 添加当前位置详细诊断
             let current_pos = self.scsi.read_position()?;
-            info!(
+            debug!(
                 "🔍 Current position before ReadToFileMark: P{} B{} FM{}",
                 current_pos.partition, current_pos.block_number, current_pos.file_number
             );
@@ -1561,26 +1561,26 @@ impl crate::tape_ops::TapeOperations {
             let xml_content = String::from_utf8_lossy(&index_data).to_string();
 
             // 🔍 添加详细诊断日志
-            info!(
+            debug!(
                 "🔍 Data partition index content length: {} bytes",
                 xml_content.len()
             );
             let preview = xml_content.chars().take(200).collect::<String>();
-            info!("🔍 Data partition index content preview: {:?}", preview);
+            debug!("🔍 Data partition index content preview: {:?}", preview);
             let contains_xmlschema = xml_content.contains("XMLSchema");
-            info!(
+            debug!(
                 "🔍 Data partition XMLSchema check result: {}",
                 contains_xmlschema
             );
 
             if contains_xmlschema {
-                info!("✅ Successfully read LTFS index from data partition using FM-1 strategy: {} bytes (contains XMLSchema)", xml_content.len());
+                debug!("✅ Successfully read LTFS index from data partition using FM-1 strategy: {} bytes (contains XMLSchema)", xml_content.len());
                 Ok(xml_content)
             } else {
-                info!("🔧 Data partition XMLSchema not found, applying FromSchemaText processing");
+                debug!("🔧 Data partition XMLSchema not found, applying FromSchemaText processing");
                 // 🔧 LTFSCopyGUI备选路径：FromSchemaText处理
                 let processed_content = self.ltfscopygui_from_schema_text(xml_content)?;
-                info!(
+                debug!(
                     "✅ Successfully processed data partition LTFS schema text format: {} bytes",
                     processed_content.len()
                 );
@@ -1588,25 +1588,25 @@ impl crate::tape_ops::TapeOperations {
             }
         } else {
             // 步骤4: LTFSCopyGUI的关键检查和策略选择
-            info!("Step 2: FM <= 1, using DisablePartition fallback (Space6 -2 FileMark)");
+            debug!("Step 2: FM <= 1, using DisablePartition fallback (Space6 -2 FileMark)");
             self.ltfscopygui_disable_partition_fallback()
         }
     }
 
     /// LTFSCopyGUI的DisablePartition后备策略 (对应TapeUtils.Space6(-2, FileMark))
     fn ltfscopygui_disable_partition_fallback(&self) -> Result<String> {
-        info!("🔧 Executing LTFSCopyGUI DisablePartition fallback strategy");
+        debug!("🔧 Executing LTFSCopyGUI DisablePartition fallback strategy");
 
         // 步骤1: Space6(-2, FileMark) - 后退2个FileMark
-        info!("Step 1: Moving back 2 FileMarks using Space6 command");
+        debug!("Step 1: Moving back 2 FileMarks using Space6 command");
         self.scsi.space(crate::scsi::SpaceType::FileMarks, -2)?;
 
         // 步骤2: ReadFileMark - 跳过FileMark
-        info!("Step 2: Skipping FileMark using ReadFileMark");
+        debug!("Step 2: Skipping FileMark using ReadFileMark");
         self.scsi.read_file_mark()?;
 
         // 步骤3: ReadToFileMark - 读取索引
-        info!("Step 3: Reading index using ReadToFileMark");
+        debug!("Step 3: Reading index using ReadToFileMark");
         let index_data = self
             .scsi
             .read_to_file_mark(block_sizes::LTO_BLOCK_SIZE_512K)?;
@@ -1614,7 +1614,7 @@ impl crate::tape_ops::TapeOperations {
         // 🎯 完全按照LTFSCopyGUI的验证逻辑：检查是否包含"XMLSchema"
         let xml_content = String::from_utf8_lossy(&index_data).to_string();
         if xml_content.contains("XMLSchema") {
-            info!("✅ Successfully read LTFS index using DisablePartition fallback: {} bytes (contains XMLSchema)", xml_content.len());
+            debug!("✅ Successfully read LTFS index using DisablePartition fallback: {} bytes (contains XMLSchema)", xml_content.len());
             Ok(xml_content)
         } else {
             // 🔧 LTFSCopyGUI备选路径：FromSchemaText处理
@@ -1796,7 +1796,7 @@ impl crate::tape_ops::TapeOperations {
         let mut consecutive_errors = 0;
         const MAX_CONSECUTIVE_ERRORS: u32 = 3;
 
-        info!(
+        debug!(
             "Starting ReadToFileMark with blocksize {}, max {} blocks (enhanced SCSI error handling)",
             block_size, max_blocks
         );
@@ -1819,7 +1819,7 @@ impl crate::tape_ops::TapeOperations {
 
                     // 对应: If bytesRead = 0 Then Exit Do
                     if blocks_read_count == 0 {
-                        info!("✅ Reached file mark (blocks_read_count = 0), stopping read");
+                        debug!("✅ Reached file mark (blocks_read_count = 0), stopping read");
                         break;
                     }
 
@@ -1862,7 +1862,7 @@ impl crate::tape_ops::TapeOperations {
                                         if f.read_exact(&mut tail_buf).is_ok() {
                                             if String::from_utf8_lossy(&tail_buf).contains("<?xml")
                                             {
-                                                info!(
+                                                debug!(
                                                     "Detected '<?xml' in temporary index file; expanding max_blocks: {} -> {}",
                                                     max_blocks, hard_max_blocks
                                                 );
@@ -1919,7 +1919,7 @@ impl crate::tape_ops::TapeOperations {
         temp_file.flush()?;
         drop(temp_file);
 
-        info!(
+        debug!(
             "ReadToFileMark completed: {} blocks read, {} total bytes",
             blocks_read, total_bytes_read
         );
@@ -1966,7 +1966,7 @@ impl crate::tape_ops::TapeOperations {
 
             // 如果已经读取了一些数据，这可能是正常的文件结束
             if blocks_read > 0 {
-                info!(
+                debug!(
                     "Block read failure after {} blocks - likely reached end of index data",
                     blocks_read
                 );
@@ -1983,7 +1983,7 @@ impl crate::tape_ops::TapeOperations {
             // 尝试设备状态恢复
             match self.scsi.test_unit_ready() {
                 Ok(_) => {
-                    info!("Device status recovered, can continue reading");
+                    debug!("Device status recovered, can continue reading");
                     return Ok(true);
                 }
                 Err(e) => {
@@ -1998,7 +1998,7 @@ impl crate::tape_ops::TapeOperations {
 
             // 对于介质错误，如果已有数据就停止，否则尝试一次
             if blocks_read > 10 {
-                info!(
+                debug!(
                     "Medium error after reading {} blocks - stopping to preserve data",
                     blocks_read
                 );
@@ -2052,7 +2052,7 @@ impl crate::tape_ops::TapeOperations {
             debug!("No LTFS index data found");
             return Err(RustLtfsError::ltfs_index("Index XML is empty".to_string()));
         } else {
-            info!(
+            debug!(
                 "Advanced index reading extracted {} bytes of index data",
                 cleaned_xml.len()
             );
@@ -2065,7 +2065,7 @@ impl crate::tape_ops::TapeOperations {
     pub async fn try_read_index_at_current_position_advanced(&self) -> Result<String> {
         let block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
 
-        info!(
+        debug!(
             "Advanced index reading at current position with blocksize {}",
             block_size
         );
@@ -2076,7 +2076,7 @@ impl crate::tape_ops::TapeOperations {
 
     /// 搜索数据区域中的索引副本 (分区管理器版本)
     pub async fn search_data_area_for_index_partition(&mut self) -> Result<()> {
-        info!("Searching data area for index copies (optimized search)");
+        debug!("Searching data area for index copies (optimized search)");
 
         // 缩减搜索范围：如果磁带是空白的，不需要大范围搜索
         let limited_search_locations = vec![
@@ -2095,7 +2095,7 @@ impl crate::tape_ops::TapeOperations {
                             .validate_and_process_index_partition(&xml_content)
                             .await?
                         {
-                            info!("✅ Found valid index in data area at block {}", block);
+                            debug!("✅ Found valid index in data area at block {}", block);
                             return Ok(());
                         }
                     }
@@ -2135,7 +2135,7 @@ impl crate::tape_ops::TapeOperations {
         // 尝试解析索引
         match LtfsIndex::from_xml_streaming(xml_content) {
             Ok(index) => {
-                info!("✅ Index validation successful, updating internal state");
+                debug!("✅ Index validation successful, updating internal state");
 
                 // 保存索引文件到当前目录（按时间命名）
                 let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
@@ -2143,7 +2143,7 @@ impl crate::tape_ops::TapeOperations {
 
                 match std::fs::write(&index_filename, xml_content) {
                     Ok(()) => {
-                        info!("📄 LTFS索引已保存到: {}", index_filename);
+                        debug!("📄 LTFS索引已保存到: {}", index_filename);
                     }
                     Err(e) => {
                         warn!("⚠️ 保存索引文件失败: {} - {}", index_filename, e);
@@ -2161,7 +2161,7 @@ impl crate::tape_ops::TapeOperations {
 
     /// 异步版本：尝试从数据分区读取索引副本 (分区管理器版本)
     pub async fn try_read_from_data_partition_partition_async(&mut self) -> Result<String> {
-        info!("Attempting to read index from data partition (matching LTFSCopyGUI logic)");
+        debug!("Attempting to read index from data partition (matching LTFSCopyGUI logic)");
 
         // 按照LTFSCopyGUI的"读取数据区索引"逻辑：
         // 1. 定位到数据分区EOD
@@ -2172,7 +2172,7 @@ impl crate::tape_ops::TapeOperations {
         match self.scsi.locate_block(data_partition, 0) {
             Ok(()) => {
                 // 注意：这里需要实现EOD定位逻辑，目前作为占位符
-                info!("Data partition positioning - EOD logic placeholder");
+                debug!("Data partition positioning - EOD logic placeholder");
 
                 // 搜索数据分区的一些常见索引位置
                 let search_blocks = vec![10000, 5000, 2000, 1000];
@@ -2186,7 +2186,7 @@ impl crate::tape_ops::TapeOperations {
                                 if xml_content.contains("<ltfsindex")
                                     && xml_content.contains("</ltfsindex>")
                                 {
-                                    info!("Found valid index in data partition at block {}", block);
+                                    debug!("Found valid index in data partition at block {}", block);
                                     return Ok(xml_content);
                                 }
                             }

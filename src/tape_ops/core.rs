@@ -805,7 +805,7 @@ impl TapeOperations {
                 Ok(sense_data) => {
                     if sense_data.is_empty() {
                         // 无sense数据表示设备就绪
-                        info!("✅ Device is ready (TestUnitReady successful, no sense data)");
+                        debug!("✅ Device is ready (TestUnitReady successful, no sense data)");
                         return Ok(());
                     } else {
                         // 有sense数据，需要分析
@@ -820,7 +820,7 @@ impl TapeOperations {
                            sense_info == "Device ready"
                         {
                             // 精确匹配SCSI返回的"Device ready"
-                            info!(
+                            debug!(
                                 "✅ Device is ready (TestUnitReady with ready sense: {})",
                                 sense_info
                             );
@@ -910,11 +910,11 @@ impl TapeOperations {
 
         match op_type {
             OperationType::Space => {
-                info!("Device initialization completed");
+                debug!("Device initialization completed");
                 return Ok(());
             }
             OperationType::Write => {
-                info!("Device initialization completed");
+                debug!("Device initialization completed");
                 
                 // 尝试加载现有的LTFS索引
                 match self.read_index_from_tape().await {
@@ -924,7 +924,7 @@ impl TapeOperations {
                             .as_ref()
                             .map(|idx| idx.root_directory.contents.files.len())
                             .unwrap_or(0);
-                        info!("Index loaded successfully ({} files)", file_count);
+                        debug!("Index loaded successfully ({} files)", file_count);
                     }
                     Err(_) => {
                         info!("Will create new index");
@@ -932,12 +932,12 @@ impl TapeOperations {
                 }
             }
             OperationType::Read => {
-                info!("Device initialization completed");
+                debug!("Device initialization completed");
                 
                 // 读取操作必须成功加载索引
                 match self.read_index_from_tape().await {
                     Ok(()) => {
-                        info!("Index loaded successfully");
+                        debug!("Index loaded successfully");
                         
                         // 显示索引内容概览
                         if let Some(stats) = self.get_index_statistics() {

@@ -1827,7 +1827,7 @@ impl ScsiInterface {
 
             // 获取当前位置
             let current_pos = self.read_position()?;
-            info!(
+            debug!(
                 "📍 ReadFileMark current position: P{} B{} FM{}",
                 current_pos.partition, current_pos.block_number, current_pos.file_number
             );
@@ -1836,7 +1836,7 @@ impl ScsiInterface {
             if self.allow_partition {
                 // AllowPartition=true: 使用Locate命令回退
                 // 🔧 修复：使用comprehensive locate()方法（LOCATE(16)）而不是locate_block()（LOCATE(10)）
-                info!(
+                debug!(
                     "🔧 ReadFileMark: Using AllowPartition mode - Locate backtrack to Block {}",
                     current_pos.block_number.saturating_sub(1)
                 );
@@ -1856,7 +1856,7 @@ impl ScsiInterface {
 
             // 验证回退后的位置
             let new_pos = self.read_position()?;
-            info!(
+            debug!(
                 "✅ ReadFileMark: Backtrack completed - now at P{} B{} FM{}",
                 new_pos.partition, new_pos.block_number, new_pos.file_number
             );
@@ -1924,7 +1924,7 @@ impl ScsiInterface {
 
                 debug!("🔍 Sense analysis: result={}, Add_Key=0x{:04X} (ASC=0x{:02X}, ASCQ=0x{:02X}), DiffBytes={}",
                       result, add_key, sense_buffer[12], sense_buffer[13], diff_bytes);
-                info!(
+                debug!(
                     "🔍 Detailed sense analysis: result={}, DiffBytes={}, BlockSizeLimit={}",
                     result, diff_bytes, block_size_limit
                 );
@@ -1935,7 +1935,7 @@ impl ScsiInterface {
                     // 🔧 关键修复：使用LTFSCopyGUI的GlobalBlockLimit值 (1048576)
                     let global_block_limit = 1048576i32; // LTFSCopyGUI默认值
 
-                    info!("🔍 Auto-backtrack condition check: DiffBytes={}, DiffBytes<0={}, BlockSize={}, (BlockSize-DiffBytes)={}, GlobalLimit={}, Condition={}",
+                    debug!("🔍 Auto-backtrack condition check: DiffBytes={}, DiffBytes<0={}, BlockSize={}, (BlockSize-DiffBytes)={}, GlobalLimit={}, Condition={}",
                          diff_bytes, diff_bytes < 0, block_size_limit_i32,
                          block_size_limit_i32 - diff_bytes, global_block_limit,
                          diff_bytes < 0 && (block_size_limit_i32 - diff_bytes) < global_block_limit);
@@ -2120,7 +2120,7 @@ impl ScsiInterface {
                 // 🎯 关键的FileMark检测规则 (精确对应LTFSCopyGUI)
                 // LTFSCopyGUI: If (Add_Key >= 1 And Add_Key <> 4) Then Exit While
                 if add_key >= 1 && add_key != 4 {
-                    info!("🎯 FileMark detected: Add_Key=0x{:04X} matches criteria (>=1 and !=4)", add_key);
+                    debug!("🎯 FileMark detected: Add_Key=0x{:04X} matches criteria (>=1 and !=4)", add_key);
                     break;
                 }
 
@@ -2131,7 +2131,7 @@ impl ScsiInterface {
                 }
             }
 
-            info!(
+            debug!(
                 "✅ ReadToFileMark completed: {} total bytes read using LTFSCopyGUI method",
                 buffer.len()
             );
@@ -2494,7 +2494,7 @@ impl ScsiInterface {
     pub fn locate_to_filemark(&self, filemark_number: u64, partition: u8) -> Result<()> {
         // 🎯 关键修复：避免无限递归，直接使用LTFSCopyGUI逻辑
         // 对应: Locate(handle, 0, 0) + Space6(handle, Count, FileMark)
-        info!(
+        debug!(
             "🔧 locate_to_filemark: FileMark {} in partition {} using LTFSCopyGUI method",
             filemark_number, partition
         );

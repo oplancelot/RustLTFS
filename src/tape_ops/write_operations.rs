@@ -1012,49 +1012,123 @@ impl TapeOperations {
             1
         };
 
-        // Calculate file size if not provided (read data to memory for accurate size)
-        let mut data_buffer = Vec::new();
-        let actual_size = match estimated_size {
-            Some(_size) => {
-                // If size is estimated, still need to read all data for writing
-                let bytes_read = reader.read_to_end(&mut data_buffer).map_err(|e| {
-                    RustLtfsError::file_operation(format!("Failed to read from input stream: {}", e))
-                })?;
-                bytes_read as u64
-            },
-            None => {
-                // Read all data to determine size
-                let bytes_read = reader.read_to_end(&mut data_buffer).map_err(|e| {
-                    RustLtfsError::file_operation(format!("Failed to read from input stream: {}", e))
-                })?;
-                bytes_read as u64
-            }
-        };
-
-        debug!("Stream data size: {} bytes", actual_size);
-
-        // Write data to tape in chunks
-        let chunk_size = self.write_options.block_size as usize;
+        // ⭐ STREAMING WRITE - Ensure full-sized blocks for LTFS compatibility
+        // LTFSCopyGUI expects consistent block sizes when reading back
+        let block_size = self.write_options.block_size as usize;
+        let mut write_buffer = vec![0u8; block_size]; // Buffer for writing full blocks
+        let mut read_buffer = vec![0u8; block_size];  // Buffer for reading from stream
+        let mut buffer_fill = 0usize; // How many bytes are currently in write_buffer
         let mut total_bytes_written = 0u64;
         let mut total_blocks_written = 0u64;
+        let write_start_time = std::time::Instant::now();
+        let mut last_progress_bytes = 0u64;
+        let mut last_progress_time = std::time::Instant::now();
+        
+        info!("Starting streaming write with block size: {} bytes (LTFS fixed-block mode)", block_size);
 
-        for chunk in data_buffer.chunks(chunk_size) {
-            let blocks_written = self.scsi.write_blocks(1, chunk)? as u64;
+        loop {
+            // Read data from the stream
+            let bytes_read = reader.read(&mut read_buffer).map_err(|e| {
+                RustLtfsError::file_operation(format!("Failed to read from input stream: {}", e))
+            })?;
             
-            total_blocks_written += blocks_written;
-            total_bytes_written += chunk.len() as u64;
-
-            // Update progress
-            self.write_progress.current_bytes_processed += chunk.len() as u64;
+            if bytes_read == 0 {
+                // EOF reached - write any remaining data in buffer as final block
+                if buffer_fill > 0 {
+                    info!("Writing final partial block: {} bytes", buffer_fill);
+                    let blocks_written = self.scsi.write_blocks(1, &write_buffer[..buffer_fill])? as u64;
+                    total_blocks_written += blocks_written;
+                    total_bytes_written += buffer_fill as u64;
+                    self.write_progress.current_bytes_processed += buffer_fill as u64;
+                }
+                break; // Stream completed
+            }
+            
+            // Accumulate data into write_buffer
+            let mut offset = 0;
+            while offset < bytes_read {
+                let space_left = block_size - buffer_fill;
+                let bytes_to_copy = std::cmp::min(space_left, bytes_read - offset);
+                
+                // Copy data into write buffer
+                write_buffer[buffer_fill..buffer_fill + bytes_to_copy]
+                    .copy_from_slice(&read_buffer[offset..offset + bytes_to_copy]);
+                
+                buffer_fill += bytes_to_copy;
+                offset += bytes_to_copy;
+                
+                // If buffer is full, write it to tape
+                if buffer_fill == block_size {
+                    let blocks_written = self.scsi.write_blocks(1, &write_buffer)? as u64;
+                    total_blocks_written += blocks_written;
+                    total_bytes_written += block_size as u64;
+                    self.write_progress.current_bytes_processed += block_size as u64;
+                    buffer_fill = 0; // Reset buffer
+                }
+            }
+            
+            // Log progress every 1GB with detailed statistics
+            let bytes_since_last_log = total_bytes_written - last_progress_bytes;
+            if bytes_since_last_log >= 1024 * 1024 * 1024 {
+                let elapsed = write_start_time.elapsed();
+                let elapsed_secs = elapsed.as_secs_f64();
+                
+                // Calculate overall speed
+                let overall_speed_mbps = if elapsed_secs > 0.0 {
+                    (total_bytes_written as f64 / (1024.0 * 1024.0)) / elapsed_secs
+                } else {
+                    0.0
+                };
+                
+                // Calculate recent speed (since last log)
+                let recent_elapsed = last_progress_time.elapsed().as_secs_f64();
+                let recent_speed_mbps = if recent_elapsed > 0.0 {
+                    (bytes_since_last_log as f64 / (1024.0 * 1024.0)) / recent_elapsed
+                } else {
+                    0.0
+                };
+                
+                let gb_written = total_bytes_written as f64 / (1024.0 * 1024.0 * 1024.0);
+                
+                info!(
+                    "📊 Streaming progress: {:.2} GB written | Speed: {:.2} MB/s (avg: {:.2} MB/s) | Blocks: {}",
+                    gb_written,
+                    recent_speed_mbps,
+                    overall_speed_mbps,
+                    total_blocks_written
+                );
+                
+                last_progress_bytes = total_bytes_written;
+                last_progress_time = std::time::Instant::now();
+            }
         }
+
+        let total_elapsed = write_start_time.elapsed();
+        let final_speed_mbps = if total_elapsed.as_secs_f64() > 0.0 {
+            (total_bytes_written as f64 / (1024.0 * 1024.0)) / total_elapsed.as_secs_f64()
+        } else {
+            0.0
+        };
+        
+        info!(
+            "✅ Stream write completed: {:.2} GB ({} bytes) in {} blocks | Total time: {:?} | Average speed: {:.2} MB/s",
+            total_bytes_written as f64 / (1024.0 * 1024.0 * 1024.0),
+            total_bytes_written,
+            total_blocks_written,
+            total_elapsed,
+            final_speed_mbps
+        );
+
+        // Write filemark to separate this file from next
+        self.scsi.write_filemarks(1)?;
 
         // Add file to index
         if let Some(mut index) = self.index.take() {
-            // Create file entry
+            // Create file extent using actual bytes written
             let file_extent = crate::ltfs_index::FileExtent {
                 file_offset: 0,
                 start_block: write_start_position.block_number,
-                byte_count: actual_size,
+                byte_count: total_bytes_written,
                 byte_offset: 0,
                 partition: if write_start_position.partition == 0 {
                     "a".to_string()
@@ -1065,7 +1139,7 @@ impl TapeOperations {
 
             let new_file = crate::ltfs_index::File {
                 name: target_path.split('/').last().unwrap_or("unknown").to_string(),
-                length: actual_size,
+                length: total_bytes_written,
                 creation_time: format_ltfs_timestamp(current_time),
                 change_time: format_ltfs_timestamp(current_time),
                 access_time: format_ltfs_timestamp(current_time),
@@ -1093,12 +1167,7 @@ impl TapeOperations {
 
         // Update progress counters
         self.write_progress.current_files_processed += 1;
-        self.write_progress.total_bytes_unindexed += actual_size;
-
-        debug!(
-            "Stream write completed: {} bytes in {} blocks",
-            total_bytes_written, total_blocks_written
-        );
+        self.write_progress.total_bytes_unindexed += total_bytes_written;
 
         // Check if we should update the index
         let should_force_index = if self.write_progress.current_files_processed == 1 {

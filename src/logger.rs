@@ -10,7 +10,7 @@ pub fn init(verbose: bool) -> Result<()> {
     };
 
     let fmt_layer = fmt::layer()
-        .with_target(false)
+        .with_target(true)        // ✅ 显示模块路径 (e.g., rustltfs::tape_ops)
         .with_thread_ids(false)
         .with_file(false)
         .with_line_number(false)
