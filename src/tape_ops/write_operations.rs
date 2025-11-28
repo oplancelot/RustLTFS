@@ -764,7 +764,7 @@ impl TapeOperations {
             }
 
             // Apply performance controls before write (对应LTFSCopyGUI的性能控制)
-            self.apply_performance_controls(self.block_size as u64)
+            self.apply_performance_controls(self.block_size as u64, self.block_size as u64)
                 .await?;
 
             // Write to tape (variable-length for last/short block)
@@ -837,7 +837,8 @@ impl TapeOperations {
                 }
 
                 // Apply comprehensive performance controls (对应LTFSCopyGUI的全面性能控制)
-                self.apply_performance_controls(bytes_read as u64).await?;
+                // Pass 0 for memory_delta because we are reusing the buffer in this loop
+                self.apply_performance_controls(bytes_read as u64, 0).await?;
 
                 // Write block to tape (use variable-length buffer slice to avoid ILI)
                 let blocks_written = self.scsi.write_blocks(1, &buffer[..bytes_read])?;
@@ -1868,7 +1869,8 @@ impl TapeOperations {
         buffer[..index_content.len()].copy_from_slice(&index_content);
 
         // Apply performance controls for index write (对应LTFSCopyGUI的索引写入性能控制)
-        self.apply_performance_controls(index_content.len() as u64)
+        // Apply performance controls for index write (对应LTFSCopyGUI的索引写入性能控制)
+        self.apply_performance_controls(index_content.len() as u64, buffer_size as u64)
             .await?;
 
         // Write index blocks to tape

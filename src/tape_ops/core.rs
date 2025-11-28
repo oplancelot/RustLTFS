@@ -275,9 +275,13 @@ impl TapeOperations {
     }
 
     /// Apply performance controls during operation (智能性能控制应用)
-    pub async fn apply_performance_controls(&mut self, bytes_processed: u64) -> Result<()> {
-        // 1. 内存使用控制
-        self.check_memory_usage(bytes_processed).await?;
+    pub async fn apply_performance_controls(
+        &mut self,
+        bytes_processed: u64,
+        memory_delta: u64,
+    ) -> Result<()> {
+        // 1. 内存使用控制 (使用实际内存增量)
+        self.check_memory_usage(memory_delta).await?;
 
         // 2. 速度限制控制
         if let Some(ref mut speed_limiter) = self.speed_limiter {
