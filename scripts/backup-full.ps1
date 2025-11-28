@@ -5,7 +5,7 @@ param(
     [string]$ConfigFile = "config.toml",
     [string]$LogDir = ".\logs",
     [string]$SevenZipPath = "C:\Program Files\7-Zip\7z.exe",
-    [string]$LocalTempDir = "D:\Temp\LTFS_Staging"
+    [string]$LocalTempDir = ".\Temp\LTFS_Staging"
 )
 
 $ErrorActionPreference = "Stop"

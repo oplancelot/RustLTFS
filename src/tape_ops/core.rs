@@ -196,7 +196,7 @@ impl TapeOperations {
             tape_handle: None,
             drive_handle: None,
             schema: None,
-            block_size: 524288, // Default block size
+            block_size: crate::scsi::block_sizes::LTO_BLOCK_SIZE, // Default block size (64KB)
             tape_drive: device.to_string(),
             scsi: crate::scsi::ScsiInterface::new(),
             partition_label: None, // 初始化为None，稍后读取
@@ -583,6 +583,7 @@ impl TapeOperations {
 
     /// Set write options
     pub fn set_write_options(&mut self, options: WriteOptions) {
+        self.block_size = options.block_size;
         self.write_options = options;
     }
 
