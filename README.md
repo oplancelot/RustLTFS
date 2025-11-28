@@ -21,6 +21,9 @@ rustltfs write C:\local\folder --tape \\.\TAPE0 /tape/target_folder
 
 # Write a single file
 rustltfs write C:\local\file.txt --tape \\.\TAPE0 /tape/file.txt
+
+# Write from stdin
+rustltfs write --tape \\.\TAPE0 /tape/stream.tar < C:\local\stream.tar
 ```
 
 ### 2. Read (`read`)

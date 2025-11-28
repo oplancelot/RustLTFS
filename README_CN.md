@@ -21,6 +21,9 @@ rustltfs write C:\local\folder --tape \\.\TAPE0 /tape/target_folder
 
 # 写入单个文件
 rustltfs write C:\local\file.txt --tape \\.\TAPE0 /tape/file.txt
+
+# 从标准输入 (stdin) 写入
+rustltfs write --tape \\.\TAPE0 /tape/stream.tar < C:\local\stream.tar
 ```
 
 ### 2. 读取 (`read`)
