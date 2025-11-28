@@ -237,7 +237,7 @@ impl ScsiInterface {
                 let handle = CreateFileA(
                     path_cstring.as_ptr(),
                     GENERIC_READ | GENERIC_WRITE,
-                    FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE, // Based on C code
+                    0, // Exclusive access (0), no sharing allowed
                     std::ptr::null_mut(),
                     OPEN_EXISTING,
                     0, // Don't use FILE_ATTRIBUTE_NORMAL, based on C code
