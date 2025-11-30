@@ -1,11 +1,20 @@
+use clap::builder::styling::AnsiColor;
+use clap::builder::Styles;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+
+const CLAP_STYLING: Styles = Styles::styled()
+    .header(AnsiColor::BrightGreen.on_default().bold())
+    .usage(AnsiColor::BrightGreen.on_default().bold())
+    .literal(AnsiColor::BrightCyan.on_default().bold())
+    .placeholder(AnsiColor::BrightCyan.on_default());
 
 #[derive(Parser)]
 #[command(name = "rustltfs")]
 #[command(about = "A Rust CLI tool for IBM tape direct read/write operations")]
 #[command(version = "0.1.0")]
 #[command(author = "lance <oplancelot@gmail.com>")]
+#[command(styles = CLAP_STYLING)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
