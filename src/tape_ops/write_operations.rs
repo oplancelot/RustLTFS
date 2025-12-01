@@ -1,4 +1,5 @@
 use super::{FileWriteEntry, TapeOperations, WriteOptions, WriteResult};
+#[allow(dead_code)]
 use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::LtfsIndex;
 use std::collections::HashMap;
@@ -971,7 +972,7 @@ impl TapeOperations {
         &mut self,
         mut reader: Box<dyn BufRead + Send>,
         target_path: &str,
-        estimated_size: Option<u64>,
+        _estimated_size: Option<u64>,
     ) -> Result<WriteResult> {
         info!("Writing from reader stream to tape: {}", target_path);
 
@@ -1229,7 +1230,7 @@ impl TapeOperations {
         }
 
         // Create or get directory in LTFS index
-        let dir_name = source_dir
+        let _dir_name = source_dir
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
@@ -1961,7 +1962,7 @@ impl TapeOperations {
     /// Calculate multiple file hashes (对应LTFSCopyGUI的多种哈希计算)
     async fn calculate_file_hashes(&self, file_path: &Path) -> Result<HashMap<String, String>> {
         use sha1::{Digest, Sha1};
-        use sha2::{Digest as Sha256Digest, Sha256};
+        use sha2::Sha256;
 
         let mut file = tokio::fs::File::open(file_path).await.map_err(|e| {
             RustLtfsError::file_operation(format!("Cannot open file for hashing: {}", e))

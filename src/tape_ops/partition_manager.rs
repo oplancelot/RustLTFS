@@ -2134,7 +2134,7 @@ impl crate::tape_ops::TapeOperations {
 
         // 尝试解析索引
         match LtfsIndex::from_xml_streaming(xml_content) {
-            Ok(index) => {
+            Ok(_index) => {
                 debug!("✅ Index validation successful, updating internal state");
 
                 // 保存索引文件到当前目录（按时间命名）

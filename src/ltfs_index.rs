@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};

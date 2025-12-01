@@ -1,4 +1,5 @@
 // Re-export modules
+#![allow(dead_code)]
 pub mod capacity_manager;
 pub mod core;
 pub mod deduplication;
@@ -15,9 +16,7 @@ pub use self::core::*;
 //  so the re-export is no longer necessary.)
 
 use crate::error::{Result, RustLtfsError};
-use crate::ltfs_index::LtfsIndex;
-use std::path::{Path, PathBuf};
-use tracing::info;
+use std::path::PathBuf;
 
 /// Format bytes in human-readable format
 fn format_bytes(bytes: u64) -> String {

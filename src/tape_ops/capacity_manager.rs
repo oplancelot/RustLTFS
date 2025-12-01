@@ -527,7 +527,7 @@ impl CapacityManager {
     }
 
     /// 通过MAM属性读取容量信息（后备方法）
-    fn read_mam_capacity(&self, partition: u8, extra_partition_count: u8) -> Result<u64> {
+    fn read_mam_capacity(&self, partition: u8, _extra_partition_count: u8) -> Result<u64> {
         // MAM属性ID：
         // - 0x0000: P0剩余容量
         // - 0x0001: P0最大容量  

@@ -13,7 +13,7 @@ use blake3::Hasher as Blake3Hasher;
 use twox_hash::XxHash64;
 use std::hash::Hasher;
 use std::sync::Arc;
-use rayon::prelude::*;
+
 
 /// 哈希类型枚举（对应LTFSCopyGUI的支持算法）
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -51,7 +51,7 @@ impl HashType {
 
     /// 计算文件哈希值
     pub fn compute_file_hash<P: AsRef<Path>>(&self, file_path: P) -> Result<String> {
-        let mut file = fs::File::open(&file_path).map_err(|e| {
+        let file = fs::File::open(&file_path).map_err(|e| {
             RustLtfsError::file_operation(format!("无法打开文件 {:?}: {}", file_path.as_ref(), e))
         })?;
 

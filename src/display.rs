@@ -1,6 +1,7 @@
 // Display module - currently contains only format_size utility function
 
 /// Format file size in human readable format
+#[allow(dead_code)]
 pub fn format_size(size: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
     const THRESHOLD: f64 = 1024.0;

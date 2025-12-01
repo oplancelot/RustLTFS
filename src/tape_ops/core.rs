@@ -1145,7 +1145,7 @@ impl TapeOperations {
 
         // 直接使用self.scsi读取错误率信息
         match self.scsi.log_sense(0x02, 1) {
-            Ok(data) => {
+            Ok(_data) => {
                 // 简单解析错误率（可以后续完善）
                 Ok(0.0)
             }

@@ -8,9 +8,8 @@ mod tape;
 mod tape_ops;
 
 use crate::cli::{Cli, Commands};
-use crate::error::{Result, RustLtfsError};
-use std::fs::File;
-use std::io::{self, BufRead, BufReader, Read};
+use crate::error::Result;
+use std::io::{self, BufRead, BufReader};
 use tracing::{debug, error, info, warn};
 
 #[tokio::main]
@@ -470,7 +469,7 @@ async fn run(args: Cli) -> Result<()> {
 
         Commands::Space {
             device,
-            skip_index,
+            skip_index: _,
             detailed,
         } => {
             info!("Getting tape space information: {}", device);

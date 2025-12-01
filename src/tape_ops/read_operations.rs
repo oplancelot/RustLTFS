@@ -1,6 +1,6 @@
+#![allow(dead_code)]
 use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::LtfsIndex;
-use crate::scsi::MediaType;
 use std::path::Path;
 use tracing::{debug, info, warn};
 

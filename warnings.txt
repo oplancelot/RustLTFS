@@ -1,0 +1,1739 @@
+warning: unused imports: `DWORD` and `HANDLE`
+ --> src\scsi\ffi.rs:5:21
+  |
+5 |         minwindef::{DWORD, UCHAR, ULONG, USHORT},
+  |                     ^^^^^
+6 |         ntdef::{HANDLE, PVOID},
+  |                 ^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused variable: `data`
+    --> src\tape_ops\core.rs:1148:16
+     |
+1148 |             Ok(data) => {
+     |                ^^^^ help: if this is intentional, prefix it with an underscore: `_data`
+     |
+     = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `index`
+    --> src\tape_ops\partition_manager.rs:2137:16
+     |
+2137 |             Ok(index) => {
+     |                ^^^^^ help: if this is intentional, prefix it with an underscore: `_index`
+
+warning: unused variable: `estimated_size`
+   --> src\tape_ops\write_operations.rs:974:9
+    |
+974 |         estimated_size: Option<u64>,
+    |         ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_estimated_size`
+
+warning: unused variable: `dir_name`
+    --> src\tape_ops\write_operations.rs:1232:13
+     |
+1232 |         let dir_name = source_dir
+     |             ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_dir_name`
+
+warning: unused import: `rayon::prelude`
+  --> src\tape_ops\deduplication.rs:16:5
+   |
+16 | use rayon::prelude::*;
+   |     ^^^^^^^^^^^^^^
+
+warning: unused import: `Digest`
+    --> src\tape_ops\write_operations.rs:1964:20
+     |
+1964 |         use sha2::{Digest as Sha256Digest, Sha256};
+     |                    ^^^^^^
+
+warning: unused variable: `extra_partition_count`
+   --> src\tape_ops\capacity_manager.rs:530:48
+    |
+530 | ...ition: u8, extra_partition_count: u8) -> Result<u64> {
+    |               ^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_extra_partition_count`
+
+warning: function `format_bytes` is never used
+  --> src\tape_ops\mod.rs:21:4
+   |
+21 | fn format_bytes(bytes: u64) -> String {
+   |    ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: field `device_path` is never read
+   --> src\tape_ops\mod.rs:166:5
+    |
+165 | pub struct LtfsAccess {
+    |            ---------- field in this struct
+166 |     device_path: String,
+    |     ^^^^^^^^^^^
+
+warning: fields `tape_handle`, `drive_handle`, and `tape_drive` are never read
+   --> src\tape_ops\core.rs:160:16
+    |
+156 | pub struct TapeOperations {
+    |            -------------- fields in this struct
+...
+160 |     pub(crate) tape_handle: Option<LtfsAccess>,
+    |                ^^^^^^^^^^^
+161 |     pub(crate) drive_handle: Option<i32>,
+    |                ^^^^^^^^^^^^
+...
+164 |     pub(crate) tape_drive: String,
+    |                ^^^^^^^^^^
+
+warning: multiple methods are never used
+    --> src\tape_ops\read_operations.rs:286:8
+     |
+14   | impl super::TapeOperations {
+     | -------------------------- methods in this implementation
+...
+286  |     fn parse_index_locations_from_volume_label(&self,...
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+355  |     fn try_read_index_at_current_position(&self, bloc...
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+394  |     fn find_current_index_location(&self) -> Result<I...
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+424  |     fn parse_volume_label(&self, buffer: &[u8]) -> Re...
+     |        ^^^^^^^^^^^^^^^^^^
+...
+466  |     fn is_all_zeros(&self, buffer: &[u8], length: usi...
+     |        ^^^^^^^^^^^^
+...
+471  |     fn check_temp_file_for_xml_end(&self, temp_path: ...
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+492  |     fn read_index_xml_from_tape(&self) -> Result<Stri...
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+577  |     fn validate_index_xml(&self, xml_content: &str) -...
+     |        ^^^^^^^^^^^^^^^^^^
+...
+1134 |     fn check_device_ready(&mut self) -> Result<()> {
+     |        ^^^^^^^^^^^^^^^^^^
+...
+1143 |     fn detect_partition_count(&mut self) -> Result<u8> {
+     |        ^^^^^^^^^^^^^^^^^^^^^^
+...
+1205 |     fn try_read_from_data_partition(&self) -> Result<...
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1237 |     fn try_single_partition_extended_search(&self) ->...
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1267 |     fn save_index_and_return(
+     |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `create_directory_in_index` is never used
+    --> src\tape_ops\write_operations.rs:1614:8
+     |
+463  | impl TapeOperations {
+     | ------------------- method in this implementation
+...
+1614 |     fn create_directory_in_index(&mut self, source_di...
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `rust-ltfs` (lib) generated 13 warnings (run `cargo fix --lib -p rust-ltfs` to apply 1 suggestion)
+warning: unused variable: `skip_index`
+   --> src\main.rs:472:13
+    |
+472 |             skip_index,
+    |             ^^^^^^^^^^ help: try ignoring the field: `skip_index: _`
+
+warning: function `format_size` is never used
+ --> src\display.rs:4:8
+  |
+4 | pub fn format_size(size: u64) -> String {
+  |        ^^^^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` on by default
+
+warning: variants `Config`, `Verification`, `UnsupportedOperation`, `Permission`, `Connection`, and `Cli` are never constructed
+  --> src\error.rs:20:5
+   |
+6  | pub enum RustLtfsError {
+   |          ------------- variants in this enum
+...
+20 |     Config(String),
+   |     ^^^^^^
+...
+23 |     Verification(String),
+   |     ^^^^^^^^^^^^
+...
+26 |     UnsupportedOperation(String),
+   |     ^^^^^^^^^^^^^^^^^^^^
+...
+32 |     Permission(String),
+   |     ^^^^^^^^^^
+...
+35 |     Connection(String),
+   |     ^^^^^^^^^^
+...
+41 |     Cli(String),
+   |     ^^^
+   |
+   = note: `RustLtfsError` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: associated functions `config`, `verification`, `unsupported`, `permission`, `connection`, and `cli_error` are never used
+   --> src\error.rs:72:12
+    |
+59  | impl RustLtfsError {
+    | ------------------ associated functions in this implementation
+...
+72  |     pub fn config<T: Into<String>>(msg: T) -> Self {
+    |            ^^^^^^
+...
+76  |     pub fn verification<T: Into<String>>(msg: T) -> Se...
+    |            ^^^^^^^^^^^^
+...
+80  |     pub fn unsupported<T: Into<String>>(msg: T) -> Self {
+    |            ^^^^^^^^^^^
+...
+88  |     pub fn permission<T: Into<String>>(msg: T) -> Self {
+    |            ^^^^^^^^^^
+...
+92  |     pub fn connection<T: Into<String>>(msg: T) -> Self {
+    |            ^^^^^^^^^^
+...
+100 |     pub fn cli_error<T: Into<String>>(msg: T) -> Self {
+    |            ^^^^^^^^^
+
+warning: enum `PathType` is never used
+   --> src\ltfs_index.rs:125:10
+    |
+125 | pub enum PathType {
+    |          ^^^^^^^^
+
+warning: enum `DirectoryEntry` is never used
+   --> src\ltfs_index.rs:133:10
+    |
+133 | pub enum DirectoryEntry {
+    |          ^^^^^^^^^^^^^^
+
+warning: methods `name`, `size`, `modify_time`, and `is_directory` are never used
+   --> src\ltfs_index.rs:139:12
+    |
+138 | impl DirectoryEntry {
+    | ------------------- methods in this implementation
+139 |     pub fn name(&self) -> &str {
+    |            ^^^^
+...
+146 |     pub fn size(&self) -> u64 {
+    |            ^^^^
+...
+153 |     pub fn modify_time(&self) -> &str {
+    |            ^^^^^^^^^^^
+...
+160 |     pub fn is_directory(&self) -> bool {
+    |            ^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> src\ltfs_index.rs:209:12
+    |
+165 | impl LtfsIndex {
+    | -------------- associated items in this implementation
+...
+209 |     pub fn from_xml_streaming(xml_content: &str) -> Re...
+    |            ^^^^^^^^^^^^^^^^^^
+...
+708 |     fn parse_xml_in_chunks(xml_content: &str) -> Resul...
+    |        ^^^^^^^^^^^^^^^^^^^
+...
+753 |     pub fn get_next_file_uid(&self) -> u64 {
+    |            ^^^^^^^^^^^^^^^^^
+...
+766 |     fn collect_all_uids_from_dir(&self, directory: &Di...
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+786 |     pub fn insert_file(&mut self, parent_path: &str, f...
+    |            ^^^^^^^^^^^
+...
+809 |     pub fn increment_generation(&mut self) {
+    |            ^^^^^^^^^^^^^^^^^^^^
+...
+816 |     pub fn find_path(&self, path: &str) -> Result<Path...
+    |            ^^^^^^^^^
+...
+834 |     pub fn list_directory(&self, path: &str) -> Result...
+    |            ^^^^^^^^^^^^^^
+...
+869 |     pub fn get_file_info(&self, path: &str) -> Result<...
+    |            ^^^^^^^^^^^^^
+...
+886 |     fn normalize_path(&self, path: &str) -> String {
+    |        ^^^^^^^^^^^^^^
+...
+903 |     fn find_path_recursive(
+    |        ^^^^^^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+    --> src\ltfs_index.rs:943:12
+     |
+941  | impl File {
+     | --------- methods in this implementation
+942  |     /// Get total file size
+943  |     pub fn total_size(&self) -> u64 {
+     |            ^^^^^^^^^^
+...
+948  |     pub fn get_sorted_extents(&self) -> Vec<FileExten...
+     |            ^^^^^^^^^^^^^^^^^^
+...
+955  |     pub fn is_symlink(&self) -> bool {
+     |            ^^^^^^^^^^
+...
+960  |     pub fn get_extended_attribute(&self, key: &str) -...
+     |            ^^^^^^^^^^^^^^^^^^^^^^
+...
+970  |     pub fn has_extents(&self) -> bool {
+     |            ^^^^^^^^^^^
+...
+975  |     pub fn validate(&self) -> Result<()> {
+     |            ^^^^^^^^
+...
+1030 |     pub fn is_read_only(&self) -> bool {
+     |            ^^^^^^^^^^^^
+...
+1035 |     pub fn is_open_for_write(&self) -> bool {
+     |            ^^^^^^^^^^^^^^^^^
+...
+1040 |     pub fn get_partitions(&self) -> Vec<String> {
+     |            ^^^^^^^^^^^^^^
+...
+1051 |     pub fn fragmentation_level(&self) -> usize {
+     |            ^^^^^^^^^^^^^^^^^^^
+
+warning: methods `validate`, `end_position`, `is_in_data_partition`, and `is_in_index_partition` are never used
+    --> src\ltfs_index.rs:1058:12
+     |
+1056 | impl FileExtent {
+     | --------------- methods in this implementation
+1057 |     /// Validate extent parameters
+1058 |     pub fn validate(&self) -> Result<()> {
+     |            ^^^^^^^^
+...
+1090 |     pub fn end_position(&self) -> u64 {
+     |            ^^^^^^^^^^^^
+...
+1095 |     pub fn is_in_data_partition(&self) -> bool {
+     |            ^^^^^^^^^^^^^^^^^^^^
+...
+1100 |     pub fn is_in_index_partition(&self) -> bool {
+     |            ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `normalize_path` is never used
+    --> src\ltfs_index.rs:1106:8
+     |
+1106 | pub fn normalize_path(path: &str) -> String {
+     |        ^^^^^^^^^^^^^^
+
+warning: function `get_current_timestamp` is never used
+    --> src\ltfs_index.rs:1123:8
+     |
+1123 | pub fn get_current_timestamp() -> String {
+     |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `TapeFileLocation` is never constructed
+    --> src\ltfs_index.rs:1130:12
+     |
+1130 | pub struct TapeFileLocation {
+     |            ^^^^^^^^^^^^^^^^
+
+warning: struct `TapeDataExtent` is never constructed
+    --> src\ltfs_index.rs:1143:12
+     |
+1143 | pub struct TapeDataExtent {
+     |            ^^^^^^^^^^^^^^
+
+warning: struct `TapeVolumeInfo` is never constructed
+    --> src\ltfs_index.rs:1158:12
+     |
+1158 | pub struct TapeVolumeInfo {
+     |            ^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+    --> src\ltfs_index.rs:1171:12
+     |
+1168 | impl LtfsIndex {
+     | -------------- methods in this implementation
+...
+1171 |     pub fn extract_tape_file_locations(&self) -> Vec<...
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1185 |     pub fn find_file_location(&self, file_path: &str)...
+     |            ^^^^^^^^^^^^^^^^^^
+...
+1206 |     pub fn validate_for_tape_reading(&self) -> Result...
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1248 |     pub fn get_tape_volume_info(&self) -> TapeVolumeI...
+     |            ^^^^^^^^^^^^^^^^^^^^
+...
+1261 |     pub fn count_total_files(&self) -> usize {
+     |            ^^^^^^^^^^^^^^^^^
+...
+1269 |     fn extract_locations_from_directory(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1285 |     fn create_tape_location(&self, file: &File) -> Ta...
+     |        ^^^^^^^^^^^^^^^^^^^^
+...
+1307 |     fn search_file_in_directory(
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1329 |     fn count_files_recursively(&self, directory: &Dir...
+     |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `end_block` and `is_in_data_partition` are never used
+    --> src\ltfs_index.rs:1339:12
+     |
+1337 | impl TapeDataExtent {
+     | ------------------- methods in this implementation
+1338 |     /// 隶｡邂容xtent蝨ｨ逎∝ｸｦ荳顔噪扈捺據菴咲ｽｮ
+1339 |     pub fn end_block(&self) -> u64 {
+     |            ^^^^^^^^^
+...
+1345 |     pub fn is_in_data_partition(&self) -> bool {
+     |            ^^^^^^^^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+    --> src\scsi\mod.rs:57:12
+     |
+46   | impl ScsiInterface {
+     | ------------------ associated items in this implementation
+...
+57   |     pub fn with_drive_type(drive_type: DriveType) -> ...
+     |            ^^^^^^^^^^^^^^^
+...
+297  |     pub fn load_tape(&self) -> Result<bool> {
+     |            ^^^^^^^^^
+...
+322  |     pub fn load_unload_enhanced(&self, load_option: L...
+     |            ^^^^^^^^^^^^^^^^^^^^
+...
+366  |     pub fn send_scsi_command(
+     |            ^^^^^^^^^^^^^^^^^
+...
+419  |     pub fn inquiry(&self, page_code: Option<u8>) -> R...
+     |            ^^^^^^^
+...
+469  |     pub fn read_block_limits(&self) -> Result<(u32, u...
+     |            ^^^^^^^^^^^^^^^^^
+...
+608  |     pub fn read_eow_position(&self) -> Result<Vec<u8>> {
+     |            ^^^^^^^^^^^^^^^^^
+...
+729  |     pub fn eject_tape(&self) -> Result<bool> {
+     |            ^^^^^^^^^^
+...
+1072 |     pub fn read_blocks_with_retry(
+     |            ^^^^^^^^^^^^^^^^^^^^^^
+...
+1122 |     fn recover_tape_position(&self) -> Result<()> {
+     |        ^^^^^^^^^^^^^^^^^^^^^
+...
+1469 |     pub fn read_mam_attribute(&self, attribute_id: u1...
+     |            ^^^^^^^^^^^^^^^^^^
+...
+2369 |     pub fn locate_block_enhanced(&self, partition: u8...
+     |            ^^^^^^^^^^^^^^^^^^^^^
+...
+2386 |     pub fn set_drive_type(&mut self, drive_type: Driv...
+     |            ^^^^^^^^^^^^^^
+...
+2392 |     pub fn set_allow_partition(&mut self, allow: bool) {
+     |            ^^^^^^^^^^^^^^^^^^^
+...
+2398 |     pub fn get_drive_type(&self) -> DriveType {
+     |            ^^^^^^^^^^^^^^
+...
+2546 |     pub fn read_position_raw(&self) -> Result<Vec<u8>> {
+     |            ^^^^^^^^^^^^^^^^^
+...
+2588 |     pub fn parse_partition_info(&self, mode_sense_dat...
+     |            ^^^^^^^^^^^^^^^^^^^^
+...
+2637 |     fn parse_medium_configuration_page(&self, page_da...
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `check_tape_media` is never used
+    --> src\scsi\mod.rs:2696:8
+     |
+2696 | pub fn check_tape_media(tape_drive: &str) -> Result<M...
+     |        ^^^^^^^^^^^^^^^^
+
+warning: function `load_tape` is never used
+    --> src\scsi\mod.rs:2703:8
+     |
+2703 | pub fn load_tape(tape_drive: &str) -> Result<bool> {
+     |        ^^^^^^^^^
+
+warning: function `eject_tape` is never used
+    --> src\scsi\mod.rs:2710:8
+     |
+2710 | pub fn eject_tape(tape_drive: &str) -> Result<bool> {
+     |        ^^^^^^^^^^
+
+warning: function `locate_block` is never used
+    --> src\scsi\mod.rs:2717:8
+     |
+2717 | pub fn locate_block(tape_drive: &str, block_address: ...
+     |        ^^^^^^^^^^^^
+
+warning: function `locate_with_type` is never used
+    --> src\scsi\mod.rs:2724:8
+     |
+2724 | pub fn locate_with_type(
+     |        ^^^^^^^^^^^^^^^^
+
+warning: function `locate_with_drive_type` is never used
+    --> src\scsi\mod.rs:2736:8
+     |
+2736 | pub fn locate_with_drive_type(
+     |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `locate_to_filemark` is never used
+    --> src\scsi\mod.rs:2749:8
+     |
+2749 | pub fn locate_to_filemark(tape_drive: &str, filemark_...
+     |        ^^^^^^^^^^^^^^^^^^
+
+warning: function `locate_to_eod` is never used
+    --> src\scsi\mod.rs:2756:8
+     |
+2756 | pub fn locate_to_eod(tape_drive: &str, partition: u8)...
+     |        ^^^^^^^^^^^^^
+
+warning: function `bytes_to_string` is never used
+    --> src\scsi\mod.rs:2784:8
+     |
+2784 | pub fn bytes_to_string(bytes: &[u8]) -> String {
+     |        ^^^^^^^^^^^^^^^
+
+warning: methods `set_capacity`, `format_tape`, `partition_tape`, `set_mam_attribute`, `set_barcode`, and `mode_select_partition` are never used
+    --> src\scsi\mod.rs:2791:12
+     |
+2789 | impl ScsiInterface {
+     | ------------------ methods in this implementation
+2790 |     /// Set tape capacity using SCSI Space command (蟇ｹ蠎猫...
+2791 |     pub fn set_capacity(&self, capacity: u16) -> Resu...
+     |            ^^^^^^^^^^^^
+...
+2821 |     pub fn format_tape(&self, immediate_mode: bool) -...
+     |            ^^^^^^^^^^^
+...
+2845 |     pub fn partition_tape(&self, partition_type: u8) ...
+     |            ^^^^^^^^^^^^^^
+...
+2872 |     pub fn set_mam_attribute(
+     |            ^^^^^^^^^^^^^^^^^
+...
+2937 |     pub fn set_barcode(&self, barcode: &str) -> Resul...
+     |            ^^^^^^^^^^^
+...
+2950 |     pub fn mode_select_partition(
+     |            ^^^^^^^^^^^^^^^^^^^^^
+
+warning: methods `read_file_mark_fixed`, `read_data_partition_index_enhanced`, and `diagnose_read_filemark_behavior` are never used
+    --> src\scsi\mod.rs:3018:12
+     |
+3013 | impl ScsiInterface {
+     | ------------------ methods in this implementation
+...
+3018 |     pub fn read_file_mark_fixed(&self) -> Result<bool> {
+     |            ^^^^^^^^^^^^^^^^^^^^
+...
+3170 |     pub fn read_data_partition_index_enhanced(&self) ...
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+3271 |     pub fn diagnose_read_filemark_behavior(&self) -> ...
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `ReadFileMarkDiagnostic` is never constructed
+    --> src\scsi\mod.rs:3324:12
+     |
+3324 | pub struct ReadFileMarkDiagnostic {
+     |            ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `new`, `analyze_results`, and `print_report` are never used
+    --> src\scsi\mod.rs:3348:8
+     |
+3347 | impl ReadFileMarkDiagnostic {
+     | --------------------------- associated items in this implementation
+3348 |     fn new() -> Self {
+     |        ^^^
+...
+3367 |     fn analyze_results(&mut self) {
+     |        ^^^^^^^^^^^^^^^
+...
+3421 |     pub fn print_report(&self) {
+     |            ^^^^^^^^^^^^
+
+warning: constant `SCSIOP_INQUIRY` is never used
+  --> src\scsi\constants.rs:10:11
+   |
+10 | pub const SCSIOP_INQUIRY: u8 = 0x12;
+   |           ^^^^^^^^^^^^^^
+
+warning: constant `REWIND` is never used
+  --> src\scsi\constants.rs:24:15
+   |
+24 |     pub const REWIND: u8 = 0x01;
+   |               ^^^^^^
+
+warning: constant `REQUEST_SENSE` is never used
+  --> src\scsi\constants.rs:25:15
+   |
+25 |     pub const REQUEST_SENSE: u8 = 0x03;
+   |               ^^^^^^^^^^^^^
+
+warning: constant `FORMAT_UNIT` is never used
+  --> src\scsi\constants.rs:26:15
+   |
+26 |     pub const FORMAT_UNIT: u8 = 0x04;
+   |               ^^^^^^^^^^^
+
+warning: constant `WRITE_FILEMARKS_6` is never used
+  --> src\scsi\constants.rs:29:15
+   |
+29 |     pub const WRITE_FILEMARKS_6: u8 = 0x10;
+   |               ^^^^^^^^^^^^^^^^^
+
+warning: constant `INQUIRY` is never used
+  --> src\scsi\constants.rs:31:15
+   |
+31 |     pub const INQUIRY: u8 = 0x12;
+   |               ^^^^^^^
+
+warning: constant `MODE_SELECT_6` is never used
+  --> src\scsi\constants.rs:32:15
+   |
+32 |     pub const MODE_SELECT_6: u8 = 0x15;
+   |               ^^^^^^^^^^^^^
+
+warning: constant `RESERVE_6` is never used
+  --> src\scsi\constants.rs:33:15
+   |
+33 |     pub const RESERVE_6: u8 = 0x16;
+   |               ^^^^^^^^^
+
+warning: constant `RELEASE_6` is never used
+  --> src\scsi\constants.rs:34:15
+   |
+34 |     pub const RELEASE_6: u8 = 0x17;
+   |               ^^^^^^^^^
+
+warning: constant `ERASE` is never used
+  --> src\scsi\constants.rs:35:15
+   |
+35 |     pub const ERASE: u8 = 0x19;
+   |               ^^^^^
+
+warning: constant `MODE_SENSE_6` is never used
+  --> src\scsi\constants.rs:36:15
+   |
+36 |     pub const MODE_SENSE_6: u8 = 0x1A;
+   |               ^^^^^^^^^^^^
+
+warning: constant `LOAD_UNLOAD` is never used
+  --> src\scsi\constants.rs:37:15
+   |
+37 |     pub const LOAD_UNLOAD: u8 = 0x1B;
+   |               ^^^^^^^^^^^
+
+warning: constant `READ_BUFFER` is never used
+  --> src\scsi\constants.rs:40:15
+   |
+40 |     pub const READ_BUFFER: u8 = 0x3C;
+   |               ^^^^^^^^^^^
+
+warning: constant `WRITE_BUFFER` is never used
+  --> src\scsi\constants.rs:41:15
+   |
+41 |     pub const WRITE_BUFFER: u8 = 0x3B;
+   |               ^^^^^^^^^^^^
+
+warning: constant `READ_BLOCK_LIMITS` is never used
+  --> src\scsi\constants.rs:42:15
+   |
+42 |     pub const READ_BLOCK_LIMITS: u8 = 0x05;
+   |               ^^^^^^^^^^^^^^^^^
+
+warning: constant `READ_ATTRIBUTE` is never used
+  --> src\scsi\constants.rs:44:15
+   |
+44 |     pub const READ_ATTRIBUTE: u8 = 0x8C;
+   |               ^^^^^^^^^^^^^^
+
+warning: constant `WRITE_ATTRIBUTE` is never used
+  --> src\scsi\constants.rs:45:15
+   |
+45 |     pub const WRITE_ATTRIBUTE: u8 = 0x8D;
+   |               ^^^^^^^^^^^^^^^
+
+warning: constant `MIN_BLOCK_SIZE` is never used
+  --> src\scsi\constants.rs:51:15
+   |
+51 |     pub const MIN_BLOCK_SIZE: u32 = 512;
+   |               ^^^^^^^^^^^^^^
+
+warning: constant `MAX_BLOCK_SIZE` is never used
+  --> src\scsi\constants.rs:52:15
+   |
+52 |     pub const MAX_BLOCK_SIZE: u32 = 1048576; // 1MB max...
+   |               ^^^^^^^^^^^^^^
+
+warning: method `description` is never used
+  --> src\scsi\types.rs:66:12
+   |
+33 | impl MediaType {
+   | -------------- method in this implementation
+...
+66 |     pub fn description(&self) -> &'static str {
+   |            ^^^^^^^^^^^
+
+warning: struct `MamAttribute` is never constructed
+   --> src\scsi\types.rs:111:12
+    |
+111 | pub struct MamAttribute {
+    |            ^^^^^^^^^^^^
+
+warning: variants `Blocks` and `SequentialFileMarks` are never constructed
+   --> src\scsi\types.rs:121:5
+    |
+120 | pub enum SpaceType {
+    |          --------- variants in this enum
+121 |     Blocks = 0,
+    |     ^^^^^^
+122 |     FileMarks = 1,
+123 |     SequentialFileMarks = 2,
+    |     ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `SpaceType` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variant `FileMark` is never constructed
+   --> src\scsi\types.rs:133:5
+    |
+129 | pub enum LocateDestType {
+    |          -------------- variant in this enum
+...
+133 |     FileMark = 1,
+    |     ^^^^^^^^
+    |
+    = note: `LocateDestType` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variants `SLR3`, `SLR1`, and `M2488` are never constructed
+   --> src\scsi\types.rs:144:5
+    |
+140 | pub enum DriveType {
+    |          --------- variants in this enum
+...
+144 |     SLR3,
+    |     ^^^^
+145 |     /// Legacy SLR1 drive type
+146 |     SLR1,
+    |     ^^^^
+147 |     /// M2488 drive type
+148 |     M2488,
+    |     ^^^^^
+    |
+    = note: `DriveType` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: enum `LoadOption` is never used
+   --> src\scsi\types.rs:153:10
+    |
+153 | pub enum LoadOption {
+    |          ^^^^^^^^^^
+
+warning: enum `MamAttributeFormat` is never used
+   --> src\scsi\types.rs:165:10
+    |
+165 | pub enum MamAttributeFormat {
+    |          ^^^^^^^^^^^^^^^^^^
+
+warning: struct `TapeDriveInfo` is never constructed
+   --> src\scsi\types.rs:173:12
+    |
+173 | pub struct TapeDriveInfo {
+    |            ^^^^^^^^^^^^^
+
+warning: function `list_devices` is never used
+  --> src\tape.rs:85:14
+   |
+85 | pub async fn list_devices(_detailed: bool) -> Result<()> {
+   |              ^^^^^^^^^^^^
+
+warning: function `get_device_info` is never used
+   --> src\tape.rs:101:14
+    |
+101 | pub async fn get_device_info(device: String) -> Result...
+    |              ^^^^^^^^^^^^^^^
+
+warning: function `get_device_status` is never used
+   --> src\tape.rs:131:14
+    |
+131 | pub async fn get_device_status(device: String) -> Resu...
+    |              ^^^^^^^^^^^^^^^^^
+
+warning: function `list_windows_tape_devices` is never used
+   --> src\tape.rs:171:10
+    |
+171 | async fn list_windows_tape_devices(detailed: bool) -> ...
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `get_detailed_device_info` is never used
+   --> src\tape.rs:263:10
+    |
+263 | async fn get_detailed_device_info(device_path: &str) -...
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `format_bytes` is never used
+  --> src\tape_ops\mod.rs:21:4
+   |
+21 | fn format_bytes(bytes: u64) -> String {
+   |    ^^^^^^^^^^^^
+
+warning: enum `LtfsFormatStatus` is never used
+  --> src\tape_ops\mod.rs:61:10
+   |
+61 | pub enum LtfsFormatStatus {
+   |          ^^^^^^^^^^^^^^^^
+
+warning: methods `description`, `is_usable`, and `is_ltfs_formatted` are never used
+  --> src\tape_ops\mod.rs:80:12
+   |
+78 | impl LtfsFormatStatus {
+   | --------------------- methods in this implementation
+79 |     /// Get human-readable description of the status
+80 |     pub fn description(&self) -> &'static str {
+   |            ^^^^^^^^^^^
+...
+93 |     pub fn is_usable(&self) -> bool {
+   |            ^^^^^^^^^
+...
+98 |     pub fn is_ltfs_formatted(&self) -> bool {
+   |            ^^^^^^^^^^^^^^^^^
+
+warning: enum `PathContent` is never used
+   --> src\tape_ops\mod.rs:105:10
+    |
+105 | pub enum PathContent {
+    |          ^^^^^^^^^^^
+
+warning: struct `DirectoryEntry` is never constructed
+   --> src\tape_ops\mod.rs:119:12
+    |
+119 | pub struct DirectoryEntry {
+    |            ^^^^^^^^^^^^^^
+
+warning: struct `FileInfo` is never constructed
+   --> src\tape_ops\mod.rs:129:12
+    |
+129 | pub struct FileInfo {
+    |            ^^^^^^^^
+
+warning: struct `ExtractionResult` is never constructed
+   --> src\tape_ops\mod.rs:139:12
+    |
+139 | pub struct ExtractionResult {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: struct `TapeMediumInfo` is never constructed
+   --> src\tape_ops\mod.rs:148:12
+    |
+148 | pub struct TapeMediumInfo {
+    |            ^^^^^^^^^^^^^^
+
+warning: struct `TapeSpaceInfo` is never constructed
+   --> src\tape_ops\mod.rs:157:12
+    |
+157 | pub struct TapeSpaceInfo {
+    |            ^^^^^^^^^^^^^
+
+warning: associated items `new` and `get_medium_info` are never used
+   --> src\tape_ops\mod.rs:171:12
+    |
+169 | impl LtfsAccess {
+    | --------------- associated items in this implementation
+170 |     /// Create new LTFS access instance
+171 |     pub fn new(device_path: String) -> Self {
+    |            ^^^
+...
+176 |     pub async fn get_medium_info(&self) -> Result<Tape...
+    |                  ^^^^^^^^^^^^^^^
+
+warning: multiple fields are never read
+   --> src\tape_ops\mod.rs:185:9
+    |
+184 | pub struct FileWriteEntry {
+    |            -------------- fields in this struct
+185 |     pub source_path: PathBuf,
+    |         ^^^^^^^^^^^
+186 |     pub target_path: String,
+    |         ^^^^^^^^^^^
+187 |     pub tape_path: String,
+    |         ^^^^^^^^^
+188 |     pub file_size: u64,
+    |         ^^^^^^^^^
+189 |     pub size: u64,
+    |         ^^^^
+190 |     pub is_directory: bool,
+    |         ^^^^^^^^^^^^
+191 |     pub preserve_permissions: bool,
+    |         ^^^^^^^^^^^^^^^^^^^^
+192 |     pub modified: bool,
+    |         ^^^^^^^^
+193 |     pub overwrite: bool,
+    |         ^^^^^^^^^
+194 |     pub hash: Option<String>,
+    |         ^^^^
+    |
+    = note: `FileWriteEntry` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: multiple fields are never read
+   --> src\tape_ops\mod.rs:200:9
+    |
+199 | pub struct WriteProgress {
+    |            ------------- fields in this struct
+200 |     pub total_files_processed: u64,
+    |         ^^^^^^^^^^^^^^^^^^^^^
+201 |     pub current_files_processed: u64,
+202 |     pub total_bytes_processed: u64,
+    |         ^^^^^^^^^^^^^^^^^^^^^
+...
+205 |     pub files_in_queue: usize,
+    |         ^^^^^^^^^^^^^^
+...
+208 |     pub total_files: u64,
+    |         ^^^^^^^^^^^
+209 |     pub total_bytes: u64,
+    |         ^^^^^^^^^^^
+210 |     pub current_file: String,
+    |         ^^^^^^^^^^^^
+211 |     pub errors: Vec<String>,
+    |         ^^^^^^
+    |
+    = note: `WriteProgress` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: multiple fields are never read
+   --> src\tape_ops\mod.rs:227:9
+    |
+218 | pub struct WriteOptions {
+    |            ------------ fields in this struct
+...
+227 |     pub compression: bool,
+    |         ^^^^^^^^^^^
+228 |     pub verify_writes: bool,
+    |         ^^^^^^^^^^^^^
+...
+231 |     pub buffer_size: usize,
+    |         ^^^^^^^^^^^
+232 |     pub max_retry_attempts: u32,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+239 |     pub preload_file_count: u32, // Number of files to...
+    |         ^^^^^^^^^^^^^^^^^^
+240 |     pub ignore_volume_overflow: bool, // Ignore volume...
+    |         ^^^^^^^^^^^^^^^^^^^^^^
+241 |     pub auto_clean_enabled: bool, // Auto clean on write
+    |         ^^^^^^^^^^^^^^^^^^
+242 |     pub power_policy_on_write: bool, // Change power p...
+    |         ^^^^^^^^^^^^^^^^^^^^^
+...
+248 |     pub hash_sha256_enabled: bool,
+    |         ^^^^^^^^^^^^^^^^^^^
+...
+251 |     pub extended_hashing: bool,   // Enable extended h...
+    |         ^^^^^^^^^^^^^^^^
+252 |     pub compatibility_mode: bool, // MD5 compatibility...
+    |         ^^^^^^^^^^^^^^^^^^
+    |
+    = note: `WriteOptions` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `TapeCapacityInfo` is never constructed
+   --> src\tape_ops\mod.rs:298:12
+    |
+298 | pub struct TapeCapacityInfo {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: struct `CleaningStatus` is never constructed
+   --> src\tape_ops\mod.rs:308:12
+    |
+308 | pub struct CleaningStatus {
+    |            ^^^^^^^^^^^^^^
+
+warning: struct `EncryptionStatus` is never constructed
+   --> src\tape_ops\mod.rs:316:12
+    |
+316 | pub struct EncryptionStatus {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: fields `position`, `blocks_written`, and `bytes_written` are never read
+   --> src\tape_ops\mod.rs:325:9
+    |
+324 | pub struct WriteResult {
+    |            ----------- fields in this struct
+325 |     pub position: crate::scsi::TapePosition,
+    |         ^^^^^^^^
+326 |     pub blocks_written: u32,
+    |         ^^^^^^^^^^^^^^
+327 |     pub bytes_written: u64,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `WriteResult` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `IndexStatistics` is never constructed
+   --> src\tape_ops\mod.rs:332:12
+    |
+332 | pub struct IndexStatistics {
+    |            ^^^^^^^^^^^^^^^
+
+warning: fields `media_description`, `error_rate_log_value`, `capacity_loss`, `is_worm`, `is_write_protected`, and `generation_info` are never read
+  --> src\tape_ops\capacity_manager.rs:18:9
+   |
+8  | pub struct TapeCapacityInfo {
+   |            ---------------- fields in this struct
+...
+18 |     pub media_description: String,
+   |         ^^^^^^^^^^^^^^^^^
+19 |     /// 髞呵ｯｯ邇・律蠢怜ｼ
+20 |     pub error_rate_log_value: f64,
+   |         ^^^^^^^^^^^^^^^^^^^^
+21 |     /// 螳ｹ驥乗此螟ｱ (bytes) - 蜿ｯ騾・22 |     pub capacity_loss: Option<u64>,
+   |         ^^^^^^^^^^^^^
+23 |     /// 譏ｯ蜷ｦ荳ｺWORM逎∝ｸｦ
+24 |     pub is_worm: bool,
+   |         ^^^^^^^
+25 |     /// 譏ｯ蜷ｦ荳ｺ蜿ｪ隸ｻ逎∝ｸｦ
+26 |     pub is_write_protected: bool,
+   |         ^^^^^^^^^^^^^^^^^^
+27 |     /// 逎∝ｸｦ莉｣謨ｰ菫｡諱ｯ
+28 |     pub generation_info: String,
+   |         ^^^^^^^^^^^^^^^
+   |
+   = note: `TapeCapacityInfo` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `ErrorRateInfo` is never constructed
+  --> src\tape_ops\capacity_manager.rs:33:12
+   |
+33 | pub struct ErrorRateInfo {
+   |            ^^^^^^^^^^^^^
+
+warning: struct `VolumeStatsPageParser` is never constructed
+   --> src\tape_ops\capacity_manager.rs:177:12
+    |
+177 | pub struct VolumeStatsPageParser {
+    |            ^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `new`, `get_generation_info`, `get_worm_status`, `get_write_protection_status`, and `get_page_data` are never used
+   --> src\tape_ops\capacity_manager.rs:182:12
+    |
+181 | impl VolumeStatsPageParser {
+    | -------------------------- associated items in this implementation
+182 |     pub fn new(page_data: Vec<u8>) -> Self {
+    |            ^^^
+...
+187 |     pub fn get_generation_info(&self) -> Result<Option...
+    |            ^^^^^^^^^^^^^^^^^^^
+...
+200 |     pub fn get_worm_status(&self) -> Result<bool> {
+    |            ^^^^^^^^^^^^^^^
+...
+210 |     pub fn get_write_protection_status(&self) -> Resul...
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+220 |     fn get_page_data(&self, page_id: u8) -> Result<Opt...
+    |        ^^^^^^^^^^^^^
+
+warning: struct `CapacityManager` is never constructed
+   --> src\tape_ops\capacity_manager.rs:248:12
+    |
+248 | pub struct CapacityManager {
+    |            ^^^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> src\tape_ops\capacity_manager.rs:261:12
+    |
+259 | impl CapacityManager {
+    | -------------------- associated items in this implementation
+260 |     /// 蛻帛ｻｺ譁ｰ逧・ｮｹ驥冗ｮ｡逅・勣螳樔ｾ・261 |     pub fn new(scsi: Arc<ScsiInterface>, offline_mode:...
+    |            ^^^
+...
+272 |     pub async fn refresh_capacity(&mut self, extra_par...
+    |                  ^^^^^^^^^^^^^^^^
+...
+364 |     pub async fn read_error_rate_info(&mut self) -> Re...
+    |                  ^^^^^^^^^^^^^^^^^^^^
+...
+394 |     fn read_werl_header(&self) -> Result<Vec<u8>> {
+    |        ^^^^^^^^^^^^^^^^
+...
+407 |     fn read_werl_page(&self, page_length: u16) -> Resu...
+    |        ^^^^^^^^^^^^^^
+...
+424 |     fn parse_werl_data(&mut self, werl_data: &[u8]) ->...
+    |        ^^^^^^^^^^^^^^^
+...
+491 |     fn parse_generation_string(&self, gen_str: &str) -...
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+...
+513 |     fn build_media_description(&self, generation: &str...
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+...
+530 |     fn read_mam_capacity(&self, partition: u8, extra_p...
+    |        ^^^^^^^^^^^^^^^^^
+...
+564 |     fn get_simulated_capacity_info(&self) -> TapeCapac...
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+580 |     pub fn get_error_rate_history(&self) -> &[f64] {
+    |            ^^^^^^^^^^^^^^^^^^^^^^
+...
+585 |     pub fn clear_error_rate_history(&mut self) {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: fields `last_adjustment`, `adaptive_mode`, and `burst_allowance` are never read
+  --> src\tape_ops\core.rs:20:9
+   |
+12 | pub struct SpeedLimiter {
+   |            ------------ fields in this struct
+...
+20 |     pub last_adjustment: Instant,
+   |         ^^^^^^^^^^^^^^^
+21 |     /// 閾ｪ騾ょｺ疲ｨ｡蠑丞星逕ｨ迥ｶ諤・22 |     pub adaptive_mode: bool,
+   |         ^^^^^^^^^^^^^
+23 |     /// 遯∝書莨霎灘・隶ｸ逧・怙螟ｧ蟄苓鰍謨ｰ
+24 |     pub burst_allowance: u64,
+   |         ^^^^^^^^^^^^^^^
+   |
+   = note: `SpeedLimiter` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated items `new` and `get_current_rate` are never used
+  --> src\tape_ops\core.rs:29:12
+   |
+27 | impl SpeedLimiter {
+   | ----------------- associated items in this implementation
+28 |     /// 蛻帛ｻｺ譁ｰ逧・溷ｺｦ髯仙宛蝎ｨ
+29 |     pub fn new(target_rate_mbps: u32) -> Self {
+   |            ^^^
+...
+89 |     pub fn get_current_rate(&self) -> u64 {
+   |            ^^^^^^^^^^^^^^^^
+
+warning: fields `current_transfer_rate`, `target_speed_limit`, `memory_usage`, `queued_operations`, and `monitoring_enabled` are never read
+   --> src\tape_ops\core.rs:115:9
+    |
+113 | pub struct PerformanceControlState {
+    |            ----------------------- fields in this struct
+114 |     /// 蠖灘燕莨霎馴溷ｺｦ (蟄苓鰍/遘・
+115 |     pub current_transfer_rate: u64,
+    |         ^^^^^^^^^^^^^^^^^^^^^
+116 |     /// 逶ｮ譬・溷ｺｦ髯仙宛 (蟄苓鰍/遘・
+117 |     pub target_speed_limit: Option<u64>,
+    |         ^^^^^^^^^^^^^^^^^^
+...
+123 |     pub memory_usage: u64,
+    |         ^^^^^^^^^^^^
+...
+127 |     pub queued_operations: u32,
+    |         ^^^^^^^^^^^^^^^^^
+128 |     /// 諤ｧ閭ｽ逶第而蜷ｯ逕ｨ迥ｶ諤・129 |     pub monitoring_enabled: bool,
+    |         ^^^^^^^^^^^^^^^^^^
+    |
+    = note: `PerformanceControlState` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: multiple methods are never used
+    --> src\tape_ops\core.rs:224:12
+     |
+186  | impl TapeOperations {
+     | ------------------- methods in this implementation
+...
+224  |     pub fn set_speed_limit(&mut self, limit: Option<u...
+     |            ^^^^^^^^^^^^^^^
+...
+240  |     pub fn set_max_concurrent_operations(&mut self, m...
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+250  |     pub fn set_memory_limit(&mut self, memory_limit_m...
+     |            ^^^^^^^^^^^^^^^^
+...
+259  |     pub async fn get_performance_status(&self) -> Per...
+     |                  ^^^^^^^^^^^^^^^^^^^^^^
+...
+431  |     pub async fn get_performance_report(&self) -> Str...
+     |                  ^^^^^^^^^^^^^^^^^^^^^^
+...
+544  |     pub fn reset_performance_stats(&mut self) {
+     |            ^^^^^^^^^^^^^^^^^^^^^^^
+...
+562  |     pub fn enable_adaptive_performance(&mut self) {
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+591  |     pub fn configure_deduplication(
+     |            ^^^^^^^^^^^^^^^^^^^^^^^
+...
+621  |     pub fn get_deduplication_stats(&self) -> Option<s...
+     |            ^^^^^^^^^^^^^^^^^^^^^^^
+...
+628  |     pub fn save_deduplication_database(&mut self) -> ...
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+642  |     pub fn stop_write(&mut self) {
+     |            ^^^^^^^^^^
+...
+648  |     pub fn set_pause(&mut self, pause: bool) {
+     |            ^^^^^^^^^
+...
+1075 |     pub async fn update_index_on_tape_manual_new(&mut...
+     |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1143 |     pub async fn read_error_rate_info(&mut self) -> R...
+     |                  ^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `ExtractResult` is never constructed
+    --> src\tape_ops\core.rs:1218:12
+     |
+1218 | pub struct ExtractResult {
+     |            ^^^^^^^^^^^^^
+
+warning: associated items `compute_file_hash`, `display_name`, and `recommended_order` are never used
+   --> src\tape_ops\deduplication.rs:53:12
+    |
+28  | impl HashType {
+    | ------------- associated items in this implementation
+...
+53  |     pub fn compute_file_hash<P: AsRef<Path>>(&self, fi...
+    |            ^^^^^^^^^^^^^^^^^
+...
+121 |     pub fn display_name(&self) -> &'static str {
+    |            ^^^^^^^^^^^^
+...
+132 |     pub fn recommended_order() -> Vec<HashType> {
+    |            ^^^^^^^^^^^^^^^^^
+
+warning: struct `HashManager` is never constructed
+   --> src\tape_ops\deduplication.rs:144:12
+    |
+144 | pub struct HashManager {
+    |            ^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> src\tape_ops\deduplication.rs:152:12
+    |
+150 | impl HashManager {
+    | ---------------- associated items in this implementation
+151 |     /// 蛻帛ｻｺ譁ｰ逧・嶋蟶檎ｮ｡逅・勣
+152 |     pub fn new(enabled_algorithms: Vec<HashType>) -> S...
+    |            ^^^
+...
+161 |     pub fn with_progress_callback<F>(&mut self, callba...
+    |            ^^^^^^^^^^^^^^^^^^^^^^
+...
+170 |     pub fn with_chunk_size(&mut self, chunk_size: usiz...
+    |            ^^^^^^^^^^^^^^^
+...
+176 |     pub fn compute_file_hashes<P: AsRef<Path>>(&self, ...
+    |            ^^^^^^^^^^^^^^^^^^^
+...
+275 |     pub fn verify_file_hashes<P: AsRef<Path>>(&self, f...
+    |            ^^^^^^^^^^^^^^^^^^
+...
+295 |     pub fn enabled_algorithms(&self) -> &[HashType] {
+    |            ^^^^^^^^^^^^^^^^^^
+...
+300 |     pub fn enable_algorithm(&mut self, hash_type: Hash...
+    |            ^^^^^^^^^^^^^^^^
+...
+307 |     pub fn disable_algorithm(&mut self, hash_type: &Ha...
+    |            ^^^^^^^^^^^^^^^^^
+...
+312 |     pub fn from_write_options(options: &WriteOptions) ...
+    |            ^^^^^^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> src\tape_ops\deduplication.rs:401:12
+    |
+399 | impl DeduplicationDatabase {
+    | -------------------------- associated items in this implementation
+400 |     /// 莉取枚莉ｶ蜉霓ｽ蜴ｻ驥肴焚謐ｮ蠎・401 |     pub fn load_from_file<P: AsRef<Path>>(path: P) -> ...
+    |            ^^^^^^^^^^^^^^
+...
+422 |     pub fn save_to_file<P: AsRef<Path>>(&mut self, pat...
+    |            ^^^^^^^^^^^^
+...
+453 |     pub fn create_backup<P: AsRef<Path>>(&self, backup...
+    |            ^^^^^^^^^^^^^
+...
+471 |     pub fn restore_from_backup<P: AsRef<Path>>(backup_...
+    |            ^^^^^^^^^^^^^^^^^^^
+...
+485 |     pub fn compact(&mut self) -> Result<usize> {
+    |            ^^^^^^^
+...
+521 |     pub fn get_database_info(&self) -> DatabaseInfo {
+    |            ^^^^^^^^^^^^^^^^^
+...
+554 |     pub fn export_to_csv<P: AsRef<Path>>(&self, csv_pa...
+    |            ^^^^^^^^^^^^^
+...
+604 |     pub fn import_from_csv<P: AsRef<Path>>(csv_path: P...
+    |            ^^^^^^^^^^^^^^^
+...
+681 |     pub fn get_duplicate_stats(&self) -> DuplicateStats {
+    |            ^^^^^^^^^^^^^^^^^^^
+...
+708 |     pub fn cleanup_stale_records(&mut self, max_age_da...
+    |            ^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `database_path` is never read
+   --> src\tape_ops\deduplication.rs:768:5
+    |
+766 | pub struct DeduplicationManager {
+    |            -------------------- field in this struct
+767 |     database: DeduplicationDatabase,
+768 |     database_path: PathBuf,
+    |     ^^^^^^^^^^^^^
+
+warning: associated items `new`, `save_database`, `get_stats`, `cleanup_stale_records`, `set_enabled`, and `is_enabled` are never used
+   --> src\tape_ops\deduplication.rs:775:12
+    |
+773 | impl DeduplicationManager {
+    | ------------------------- associated items in this implementation
+774 |     /// 蛻帛ｻｺ譁ｰ逧・悉驥咲ｮ｡逅・勣
+775 |     pub fn new<P: AsRef<Path>>(database_path: P, enabl...
+    |            ^^^
+...
+850 |     pub fn save_database(&mut self) -> Result<()> {
+    |            ^^^^^^^^^^^^^
+...
+855 |     pub fn get_stats(&self) -> DuplicateStats {
+    |            ^^^^^^^^^
+...
+860 |     pub fn cleanup_stale_records(&mut self, max_age_da...
+    |            ^^^^^^^^^^^^^^^^^^^^^
+...
+865 |     pub fn set_enabled(&mut self, enabled: bool) {
+    |            ^^^^^^^^^^^
+...
+875 |     pub fn is_enabled(&self) -> bool {
+    |            ^^^^^^^^^^
+
+warning: function `create_deduplication_manager` is never used
+   --> src\tape_ops\deduplication.rs:881:8
+    |
+881 | pub fn create_deduplication_manager(options: &WriteOpt...
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `format_file_size` is never used
+   --> src\tape_ops\deduplication.rs:894:8
+    |
+894 | pub fn format_file_size(size: u64) -> String {
+    |        ^^^^^^^^^^^^^^^^
+
+warning: struct `IndexValidator` is never constructed
+ --> src\tape_ops\index_validator.rs:8:12
+  |
+8 | pub struct IndexValidator {
+  |            ^^^^^^^^^^^^^^
+
+warning: multiple variants are never constructed
+  --> src\tape_ops\index_validator.rs:17:5
+   |
+15 | pub enum IndexValidationError {
+   |          -------------------- variants in this enum
+16 |     #[error("邏｢蠑墓焚謐ｮ荳ｺ遨ｺ")]
+17 |     EmptyData,
+   |     ^^^^^^^^^
+...
+20 |     AllZeroData { size: usize },
+   |     ^^^^^^^^^^^
+...
+23 |     InvalidXmlFormat { reason: String },
+   |     ^^^^^^^^^^^^^^^^
+...
+26 |     MissingLtfsIdentifier { details: String },
+   |     ^^^^^^^^^^^^^^^^^^^^^
+...
+29 |     IncompleteStructure { missing_elements: String },
+   |     ^^^^^^^^^^^^^^^^^^^
+...
+32 |     ContentValidationFailed { reason: String },
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+...
+35 |     UnsupportedVersion { version: String },
+   |     ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `IndexValidationError` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `ValidationResult` is never constructed
+  --> src\tape_ops\index_validator.rs:46:12
+   |
+46 | pub struct ValidationResult {
+   |            ^^^^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> src\tape_ops\index_validator.rs:61:12
+    |
+59  | impl IndexValidator {
+    | ------------------- associated items in this implementation
+60  |     /// 蛻帛ｻｺ譁ｰ逧・ｴ｢蠑暮ｪ瑚ｯ∝勣
+61  |     pub fn new() -> Self {
+    |            ^^^
+...
+69  |     pub fn new_lenient() -> Self {
+    |            ^^^^^^^^^^^
+...
+77  |     pub fn set_strict_mode(&mut self, enabled: bool) {
+    |            ^^^^^^^^^^^^^^^
+...
+82  |     pub fn set_debug_mode(&mut self, enabled: bool) {
+    |            ^^^^^^^^^^^^^^
+...
+87  |     pub fn validate_index_data(&self, data: &[u8]) -> ...
+    |            ^^^^^^^^^^^^^^^^^^^
+...
+137 |     fn validate_basic_data(&self, data: &[u8], result:...
+    |        ^^^^^^^^^^^^^^^^^^^
+...
+177 |     fn validate_xml_format(&self, xml_content: &str, r...
+    |        ^^^^^^^^^^^^^^^^^^^
+...
+223 |     fn validate_ltfs_identifier(&self, xml_content: &s...
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+266 |     fn validate_ltfs_structure(&self, xml_content: &st...
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+...
+316 |     fn validate_content_integrity(&self, xml_content: ...
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+359 |     fn basic_xml_parse_check(&self, xml_content: &str)...
+    |        ^^^^^^^^^^^^^^^^^^^^^
+...
+421 |     fn extract_ltfs_version(&self, xml_content: &str) ...
+    |        ^^^^^^^^^^^^^^^^^^^^
+...
+433 |     fn extract_volume_uuid(&self, xml_content: &str) -...
+    |        ^^^^^^^^^^^^^^^^^^^
+...
+444 |     fn extract_generation_number(&self, xml_content: &...
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+456 |     fn estimate_file_count(&self, xml_content: &str) -...
+    |        ^^^^^^^^^^^^^^^^^^^
+...
+466 |     fn print_validation_details(&self, result: &Valida...
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `validate_index_data` is never used
+   --> src\tape_ops\index_validator.rs:514:8
+    |
+514 | pub fn validate_index_data(data: &[u8]) -> Result<Vali...
+    |        ^^^^^^^^^^^^^^^^^^^
+
+warning: function `validate_index_data_lenient` is never used
+   --> src\tape_ops\index_validator.rs:520:8
+    |
+520 | pub fn validate_index_data_lenient(data: &[u8]) -> Res...
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `is_valid_index_data` is never used
+   --> src\tape_ops\index_validator.rs:526:8
+    |
+526 | pub fn is_valid_index_data(data: &[u8]) -> bool {
+    |        ^^^^^^^^^^^^^^^^^^^
+
+warning: fields `volume_uuid`, `compression`, `index_partition`, `data_partition`, and `format_time` are never read
+  --> src\tape_ops\partition_manager.rs:12:9
+   |
+11 | pub struct LtfsPartitionLabel {
+   |            ------------------ fields in this struct
+12 |     pub volume_uuid: String,
+   |         ^^^^^^^^^^^
+13 |     pub blocksize: u32,
+14 |     pub compression: bool,
+   |         ^^^^^^^^^^^
+15 |     pub index_partition: u8, // 騾壼ｸｸ譏ｯ0 (partition a)
+   |         ^^^^^^^^^^^^^^^
+16 |     pub data_partition: u8,  // 騾壼ｸｸ譏ｯ1 (partition b)
+   |         ^^^^^^^^^^^^^^
+17 |     pub format_time: String,
+   |         ^^^^^^^^^^^
+   |
+   = note: `LtfsPartitionLabel` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variant `IndexFromDataPartition` is never constructed
+  --> src\tape_ops\partition_manager.rs:41:5
+   |
+35 | pub enum PartitionStrategy {
+   |          ----------------- variant in this enum
+...
+41 |     IndexFromDataPartition,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `PartitionStrategy` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `PartitionInfo` is never constructed
+  --> src\tape_ops\partition_manager.rs:46:12
+   |
+46 | pub struct PartitionInfo {
+   |            ^^^^^^^^^^^^^
+
+warning: fields `scsi`, `offline_mode`, and `partition_label` are never read
+  --> src\tape_ops\partition_manager.rs:61:5
+   |
+60 | pub struct PartitionManager {
+   |            ---------------- fields in this struct
+61 |     scsi: Arc<ScsiInterface>,
+   |     ^^^^
+62 |     offline_mode: bool,
+   |     ^^^^^^^^^^^^
+63 |     partition_label: Option<LtfsPartitionLabel>,
+   |     ^^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+   --> src\tape_ops\partition_manager.rs:78:18
+    |
+66  | impl PartitionManager {
+    | --------------------- methods in this implementation
+...
+78  |     pub async fn detect_extra_partition_count(&self) -...
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+127 |     pub async fn determine_partition_strategy(
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+157 |     pub fn map_partition_number(&self, logical_partiti...
+    |            ^^^^^^^^^^^^^^^^^^^^
+...
+215 |     pub fn validate_extra_partition_count(&self, value...
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+234 |     pub fn get_target_partition(&self, logical_partiti...
+    |            ^^^^^^^^^^^^^^^^^^^^
+...
+240 |     async fn check_multi_partition_support(&self) -> R...
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+291 |     async fn fallback_partition_detection(&self) -> Re...
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+322 |     pub async fn detect_partition_sizes(&self) -> Resu...
+    |                  ^^^^^^^^^^^^^^^^^^^^^^
+...
+380 |     async fn estimate_standard_partition_sizes(&self) ...
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+441 |     async fn read_partition_info_from_tape(&self) -> R...
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+514 |     fn estimate_tape_capacity_bytes(&self) -> u64 {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+540 |     pub fn switch_to_partition(&self, partition: u8) -...
+    |            ^^^^^^^^^^^^^^^^^^^
+...
+554 |     pub fn position_to_partition(&self, partition: u8,...
+    |            ^^^^^^^^^^^^^^^^^^^^^
+...
+571 |     pub async fn get_partition_info(&self) -> Result<P...
+    |                  ^^^^^^^^^^^^^^^^^^
+...
+576 |     pub async fn read_partition_labels(&mut self) -> R...
+    |                  ^^^^^^^^^^^^^^^^^^^^^
+...
+598 |     fn parse_ltfs_volume_label(&self, buffer: &[u8]) -...
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+...
+634 |     fn parse_vol1_label(&self, buffer: &[u8]) -> Resul...
+    |        ^^^^^^^^^^^^^^^^
+...
+702 |     fn detect_blocksize_heuristic(&self, buffer: &[u8]...
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+732 |     pub async fn check_partition_support(&self) -> Res...
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^
+...
+737 |     pub async fn validate_partition_configuration(&sel...
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+764 |     pub async fn get_partition_sizes(&self) -> Result<...
+    |                  ^^^^^^^^^^^^^^^^^^^
+...
+773 |     pub async fn partition_health_check(&self) -> Resu...
+    |                  ^^^^^^^^^^^^^^^^^^^^^^
+...
+813 |     pub fn get_partition_label(&self) -> Option<&LtfsP...
+    |            ^^^^^^^^^^^^^^^^^^^
+...
+818 |     pub fn set_partition_label(&mut self, label: LtfsP...
+    |            ^^^^^^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+    --> src\tape_ops\partition_manager.rs:826:18
+     |
+824  | impl crate::tape_ops::TapeOperations {
+     | ------------------------------------ methods in this implementation
+825  |     /// 譽豬句・蛹ｺ螟ｧ蟆・- 菫ｮ螟咲沿譛ｬ・夂峩謗･菴ｿ逕ｨ蟾ｲ謇灘ｼ逧ТCSI隶ｾ螟・826  |     pub async fn detect_partition_sizes(&self) -> Result<PartitionInfo> {
+     |                  ^^^^^^^^^^^^^^^^^^^^^^
+...
+911  |     pub async fn check_multi_partition_support(&self) -> Result<bool> {
+     |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+926  |     pub async fn validate_partition_configuration(&self) -> Result<bool> {
+     |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+955  |     pub async fn get_partition_sizes(&self) -> Result<(u64, u64)> {
+     |                  ^^^^^^^^^^^^^^^^^^^
+...
+966  |     pub async fn partition_health_check(&self) -> Result<bool> {
+     |                  ^^^^^^^^^^^^^^^^^^^^^^
+...
+1006 |     pub fn switch_to_partition(&self, partition: u8) -> Result<()> {
+     |            ^^^^^^^^^^^^^^^^^^^
+...
+1023 |     pub fn position_to_partition(&self, partition: u8, block: u64) -> Result...
+     |            ^^^^^^^^^^^^^^^^^^^^^
+...
+1043 |     pub async fn get_partition_info(&self) -> Result<PartitionInfo> {
+     |                  ^^^^^^^^^^^^^^^^^^
+...
+1150 |     pub async fn try_alternative_index_reading_strategies_partition_async(
+     |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1277 |     pub fn try_read_index_with_ltfscopygui_method(&self, block: u64) -> Resu...
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1700 |     pub fn is_valid_ltfs_index(&self, xml_content: &str) -> bool {
+     |            ^^^^^^^^^^^^^^^^^^^
+...
+1708 |     pub fn try_read_index_at_current_position_sync(&self) -> Result<String> {
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+2031 |     pub fn try_read_index_at_current_position_advanced_sync(&self) -> Result...
+     |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+2078 |     pub async fn search_data_area_for_index_partition(&mut self) -> Result<(...
+     |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+2123 |     pub async fn validate_and_process_index_partition(
+     |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+2163 |     pub async fn try_read_from_data_partition_partition_async(&mut self) -> ...
+     |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: enum `ScsiErrorAction` is never used
+  --> src\tape_ops\write_operations.rs:42:10
+   |
+42 | pub enum ScsiErrorAction {
+   |          ^^^^^^^^^^^^^^^
+
+warning: struct `ScsiErrorHandler` is never constructed
+  --> src\tape_ops\write_operations.rs:50:12
+   |
+50 | pub struct ScsiErrorHandler {
+   |            ^^^^^^^^^^^^^^^^
+
+warning: associated items `new`, `parse_sense_data`, `is_volume_overflow`, `is_end_of_medium_warning`, `handle_write_error`, and `format_sense_hex` are never used
+   --> src\tape_ops\write_operations.rs:56:12
+    |
+55  | impl ScsiErrorHandler {
+    | --------------------- associated items in this implementation
+56  |     pub fn new(max_retries: u32, ignore_volume_overflo...
+    |            ^^^
+...
+65  |     pub fn parse_sense_data(&self, sense_data: &[u8]) ...
+    |            ^^^^^^^^^^^^^^^^
+...
+149 |     pub fn is_volume_overflow(&self, sense_data: &[u8]...
+    |            ^^^^^^^^^^^^^^^^^^
+...
+166 |     pub fn is_end_of_medium_warning(&self, sense_data:...
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+180 |     pub fn handle_write_error(
+    |            ^^^^^^^^^^^^^^^^^^
+...
+238 |     pub fn format_sense_hex(&self, sense_data: &[u8]) ...
+    |            ^^^^^^^^^^^^^^^^
+
+warning: fields `is_index_partition` and `last_filemark_position` are never read
+   --> src\tape_ops\write_operations.rs:252:9
+    |
+249 | ...truct PartitionWriteState {
+    |          ------------------- fields in this struct
+...
+252 | ...ub is_index_partition: bool,
+    |       ^^^^^^^^^^^^^^^^^^
+253 | ...ub last_filemark_position: Option<crate::scsi::Tape...
+    |       ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `PartitionWriteState` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `FilePreReadState` is never constructed
+   --> src\tape_ops\write_operations.rs:258:12
+    |
+258 | pub struct FilePreReadState {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: struct `WritePerformanceStats` is never constructed
+   --> src\tape_ops\write_operations.rs:268:12
+    |
+268 | pub struct WritePerformanceStats {
+    |            ^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `new` and `get_all_hashes` are never used
+   --> src\tape_ops\write_operations.rs:318:12
+    |
+289 | impl CheckSumBlockwiseCalculator {
+    | -------------------------------- associated items in this implementation
+...
+318 |     pub fn new() -> Self {
+    |            ^^^
+...
+439 |     pub fn get_all_hashes(&self) -> HashMap<String, St...
+    |            ^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+    --> src\tape_ops\write_operations.rs:1384:18
+     |
+463  | impl TapeOperations {
+     | ------------------- methods in this implementation
+...
+1384 |     pub async fn write_files_async(&mut self, file_en...
+     |                  ^^^^^^^^^^^^^^^^^
+...
+1614 |     fn create_directory_in_index(&mut self, source_di...
+     |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1685 |     pub async fn update_ltfs_index(&mut self) -> Resu...
+     |                  ^^^^^^^^^^^^^^^^^
+...
+1690 |     pub async fn write_index_to_tape(&mut self) -> Re...
+     |                  ^^^^^^^^^^^^^^^^^^^
+...
+1695 |     pub async fn commit_index_changes(&mut self) -> R...
+     |                  ^^^^^^^^^^^^^^^^^^^^
+...
+1701 |     pub async fn update_index_on_tape(&mut self) -> R...
+     |                  ^^^^^^^^^^^^^^^^^^^^
+...
+1706 |     pub async fn update_index_on_tape_with_options(&m...
+     |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1927 |     pub async fn process_file_entry(&mut self, entry:...
+     |                  ^^^^^^^^^^^^^^^^^^
+...
+1934 |     pub async fn calculate_file_hash(&self, file_path...
+     |                  ^^^^^^^^^^^^^^^^^^^
+...
+2007 |     pub async fn verify_written_data(&self, source_pa...
+     |                  ^^^^^^^^^^^^^^^^^^^
+...
+2035 |     pub fn update_write_progress(&mut self, files_pro...
+     |            ^^^^^^^^^^^^^^^^^^^^^
+
+warning: `rust-ltfs` (bin "rustltfs") generated 132 warnings (11 duplicates)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.26s
