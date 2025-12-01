@@ -46,18 +46,6 @@ pub enum Commands {
         #[arg(value_name = "SOURCE")]
         source: Option<PathBuf>,
 
-        /// Skip automatic index reading (offline mode)
-        #[arg(short = 's', long = "skip-index")]
-        skip_index: bool,
-
-        /// Load index from local file instead of tape
-        #[arg(short = 'f', long = "index-file", value_name = "INDEX_FILE")]
-        index_file: Option<PathBuf>,
-
-        /// Overwrite existing files without confirmation
-        #[arg(long = "force")]
-        force: bool,
-
         /// Verify written data using hash comparison
         #[arg(long)]
         verify: bool,
@@ -65,38 +53,6 @@ pub enum Commands {
         /// Show detailed progress information
         #[arg(short, long)]
         progress: bool,
-
-        /// Skip symbolic links during write operations
-        #[arg(long = "skip-symlinks")]
-        skip_symlinks: bool,
-
-        /// Enable parallel file processing (faster but higher memory usage)
-        #[arg(long = "parallel")]
-        parallel: bool,
-
-        /// Limit write speed in MiB/s (e.g., 100 for 100 MiB/s)
-        #[arg(long = "speed-limit", value_name = "MBPS")]
-        speed_limit: Option<u32>,
-
-        /// Index update interval in GiB (default: 36 GiB)
-        #[arg(long = "index-interval", value_name = "GIB", default_value = "36")]
-        index_interval: u32,
-
-        /// File extensions to exclude (comma-separated, e.g., .tmp,.log)
-        #[arg(long = "exclude", value_name = "EXTENSIONS")]
-        exclude_extensions: Option<String>,
-
-        /// Dry run mode - show what would be written without actual operation
-        #[arg(long = "dry-run")]
-        dry_run: bool,
-
-        /// Maximum file size to process in one operation (in GiB)
-        #[arg(long = "max-file-size", value_name = "GIB")]
-        max_file_size: Option<u32>,
-
-        /// Use quiet mode (minimal output)
-        #[arg(short = 'q', long = "quiet")]
-        quiet: bool,
     },
 
     /// Read from tape (对应LTFSCopyGUI的读取索引和提取功能)
@@ -119,10 +75,6 @@ pub enum Commands {
         /// Tape device path (e.g. \\.\TAPE0)
         #[arg(short = 't', long = "tape", value_name = "DEVICE")]
         device: String,
-
-        /// Skip automatic index reading (offline mode)
-        #[arg(short = 's', long = "skip-index")]
-        skip_index: bool,
 
         /// Show detailed space breakdown
         #[arg(short = 'd', long = "detailed")]

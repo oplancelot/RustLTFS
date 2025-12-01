@@ -1,7 +1,6 @@
 // Re-export modules
 pub mod capacity_manager;
 pub mod core;
-pub mod deduplication;
 pub mod dual_partition_index;
 pub mod index_validator;
 pub mod partition_manager;

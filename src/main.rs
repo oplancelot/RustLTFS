@@ -38,19 +38,8 @@ async fn run(args: Cli) -> Result<()> {
             source,
             device,
             destination,
-            skip_index,
-            index_file,
-            force,
             verify,
             progress,
-            skip_symlinks,
-            parallel,
-            speed_limit,
-            index_interval,
-            exclude_extensions,
-            dry_run,
-            max_file_size,
-            quiet,
         } => {
             info!(
                 "Starting write operation: {:?} -> {}:{:?}",
@@ -59,44 +48,13 @@ async fn run(args: Cli) -> Result<()> {
                 destination
             );
 
-            // Handle conflicting options
-            if quiet && progress {
-                warn!("Both --quiet and --progress specified. Using progress mode.");
-            }
-
-            // Show dry run warning
-            if dry_run && !quiet {
-                println!("🔍 DRY RUN MODE - No actual data will be written");
-            }
-
             // Create tape operations instance
-            let mut ops = tape_ops::TapeOperations::new(&device, skip_index);
+            let mut ops = tape_ops::TapeOperations::new(&device, false);
 
-            // Configure advanced write options (对应LTFSCopyGUI的各种设置)
+            // Configure advanced write options
             let mut write_options = tape_ops::WriteOptions::default();
-            write_options.overwrite = force;
             write_options.verify = verify;
-            write_options.hash_on_write = verify;
-            write_options.skip_symlinks = skip_symlinks;
-            write_options.parallel_add = parallel;
-            write_options.speed_limit = speed_limit;
-            write_options.index_write_interval = (index_interval as u64) * 1024 * 1024 * 1024; // Convert GiB to bytes
 
-            // Handle file exclusions
-            if let Some(ref extensions) = exclude_extensions {
-                let mut excluded = write_options.excluded_extensions.clone();
-                for ext in extensions.split(',') {
-                    let ext = ext.trim();
-                    if !ext.is_empty() {
-                        excluded.push(if ext.starts_with('.') {
-                            ext.to_string()
-                        } else {
-                            format!(".{}", ext)
-                        });
-                    }
-                }
-                write_options.excluded_extensions = excluded;
-            }
 
             let excluded_extensions_copy = write_options.excluded_extensions.clone();
 

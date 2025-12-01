@@ -177,10 +177,6 @@ pub struct TapeOperations {
     pub(crate) performance_state: PerformanceControlState,      // 性能控制状态
     pub(crate) operation_semaphore: Option<Arc<Semaphore>>,     // 并发控制信号量
     pub(crate) memory_usage_tracker: Arc<Mutex<u64>>,           // 内存使用跟踪器
-    pub(crate) speed_limiter: Option<SpeedLimiter>,             // 速度限制器
-
-    // === 去重和哈希管理（对应LTFSCopyGUI的重复检测） ===
-    pub(crate) dedup_manager: Option<super::deduplication::DeduplicationManager>, // 去重管理器
 }
 
 impl TapeOperations {
@@ -587,42 +583,7 @@ impl TapeOperations {
         self.write_options = options;
     }
 
-    /// Configure deduplication functionality (对应LTFSCopyGUI的去重配置)
-    pub fn configure_deduplication(
-        &mut self,
-        database_path: Option<std::path::PathBuf>,
-    ) -> Result<()> {
-        use super::deduplication::create_deduplication_manager;
 
-        if self.write_options.dedupe {
-            let db_path = database_path.unwrap_or_else(|| {
-                // 默认在当前目录创建去重数据库
-                std::env::current_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
-                    .join(format!(
-                        "ltfs_dedup_{}.db",
-                        self.device_path.replace([':', '\\', '/'], "_")
-                    ))
-            });
-
-            let manager = create_deduplication_manager(&self.write_options, &db_path)?;
-            self.dedup_manager = Some(manager);
-
-            info!("去重功能已配置，数据库路径: {:?}", db_path);
-        } else {
-            self.dedup_manager = None;
-            info!("去重功能已禁用");
-        }
-
-        Ok(())
-    }
-
-    /// Get deduplication statistics (对应LTFSCopyGUI的重复文件统计)
-    pub fn get_deduplication_stats(&self) -> Option<super::deduplication::DuplicateStats> {
-        self.dedup_manager
-            .as_ref()
-            .map(|manager| manager.get_stats())
-    }
 
     /// Save deduplication database (对应LTFSCopyGUI的数据库保存)
     pub fn save_deduplication_database(&mut self) -> Result<()> {
