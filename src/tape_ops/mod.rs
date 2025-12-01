@@ -13,7 +13,6 @@ pub use self::core::*;
 //  MKLTFS command and related helpers have been removed from the CLI,
 //  so the re-export is no longer necessary.)
 
-use crate::error::{Result, RustLtfsError};
 use std::path::PathBuf;
 
 /// Enhanced tape format analysis result (对应增强版VOL1验证)

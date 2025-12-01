@@ -69,37 +69,25 @@ impl RustLtfsError {
         Self::FileOperation(msg.into())
     }
     
-    pub fn config<T: Into<String>>(msg: T) -> Self {
-        Self::Config(msg.into())
-    }
+
     
-    pub fn verification<T: Into<String>>(msg: T) -> Self {
-        Self::Verification(msg.into())
-    }
+
     
-    pub fn unsupported<T: Into<String>>(msg: T) -> Self {
-        Self::UnsupportedOperation(msg.into())
-    }
+
     
     pub fn system<T: Into<String>>(msg: T) -> Self {
         Self::System(msg.into())
     }
     
-    pub fn permission<T: Into<String>>(msg: T) -> Self {
-        Self::Permission(msg.into())
-    }
+
     
-    pub fn connection<T: Into<String>>(msg: T) -> Self {
-        Self::Connection(msg.into())
-    }
+
     
     pub fn parse<T: Into<String>>(msg: T) -> Self {
         Self::Parse(msg.into())
     }
     
-    pub fn cli_error<T: Into<String>>(msg: T) -> Self {
-        Self::Cli(msg.into())
-    }
+
     
     pub fn ltfs_index<T: Into<String>>(msg: T) -> Self {
         Self::LtfsIndex(msg.into())

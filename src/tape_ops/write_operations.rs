@@ -8,6 +8,8 @@ use tokio::fs::File;
 use tokio::io::{AsyncReadExt, BufReader};
 use tracing::{debug, error, info, warn};
 
+
+
 /// Generate LTFS-compatible Z-format timestamp (matching LTFSCopyGUI XML format)
 /// Converts RFC3339 format with +00:00 to Z format for XML compatibility
 fn format_ltfs_timestamp(datetime: chrono::DateTime<chrono::Utc>) -> String {
@@ -37,253 +39,19 @@ pub struct CheckSumBlockwiseCalculator {
     bytes_processed: u64,
 }
 
-/// SCSI error handling result (corresponds to VB.NET MessageBox choice result)
-#[derive(Debug, Clone, Copy)]
-pub enum ScsiErrorAction {
-    Abort,
-    Retry,
-    Ignore,
-}
 
-/// SCSI sense data processing and error handling
-/// Corresponds to VB.NET TapeUtils.ParseSenseData functionality
-pub struct ScsiErrorHandler {
-    max_retry_attempts: u32,
-    ignore_volume_overflow: bool,
-}
 
-impl ScsiErrorHandler {
-    pub fn new(max_retries: u32, ignore_volume_overflow: bool) -> Self {
-        Self {
-            max_retry_attempts: max_retries,
-            ignore_volume_overflow,
-        }
-    }
 
-    /// Parse SCSI sense data and determine error type
-    /// Corresponds to VB.NET TapeUtils.ParseSenseData
-    pub fn parse_sense_data(&self, sense_data: &[u8]) -> Result<String> {
-        if sense_data.len() < 8 {
-            return Ok("Invalid sense data length".to_string());
-        }
-
-        let sense_key = sense_data[2] & 0x0F;
-        let asc = sense_data[12];
-        let ascq = sense_data[13];
-
-        let error_description = match (sense_key, asc, ascq) {
-            // No sense
-            (0x00, _, _) => "No sense - operation completed successfully".to_string(),
-
-            // Recovered error
-            (0x01, _, _) => {
-                "Recovered error - operation completed with recovery action".to_string()
-            }
-
-            // Not ready
-            (0x02, 0x04, 0x01) => "Not ready - becoming ready".to_string(),
-            (0x02, 0x04, 0x02) => "Not ready - initializing command required".to_string(),
-            (0x02, 0x04, 0x03) => "Not ready - manual intervention required".to_string(),
-            (0x02, 0x04, 0x04) => "Not ready - format in progress".to_string(),
-            (0x02, 0x30, 0x00) => "Not ready - incompatible medium installed".to_string(),
-            (0x02, 0x3A, 0x00) => "Not ready - medium not present".to_string(),
-
-            // Medium error
-            (0x03, 0x11, 0x00) => "Medium error - unrecovered read error".to_string(),
-            (0x03, 0x14, 0x01) => "Medium error - record not found".to_string(),
-            (0x03, 0x30, 0x00) => "Medium error - incompatible medium installed".to_string(),
-            (0x03, 0x31, 0x00) => "Medium error - medium format corrupted".to_string(),
-
-            // Hardware error
-            (0x04, 0x08, 0x00) => "Hardware error - logical unit communication failure".to_string(),
-            (0x04, 0x08, 0x01) => "Hardware error - logical unit communication timeout".to_string(),
-            (0x04, 0x15, 0x01) => "Hardware error - mechanical positioning error".to_string(),
-            (0x04, 0x40, 0x00) => "Hardware error - diagnostic failure".to_string(),
-            (0x04, 0x44, 0x00) => "Hardware error - internal target failure".to_string(),
-
-            // Illegal request
-            (0x05, 0x20, 0x00) => "Illegal request - invalid command operation code".to_string(),
-            (0x05, 0x24, 0x00) => "Illegal request - invalid field in CDB".to_string(),
-            (0x05, 0x25, 0x00) => "Illegal request - logical unit not supported".to_string(),
-            (0x05, 0x26, 0x00) => "Illegal request - invalid field in parameter list".to_string(),
-
-            // Unit attention
-            (0x06, 0x28, 0x00) => "Unit attention - not ready to ready change".to_string(),
-            (0x06, 0x29, 0x00) => {
-                "Unit attention - power on, reset, or bus device reset occurred".to_string()
-            }
-            (0x06, 0x2A, 0x01) => "Unit attention - mode parameters changed".to_string(),
-
-            // Data protect
-            (0x07, 0x27, 0x00) => "Data protect - write protected".to_string(),
-            (0x07, 0x30, 0x00) => "Data protect - incompatible medium installed".to_string(),
-
-            // Blank check
-            (0x08, 0x00, 0x05) => "Blank check - end of data detected".to_string(),
-
-            // Volume overflow (critical for LTFSCopyGUI compatibility)
-            (0x0D, 0x00, 0x00) => "Volume overflow - physical end of medium".to_string(),
-
-            // Aborted command
-            (0x0B, 0x08, 0x00) => {
-                "Aborted command - logical unit communication failure".to_string()
-            }
-            (0x0B, 0x08, 0x01) => {
-                "Aborted command - logical unit communication timeout".to_string()
-            }
-            (0x0B, 0x43, 0x00) => "Aborted command - message error".to_string(),
-            (0x0B, 0x47, 0x00) => "Aborted command - SCSI parity error".to_string(),
-
-            // Default case
-            _ => format!(
-                "Unknown error - Sense Key: 0x{:02X}, ASC: 0x{:02X}, ASCQ: 0x{:02X}",
-                sense_key, asc, ascq
-            ),
-        };
-
-        Ok(error_description)
-    }
-
-    /// Check if error represents volume overflow
-    /// Corresponds to VB.NET volume overflow detection logic
-    pub fn is_volume_overflow(&self, sense_data: &[u8]) -> bool {
-        if sense_data.len() < 3 {
-            return false;
-        }
-
-        // Check for volume overflow condition (matching LTFSCopyGUI logic)
-        let sense_key = sense_data[2] & 0x0F;
-        let _ili_bit = (sense_data[2] >> 5) & 0x01; // ILI (Incorrect Length Indicator)
-        let eom_bit = (sense_data[2] >> 6) & 0x01; // EOM (End of Medium)
-
-        // Volume overflow detection from LTFSCopyGUI:
-        // ((sense(2) >> 6) And &H1) = 1 AndAlso ((sense(2) And &HF) = 13)
-        (eom_bit == 1) && (sense_key == 0x0D)
-    }
-
-    /// Check if error represents end of medium warning
-    /// Corresponds to LTFSCopyGUI EWEOM detection
-    pub fn is_end_of_medium_warning(&self, sense_data: &[u8]) -> bool {
-        if sense_data.len() < 3 {
-            return false;
-        }
-
-        let sense_key = sense_data[2] & 0x0F;
-        let eom_bit = (sense_data[2] >> 6) & 0x01;
-
-        // Early warning end of medium (EWEOM)
-        (eom_bit == 1) && (sense_key != 0x0D)
-    }
-
-    /// Handle SCSI write error with user interaction simulation
-    /// Corresponds to VB.NET error handling with MessageBox choices
-    pub fn handle_write_error(
-        &self,
-        sense_data: &[u8],
-        file_path: &str,
-        retry_count: u32,
-    ) -> Result<ScsiErrorAction> {
-        let error_description = self.parse_sense_data(sense_data)?;
-
-        // Check for volume overflow
-        if self.is_volume_overflow(sense_data) {
-            if self.ignore_volume_overflow {
-                warn!(
-                    "Volume overflow detected but ignored due to configuration: {}",
-                    file_path
-                );
-                return Ok(ScsiErrorAction::Ignore);
-            } else {
-                error!("Volume overflow detected for file: {}", file_path);
-                error!("Error: {}", error_description);
-                // In LTFSCopyGUI this would show a MessageBox and stop
-                return Ok(ScsiErrorAction::Abort);
-            }
-        }
-
-        // Check for end of medium warning
-        if self.is_end_of_medium_warning(sense_data) {
-            warn!("End of medium warning for file: {}", file_path);
-            warn!("Warning: {}", error_description);
-            // Continue operation but log warning
-            return Ok(ScsiErrorAction::Ignore);
-        }
-
-        // Check for retryable errors
-        if retry_count < self.max_retry_attempts {
-            warn!(
-                "SCSI write error (attempt {}/{}): {}",
-                retry_count + 1,
-                self.max_retry_attempts,
-                error_description
-            );
-            warn!("Retrying operation for file: {}", file_path);
-            return Ok(ScsiErrorAction::Retry);
-        }
-
-        // Max retries exceeded - in GUI version this would show MessageBox
-        error!(
-            "SCSI write error after {} attempts: {}",
-            self.max_retry_attempts, error_description
-        );
-        error!("Failed file: {}", file_path);
-
-        // For now, abort on persistent errors
-        // In a GUI version, this would present Abort/Retry/Ignore options to user
-        Ok(ScsiErrorAction::Abort)
-    }
-
-    /// Format sense data as hex string for debugging
-    /// Corresponds to VB.NET TapeUtils.Byte2Hex functionality
-    pub fn format_sense_hex(&self, sense_data: &[u8]) -> String {
-        sense_data
-            .iter()
-            .map(|byte| format!("{:02X}", byte))
-            .collect::<Vec<String>>()
-            .join(" ")
-    }
-}
 
 /// Partition write state (corresponds to VB.NET partition management)
-#[derive(Debug, Clone)]
 pub struct PartitionWriteState {
     pub current_partition: u8,
     pub current_block: u64,
-    pub is_index_partition: bool,
-    pub last_filemark_position: Option<crate::scsi::TapePosition>,
 }
 
-/// 文件预读状态
-#[derive(Debug)]
-pub struct FilePreReadState {
-    pub file_path: std::path::PathBuf,
-    pub buffer: Vec<u8>,
-    pub bytes_read: usize,
-    pub is_ready: bool,
-    pub error: Option<String>,
-}
 
-/// Write performance statistics (writes performance monitoring)
-#[derive(Debug)]
-pub struct WritePerformanceStats {
-    pub total_blocks_written: u64,
-    pub total_write_time_ms: u64,
-    pub average_speed_mbps: f64,
-    pub last_speed_check: std::time::Instant,
-    pub speed_samples: Vec<f64>,
-}
 
-impl Default for WritePerformanceStats {
-    fn default() -> Self {
-        Self {
-            total_blocks_written: 0,
-            total_write_time_ms: 0,
-            average_speed_mbps: 0.0,
-            last_speed_check: std::time::Instant::now(),
-            speed_samples: Vec::new(),
-        }
-    }
-}
+
 
 /// CheckSumBlockwiseCalculator 实现
 impl CheckSumBlockwiseCalculator {
@@ -315,20 +83,7 @@ impl CheckSumBlockwiseCalculator {
         }
     }
 
-    pub fn new() -> Self {
-        use sha1::Digest as Sha1Digest;
-        use sha2::Digest as Sha256Digest;
 
-        Self {
-            sha1_hasher: Sha1Digest::new(),
-            md5_hasher: md5::Context::new(),
-            sha256_hasher: Sha256Digest::new(),
-            blake3_hasher: Some(blake3::Hasher::new()),
-            xxh3_hasher: Some(xxhash_rust::xxh3::Xxh3::new()),
-            xxh128_hasher: Some(xxhash_rust::xxh3::Xxh3::new()),
-            bytes_processed: 0,
-        }
-    }
 
     /// Process data block (corresponds to VB.NET Propagate method)
     pub fn propagate(&mut self, data: &[u8]) {
@@ -435,28 +190,8 @@ impl CheckSumBlockwiseCalculator {
         hashes
     }
 
-    /// Get all hash values as map (LTFSCopyGUI compatible keys)
-    pub fn get_all_hashes(&self) -> HashMap<String, String> {
-        let mut hashes = HashMap::new();
 
-        hashes.insert("ltfs.hash.sha1sum".to_string(), self.sha1_value());
-        hashes.insert("ltfs.hash.md5sum".to_string(), self.md5_value());
-        hashes.insert("ltfs.hash.sha256sum".to_string(), self.sha256_value());
 
-        if let Some(blake3) = self.blake3_value() {
-            hashes.insert("ltfs.hash.blake3sum".to_string(), blake3);
-        }
-
-        if let Some(xxh3) = self.xxhash3_value() {
-            hashes.insert("ltfs.hash.xxhash3sum".to_string(), xxh3);
-        }
-
-        if let Some(xxh128) = self.xxhash128_value() {
-            hashes.insert("ltfs.hash.xxhash128sum".to_string(), xxh128);
-        }
-
-        hashes
-    }
 }
 
 /// TapeOperations写入操作实现
@@ -551,8 +286,6 @@ impl TapeOperations {
         let write_state = PartitionWriteState {
             current_partition: data_partition,
             current_block: target_block,
-            is_index_partition: false,
-            last_filemark_position: None,
         };
 
         info!(
@@ -1294,17 +1027,300 @@ impl TapeOperations {
     // ================== 异步写入操作 ==================
 
     /// Write multiple files asynchronously
-    pub async fn write_files_async(&mut self, file_entries: Vec<FileWriteEntry>) -> Result<()> {
-        info!(
-            "Starting async write operation for {} files",
-            file_entries.len()
+
+
+    // ================== 索引更新相关 ==================
+
+    /// Enhanced index update for file write (对应LTFSCopyGUI的索引更新逻辑)
+
+
+    /// Basic index update for file write operation
+
+
+    /// Create directory entry in LTFS index (对应LTFSCopyGUI的目录创建逻辑)
+
+
+    /// Update LTFS index on tape
+
+
+    /// Write index to tape
+
+
+    // ================== 文件处理相关 ==================
+
+    /// Process file entry for writing
+
+
+    /// Calculate file hash (preserved for backward compatibility)
+
+
+    /// Calculate multiple file hashes (对应LTFSCopyGUI的多种哈希计算)
+
+
+    /// Verify written data against source file
+
+
+    // ================== 进度管理相关 ==================
+
+    /// Update write progress
+
+
+
+    /// Check available space on tape
+    fn check_available_space(&self, required_size: u64) -> Result<()> {
+        // For now, we assume there's enough space
+        // In a full implementation, this would check MAM data or use other SCSI commands
+        // to determine remaining capacity
+
+        // Minimum safety check - require at least 1GB free space
+        let min_required_space = required_size + 1024 * 1024 * 1024; // File size + 1GB buffer
+
+        debug!(
+            "Checking available space: required {} bytes (with buffer: {})",
+            required_size, min_required_space
         );
 
-        // Add all entries to write queue
-        self.write_queue.extend(file_entries);
+        // This is a simplified check - in reality would query tape capacity
+        if required_size > 8 * 1024 * 1024 * 1024 * 1024 {
+            // 8TB limit for LTO-8
+            return Err(RustLtfsError::tape_device(
+                "File too large for tape capacity".to_string(),
+            ));
+        }
 
         Ok(())
     }
+
+    /// Create new empty LTFS index
+    fn create_new_ltfs_index(&self) -> LtfsIndex {
+        use uuid::Uuid;
+
+        let now = get_current_ltfs_timestamp();
+        let volume_uuid = Uuid::new_v4();
+
+        LtfsIndex {
+            version: "2.4.0".to_string(),
+            creator: "RustLTFS".to_string(),
+            volumeuuid: volume_uuid.to_string(),
+            generationnumber: 1,
+            updatetime: now.clone(),
+            location: crate::ltfs_index::Location {
+                partition: "b".to_string(), // Data partition
+                startblock: 0,
+            },
+            previousgenerationlocation: None,
+            allowpolicyupdate: Some(true),
+            volumelockstate: None,
+            highestfileuid: Some(1),
+            root_directory: crate::ltfs_index::Directory {
+                name: "".to_string(),
+                uid: 1,
+                creation_time: now.clone(),
+                change_time: now.clone(),
+                modify_time: now.clone(),
+                access_time: now.clone(),
+                backup_time: now,
+                read_only: false,
+                contents: crate::ltfs_index::DirectoryContents {
+                    files: Vec::new(),
+                    directories: Vec::new(),
+                },
+            },
+        }
+    }
+
+    /// Add file to target directory, creating directories as needed
+    /// This function handles UID allocation AFTER directory creation to prevent conflicts
+    fn add_file_to_target_directory(
+        &self,
+        index: &mut LtfsIndex,
+        file: crate::ltfs_index::File,
+        target_path: &str,
+    ) -> Result<()> {
+        debug!(
+            "Adding file '{}' to target path '{}'",
+            file.name, target_path
+        );
+
+        // Normalize target path
+        let normalized_path = target_path.trim_start_matches('/').trim_end_matches('/');
+        debug!("Normalized path: '{}'", normalized_path);
+
+        if normalized_path.is_empty() {
+            // Add to root directory - allocate UID here
+            let file_name = file.name.clone();
+            let mut file_to_add = file;
+            let new_file_uid = index.highestfileuid.unwrap_or(0) + 1;
+            file_to_add.uid = new_file_uid;
+            index.highestfileuid = Some(new_file_uid);
+
+            debug!(
+                "Adding file '{}' to root directory with UID {}",
+                file_name, new_file_uid
+            );
+            index.root_directory.contents.files.push(file_to_add);
+            debug!(
+                "Root directory now has {} files",
+                index.root_directory.contents.files.len()
+            );
+            return Ok(());
+        }
+
+        // Split path into components
+        let path_parts: Vec<&str> = normalized_path.split('/').collect();
+        debug!("Target path components: {:?}", path_parts);
+
+        // Navigate to target directory, creating directories as needed
+        debug!("Finding/creating target directory path...");
+        // First ensure directory path exists (this may update highestfileuid)
+        {
+            self.ensure_directory_path_exists(index, &path_parts)?;
+        }
+        debug!("Target directory found/created, adding file...");
+
+        // CRITICAL: Allocate file UID AFTER directory creation to avoid conflicts
+        // Directory creation may have updated highestfileuid, so we get fresh value
+        let file_name = file.name.clone();
+        let mut file_to_add = file;
+        let new_file_uid = index.highestfileuid.unwrap_or(0) + 1;
+        file_to_add.uid = new_file_uid;
+        index.highestfileuid = Some(new_file_uid);
+
+        debug!(
+            "Allocated UID {} for file '{}' after directory creation",
+            new_file_uid, file_name
+        );
+
+        // Now get a fresh reference to the target directory to add the file
+        let target_dir = self.get_directory_by_path_mut(index, &path_parts)?;
+        target_dir.contents.files.push(file_to_add);
+        debug!(
+            "File '{}' added to directory '{}', directory now has {} files",
+            file_name,
+            normalized_path,
+            target_dir.contents.files.len()
+        );
+
+        Ok(())
+    }
+
+    /// Ensure directory path exists, creating directories as needed
+    fn ensure_directory_path_exists<'a>(
+        &self,
+        index: &'a mut LtfsIndex,
+        path_parts: &[&str],
+    ) -> Result<&'a mut crate::ltfs_index::Directory> {
+        debug!(
+            "ensure_directory_path_exists called with path_parts: {:?}",
+            path_parts
+        );
+
+        if path_parts.is_empty() {
+            debug!("Path parts empty, returning root directory");
+            return Ok(&mut index.root_directory);
+        }
+
+        let mut current_dir = &mut index.root_directory;
+        debug!(
+            "Starting at root directory with {} subdirectories",
+            current_dir.contents.directories.len()
+        );
+
+        for (i, part) in path_parts.iter().enumerate() {
+            debug!("Processing directory part: '{}' (level {})", part, i);
+            debug!(
+                "Current directory has {} subdirectories",
+                current_dir.contents.directories.len()
+            );
+
+            // Find existing directory or create new one
+            let dir_index = current_dir
+                .contents
+                .directories
+                .iter()
+                .position(|d| d.name == *part);
+
+            match dir_index {
+                Some(idx) => {
+                    debug!("Found existing directory: '{}' at index {}", part, idx);
+                    // Directory exists, continue navigation
+                    current_dir = &mut current_dir.contents.directories[idx];
+                }
+                None => {
+                    debug!("Creating new directory: '{}'", part);
+                    // Create new directory
+                    let now = get_current_ltfs_timestamp();
+                    let new_uid = index.highestfileuid.unwrap_or(0) + 1;
+                    debug!("New directory UID: {}", new_uid);
+
+                    let new_directory = crate::ltfs_index::Directory {
+                        name: part.to_string(),
+                        uid: new_uid,
+                        creation_time: now.clone(),
+                        change_time: now.clone(),
+                        modify_time: now.clone(),
+                        access_time: now.clone(),
+                        backup_time: now,
+                        read_only: false,
+                        contents: crate::ltfs_index::DirectoryContents {
+                            files: Vec::new(),
+                            directories: Vec::new(),
+                        },
+                    };
+
+                    current_dir.contents.directories.push(new_directory);
+                    index.highestfileuid = Some(new_uid);
+                    debug!("Directory '{}' created and added, current directory now has {} subdirectories",
+                           part, current_dir.contents.directories.len());
+
+                    // Navigate to newly created directory
+                    let last_index = current_dir.contents.directories.len() - 1;
+                    current_dir = &mut current_dir.contents.directories[last_index];
+                    debug!("Navigated to newly created directory '{}'", part);
+                }
+            }
+        }
+
+        debug!(
+            "Final target directory reached, has {} files, {} subdirectories",
+            current_dir.contents.files.len(),
+            current_dir.contents.directories.len()
+        );
+        Ok(current_dir)
+    }
+
+    /// Get mutable reference to directory by path (helper function for add_file_to_target_directory)
+    fn get_directory_by_path_mut<'a>(
+        &self,
+        index: &'a mut LtfsIndex,
+        path_parts: &[&str],
+    ) -> Result<&'a mut crate::ltfs_index::Directory> {
+        if path_parts.is_empty() {
+            return Ok(&mut index.root_directory);
+        }
+
+        let mut current_dir = &mut index.root_directory;
+
+        for part in path_parts.iter() {
+            let dir_index = current_dir
+                .contents
+                .directories
+                .iter()
+                .position(|d| d.name == *part)
+                .ok_or_else(|| {
+                    RustLtfsError::ltfs_index(format!("Directory '{}' not found in path", part))
+                })?;
+
+            current_dir = &mut current_dir.contents.directories[dir_index];
+        }
+
+        Ok(current_dir)
+    }
+
+
+
+
+
 
     // ================== 索引更新相关 ==================
 
@@ -1521,82 +1537,6 @@ impl TapeOperations {
 
         debug!("LTFS index updated with new file");
         Ok(())
-    }
-
-    /// Create directory entry in LTFS index (对应LTFSCopyGUI的目录创建逻辑)
-    fn create_directory_in_index(&mut self, source_dir: &Path, _target_path: &str) -> Result<()> {
-        let mut current_index = match &self.index {
-            Some(index) => index.clone(),
-            None => self.create_new_ltfs_index(),
-        };
-
-        let dir_name = source_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
-
-        let metadata = std::fs::metadata(source_dir).map_err(|e| {
-            RustLtfsError::file_operation(format!("Cannot get directory metadata: {}", e))
-        })?;
-
-        let now = get_current_ltfs_timestamp();
-        let new_uid = current_index.highestfileuid.unwrap_or(0) + 1;
-
-        let creation_time = metadata
-            .created()
-            .map(|t| system_time_to_ltfs_timestamp(t))
-            .unwrap_or_else(|_| now.clone());
-
-        let modify_time = metadata
-            .modified()
-            .map(|t| system_time_to_ltfs_timestamp(t))
-            .unwrap_or_else(|_| now.clone());
-
-        let access_time = metadata
-            .accessed()
-            .map(|t| system_time_to_ltfs_timestamp(t))
-            .unwrap_or_else(|_| now.clone());
-
-        let new_directory = crate::ltfs_index::Directory {
-            name: dir_name,
-            uid: new_uid,
-            creation_time: creation_time,
-            change_time: now.clone(),
-            modify_time: modify_time,
-            access_time: access_time,
-            backup_time: now,
-            read_only: false,
-            contents: crate::ltfs_index::DirectoryContents {
-                files: Vec::new(),
-                directories: Vec::new(),
-            },
-        };
-
-        // For now, add to root directory (should parse target_path properly)
-        current_index
-            .root_directory
-            .contents
-            .directories
-            .push(new_directory);
-
-        // Update index metadata
-        current_index.generationnumber += 1;
-        current_index.updatetime = get_current_ltfs_timestamp();
-        current_index.highestfileuid = Some(new_uid);
-
-        // Update internal index
-        self.index = Some(current_index.clone());
-        self.schema = Some(current_index);
-        self.modified = true;
-
-        debug!("Created directory in LTFS index: UID {}", new_uid);
-        Ok(())
-    }
-
-    /// Update LTFS index on tape
-    pub async fn update_ltfs_index(&mut self) -> Result<()> {
-        self.update_index_on_tape().await
     }
 
     /// Write index to tape
@@ -1832,377 +1772,5 @@ impl TapeOperations {
 
         info!("LTFS index update completed successfully");
         Ok(())
-    }
-
-    // ================== 文件处理相关 ==================
-
-    /// Process file entry for writing
-    pub async fn process_file_entry(&mut self, entry: &FileWriteEntry) -> Result<()> {
-        self.write_file_to_tape_streaming(&entry.source_path, &entry.target_path)
-            .await
-            .map(|_| ())
-    }
-
-    /// Calculate file hash (preserved for backward compatibility)
-    pub async fn calculate_file_hash(&self, file_path: &Path) -> Result<String> {
-        use sha2::{Digest, Sha256};
-
-        let mut file = tokio::fs::File::open(file_path).await.map_err(|e| {
-            RustLtfsError::file_operation(format!("Cannot open file for hashing: {}", e))
-        })?;
-
-        let mut hasher = Sha256::new();
-        let mut buffer = vec![0u8; 1024 * 1024]; // 1MB buffer
-
-        loop {
-            match file.read(&mut buffer).await {
-                Ok(0) => break, // EOF
-                Ok(n) => hasher.update(&buffer[..n]),
-                Err(e) => {
-                    return Err(RustLtfsError::file_operation(format!(
-                        "Error reading file for hashing: {}",
-                        e
-                    )))
-                }
-            }
-        }
-
-        let result = hasher.finalize();
-        Ok(format!("{:x}", result))
-    }
-
-    /// Calculate multiple file hashes (对应LTFSCopyGUI的多种哈希计算)
-    async fn calculate_file_hashes(&self, file_path: &Path) -> Result<HashMap<String, String>> {
-        use sha1::{Digest, Sha1};
-        use sha2::Sha256;
-
-        let mut file = tokio::fs::File::open(file_path).await.map_err(|e| {
-            RustLtfsError::file_operation(format!("Cannot open file for hashing: {}", e))
-        })?;
-
-        let mut sha1_hasher = Sha1::new();
-        let mut md5_hasher = md5::Context::new();
-        let mut sha256_hasher = Sha256::new();
-
-        let mut buffer = vec![0u8; 1024 * 1024]; // 1MB buffer
-
-        loop {
-            let bytes_read = file.read(&mut buffer).await.map_err(|e| {
-                RustLtfsError::file_operation(format!("Error reading file for hash: {}", e))
-            })?;
-
-            if bytes_read == 0 {
-                break;
-            }
-
-            sha1_hasher.update(&buffer[..bytes_read]);
-            md5_hasher.consume(&buffer[..bytes_read]);
-            sha256_hasher.update(&buffer[..bytes_read]);
-        }
-
-        let mut hashes = HashMap::new();
-
-        // 按照LTFSCopyGUI的格式生成哈希值
-        hashes.insert(
-            "sha1sum".to_string(),
-            format!("{:X}", sha1_hasher.finalize()),
-        );
-        hashes.insert("md5sum".to_string(), format!("{:X}", md5_hasher.compute()));
-        hashes.insert(
-            "sha256sum".to_string(),
-            format!("{:X}", sha256_hasher.finalize()),
-        );
-
-        Ok(hashes)
-    }
-
-    /// Verify written data against source file
-    pub async fn verify_written_data(&self, source_path: &Path, tape_uid: u64) -> Result<bool> {
-        info!("Verifying written data for file: {:?}", source_path);
-
-        // Calculate hash of source file
-        let source_hash = self.calculate_file_hash(source_path).await?;
-
-        // For now, we assume verification passes
-        // In a full implementation, we would read the file back from tape and compare hashes
-        debug!("Source file hash: {}", source_hash);
-
-        // Placeholder verification logic
-        let verification_passed = true;
-
-        if !verification_passed {
-            error!(
-                "File verification failed: {:?} (UID: {})",
-                source_path, tape_uid
-            );
-        } else {
-            debug!("File verification passed: {:?}", source_path);
-        }
-
-        Ok(verification_passed)
-    }
-
-    // ================== 进度管理相关 ==================
-
-    /// Update write progress
-    pub fn update_write_progress(&mut self, files_processed: u64, bytes_processed: u64) {
-        self.write_progress.current_files_processed = files_processed;
-        self.write_progress.current_bytes_processed = bytes_processed;
-    }
-
-
-    /// Check available space on tape
-    fn check_available_space(&self, required_size: u64) -> Result<()> {
-        // For now, we assume there's enough space
-        // In a full implementation, this would check MAM data or use other SCSI commands
-        // to determine remaining capacity
-
-        // Minimum safety check - require at least 1GB free space
-        let min_required_space = required_size + 1024 * 1024 * 1024; // File size + 1GB buffer
-
-        debug!(
-            "Checking available space: required {} bytes (with buffer: {})",
-            required_size, min_required_space
-        );
-
-        // This is a simplified check - in reality would query tape capacity
-        if required_size > 8 * 1024 * 1024 * 1024 * 1024 {
-            // 8TB limit for LTO-8
-            return Err(RustLtfsError::tape_device(
-                "File too large for tape capacity".to_string(),
-            ));
-        }
-
-        Ok(())
-    }
-
-
-
-
-
-    /// Create new empty LTFS index
-    fn create_new_ltfs_index(&self) -> LtfsIndex {
-        use uuid::Uuid;
-
-        let now = get_current_ltfs_timestamp();
-        let volume_uuid = Uuid::new_v4();
-
-        LtfsIndex {
-            version: "2.4.0".to_string(),
-            creator: "RustLTFS".to_string(),
-            volumeuuid: volume_uuid.to_string(),
-            generationnumber: 1,
-            updatetime: now.clone(),
-            location: crate::ltfs_index::Location {
-                partition: "b".to_string(), // Data partition
-                startblock: 0,
-            },
-            previousgenerationlocation: None,
-            allowpolicyupdate: Some(true),
-            volumelockstate: None,
-            highestfileuid: Some(1),
-            root_directory: crate::ltfs_index::Directory {
-                name: "".to_string(),
-                uid: 1,
-                creation_time: now.clone(),
-                change_time: now.clone(),
-                modify_time: now.clone(),
-                access_time: now.clone(),
-                backup_time: now,
-                read_only: false,
-                contents: crate::ltfs_index::DirectoryContents {
-                    files: Vec::new(),
-                    directories: Vec::new(),
-                },
-            },
-        }
-    }
-
-    /// Add file to target directory, creating directories as needed
-    /// This function handles UID allocation AFTER directory creation to prevent conflicts
-    fn add_file_to_target_directory(
-        &self,
-        index: &mut LtfsIndex,
-        file: crate::ltfs_index::File,
-        target_path: &str,
-    ) -> Result<()> {
-        debug!(
-            "Adding file '{}' to target path '{}'",
-            file.name, target_path
-        );
-
-        // Normalize target path
-        let normalized_path = target_path.trim_start_matches('/').trim_end_matches('/');
-        debug!("Normalized path: '{}'", normalized_path);
-
-        if normalized_path.is_empty() {
-            // Add to root directory - allocate UID here
-            let file_name = file.name.clone();
-            let mut file_to_add = file;
-            let new_file_uid = index.highestfileuid.unwrap_or(0) + 1;
-            file_to_add.uid = new_file_uid;
-            index.highestfileuid = Some(new_file_uid);
-
-            debug!(
-                "Adding file '{}' to root directory with UID {}",
-                file_name, new_file_uid
-            );
-            index.root_directory.contents.files.push(file_to_add);
-            debug!(
-                "Root directory now has {} files",
-                index.root_directory.contents.files.len()
-            );
-            return Ok(());
-        }
-
-        // Split path into components
-        let path_parts: Vec<&str> = normalized_path.split('/').collect();
-        debug!("Target path components: {:?}", path_parts);
-
-        // Navigate to target directory, creating directories as needed
-        debug!("Finding/creating target directory path...");
-        // First ensure directory path exists (this may update highestfileuid)
-        {
-            self.ensure_directory_path_exists(index, &path_parts)?;
-        }
-        debug!("Target directory found/created, adding file...");
-
-        // CRITICAL: Allocate file UID AFTER directory creation to avoid conflicts
-        // Directory creation may have updated highestfileuid, so we get fresh value
-        let file_name = file.name.clone();
-        let mut file_to_add = file;
-        let new_file_uid = index.highestfileuid.unwrap_or(0) + 1;
-        file_to_add.uid = new_file_uid;
-        index.highestfileuid = Some(new_file_uid);
-
-        debug!(
-            "Allocated UID {} for file '{}' after directory creation",
-            new_file_uid, file_name
-        );
-
-        // Now get a fresh reference to the target directory to add the file
-        let target_dir = self.get_directory_by_path_mut(index, &path_parts)?;
-        target_dir.contents.files.push(file_to_add);
-        debug!(
-            "File '{}' added to directory '{}', directory now has {} files",
-            file_name,
-            normalized_path,
-            target_dir.contents.files.len()
-        );
-
-        Ok(())
-    }
-
-    /// Ensure directory path exists, creating directories as needed
-    fn ensure_directory_path_exists<'a>(
-        &self,
-        index: &'a mut LtfsIndex,
-        path_parts: &[&str],
-    ) -> Result<&'a mut crate::ltfs_index::Directory> {
-        debug!(
-            "ensure_directory_path_exists called with path_parts: {:?}",
-            path_parts
-        );
-
-        if path_parts.is_empty() {
-            debug!("Path parts empty, returning root directory");
-            return Ok(&mut index.root_directory);
-        }
-
-        let mut current_dir = &mut index.root_directory;
-        debug!(
-            "Starting at root directory with {} subdirectories",
-            current_dir.contents.directories.len()
-        );
-
-        for (i, part) in path_parts.iter().enumerate() {
-            debug!("Processing directory part: '{}' (level {})", part, i);
-            debug!(
-                "Current directory has {} subdirectories",
-                current_dir.contents.directories.len()
-            );
-
-            // Find existing directory or create new one
-            let dir_index = current_dir
-                .contents
-                .directories
-                .iter()
-                .position(|d| d.name == *part);
-
-            match dir_index {
-                Some(idx) => {
-                    debug!("Found existing directory: '{}' at index {}", part, idx);
-                    // Directory exists, continue navigation
-                    current_dir = &mut current_dir.contents.directories[idx];
-                }
-                None => {
-                    debug!("Creating new directory: '{}'", part);
-                    // Create new directory
-                    let now = get_current_ltfs_timestamp();
-                    let new_uid = index.highestfileuid.unwrap_or(0) + 1;
-                    debug!("New directory UID: {}", new_uid);
-
-                    let new_directory = crate::ltfs_index::Directory {
-                        name: part.to_string(),
-                        uid: new_uid,
-                        creation_time: now.clone(),
-                        change_time: now.clone(),
-                        modify_time: now.clone(),
-                        access_time: now.clone(),
-                        backup_time: now,
-                        read_only: false,
-                        contents: crate::ltfs_index::DirectoryContents {
-                            files: Vec::new(),
-                            directories: Vec::new(),
-                        },
-                    };
-
-                    current_dir.contents.directories.push(new_directory);
-                    index.highestfileuid = Some(new_uid);
-                    debug!("Directory '{}' created and added, current directory now has {} subdirectories",
-                           part, current_dir.contents.directories.len());
-
-                    // Navigate to newly created directory
-                    let last_index = current_dir.contents.directories.len() - 1;
-                    current_dir = &mut current_dir.contents.directories[last_index];
-                    debug!("Navigated to newly created directory '{}'", part);
-                }
-            }
-        }
-
-        debug!(
-            "Final target directory reached, has {} files, {} subdirectories",
-            current_dir.contents.files.len(),
-            current_dir.contents.directories.len()
-        );
-        Ok(current_dir)
-    }
-
-    /// Get mutable reference to directory by path (helper function for add_file_to_target_directory)
-    fn get_directory_by_path_mut<'a>(
-        &self,
-        index: &'a mut LtfsIndex,
-        path_parts: &[&str],
-    ) -> Result<&'a mut crate::ltfs_index::Directory> {
-        if path_parts.is_empty() {
-            return Ok(&mut index.root_directory);
-        }
-
-        let mut current_dir = &mut index.root_directory;
-
-        for part in path_parts.iter() {
-            let dir_index = current_dir
-                .contents
-                .directories
-                .iter()
-                .position(|d| d.name == *part)
-                .ok_or_else(|| {
-                    RustLtfsError::ltfs_index(format!("Directory '{}' not found in path", part))
-                })?;
-
-            current_dir = &mut current_dir.contents.directories[dir_index];
-        }
-
-        Ok(current_dir)
     }
 }

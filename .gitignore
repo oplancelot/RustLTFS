@@ -28,3 +28,4 @@ test**
 #.idea/
 LTFSIndex_*
 Rustltfs.code-workspace
+check_output.txt

@@ -1,6 +1,4 @@
-use crate::error::Result;
-use crate::scsi::{MediaType, check_tape_media};
-use tracing::{info, debug, error, warn};
+use crate::scsi::MediaType;
 use serde::{Serialize, Deserialize};
 
 /// Tape device information structure
