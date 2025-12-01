@@ -765,7 +765,7 @@ pub struct DuplicateStats {
 /// 去重管理器（对应LTFSCopyGUI的DeduplicationManager）
 pub struct DeduplicationManager {
     database: DeduplicationDatabase,
-    database_path: PathBuf,
+    _database_path: PathBuf,
     enabled: bool,
     primary_hash_type: HashType,
 }

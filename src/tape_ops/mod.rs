@@ -139,7 +139,7 @@ pub struct TapeSpaceInfo {
 
 /// LTFS access interface for tape device operations
 pub struct LtfsAccess {
-    device_path: String,
+    _device_path: String,
 }
 
 impl LtfsAccess {
