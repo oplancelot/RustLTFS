@@ -17,30 +17,6 @@ pub use self::core::*;
 use crate::error::{Result, RustLtfsError};
 use std::path::PathBuf;
 
-/// Format bytes in human-readable format
-fn format_bytes(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB", "PB"];
-    const THRESHOLD: u64 = 1024;
-
-    if bytes == 0 {
-        return "0 B".to_string();
-    }
-
-    let mut size = bytes as f64;
-    let mut unit_index = 0;
-
-    while size >= THRESHOLD as f64 && unit_index < UNITS.len() - 1 {
-        size /= THRESHOLD as f64;
-        unit_index += 1;
-    }
-
-    if unit_index == 0 {
-        format!("{} {}", bytes, UNITS[unit_index])
-    } else {
-        format!("{:.2} {}", size, UNITS[unit_index])
-    }
-}
-
 /// Enhanced tape format analysis result (对应增强版VOL1验证)
 #[derive(Debug, Clone, PartialEq)]
 pub enum TapeFormatAnalysis {
