@@ -1,5 +1,5 @@
 use super::partition_manager::LtfsPartitionLabel;
-use super::{FileWriteEntry, LtfsAccess, WriteOptions, WriteProgress};
+use super::{FileWriteEntry, WriteOptions, WriteProgress};
 use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::LtfsIndex;
 use std::sync::Arc;
@@ -157,11 +157,8 @@ pub struct TapeOperations {
     pub(crate) device_path: String,
     pub(crate) offline_mode: bool,
     pub(crate) index: Option<LtfsIndex>,
-    pub(crate) _tape_handle: Option<LtfsAccess>,
-    pub(crate) _drive_handle: Option<i32>,
     pub(crate) schema: Option<LtfsIndex>,
     pub(crate) block_size: u32,
-    pub(crate) _tape_drive: String,
     pub(crate) scsi: crate::scsi::ScsiInterface,
     pub(crate) partition_label: Option<LtfsPartitionLabel>, // 对应LTFSCopyGUI的plabel
     pub(crate) write_queue: Vec<FileWriteEntry>,
@@ -189,11 +186,8 @@ impl TapeOperations {
             device_path: device.to_string(),
             offline_mode,
             index: None,
-            tape_handle: None,
-            drive_handle: None,
             schema: None,
             block_size: crate::scsi::block_sizes::LTO_BLOCK_SIZE, // Default block size (64KB)
-            tape_drive: device.to_string(),
             scsi: crate::scsi::ScsiInterface::new(),
             partition_label: None, // 初始化为None，稍后读取
             write_queue: Vec::new(),
@@ -209,28 +203,10 @@ impl TapeOperations {
             performance_state,
             operation_semaphore: Some(Arc::new(Semaphore::new(max_concurrent))),
             memory_usage_tracker: Arc::new(Mutex::new(0)),
-            speed_limiter: None,
-
-            // 去重管理器初始化（稍后通过configure_deduplication配置）
-            dedup_manager: None,
         }
     }
 
-    /// Set speed limit (对应LTFSCopyGUI的速度限制)
-    pub fn set_speed_limit(&mut self, limit: Option<u32>) {
-        if let Some(limit) = limit {
-            self.speed_limiter = Some(SpeedLimiter::new(limit));
-            self.performance_state.target_speed_limit = Some((limit as u64) * 1024 * 1024);
-            info!(
-                "Speed limit enabled: {} MB/s for device: {}",
-                limit, self.device_path
-            );
-        } else {
-            self.speed_limiter = None;
-            self.performance_state.target_speed_limit = None;
-            info!("Speed limit disabled for device: {}", self.device_path);
-        }
-    }
+
 
     /// Configure concurrency control (对应LTFSCopyGUI的并发控制)
     pub fn set_max_concurrent_operations(&mut self, max_concurrent: u32) {
@@ -259,12 +235,7 @@ impl TapeOperations {
         let memory_usage = self.memory_usage_tracker.lock().await;
         state.memory_usage = *memory_usage;
 
-        // 更新当前传输速度
-        if let Some(ref speed_limiter) = self.speed_limiter {
-            state.current_transfer_rate = speed_limiter.get_current_rate();
-        }
 
-        // 更新队列状态
         state.queued_operations = self.write_queue.len() as u32;
 
         state
@@ -279,15 +250,7 @@ impl TapeOperations {
         // 1. 内存使用控制 (使用实际内存增量)
         self.check_memory_usage(memory_delta).await?;
 
-        // 2. 速度限制控制
-        if let Some(ref mut speed_limiter) = self.speed_limiter {
-            let delay = speed_limiter.apply_rate_limit(bytes_processed).await;
-            if delay > Duration::ZERO {
-                tokio::time::sleep(delay).await;
-            }
-        }
-
-        // 3. 并发控制检查
+        // 2. 并发控制检查
         self.check_operation_limits().await?;
 
         // 4. 暂停和停止检查
@@ -395,11 +358,6 @@ impl TapeOperations {
             // 可以实现队列优化逻辑
         }
 
-        // 清理速度限制器历史
-        if let Some(ref mut speed_limiter) = self.speed_limiter {
-            speed_limiter.transfer_history.clear();
-        }
-
         // 触发垃圾回收提示（Rust会自动管理，但可以建议）
         std::hint::black_box(vec![0u8; 1]); // 触发分配器活动
 
@@ -415,10 +373,6 @@ impl TapeOperations {
         usage += self.block_size as u64; // SCSI缓冲区
 
         // 性能监控内存统计功能已移除
-
-        if let Some(ref speed_limiter) = self.speed_limiter {
-            usage += speed_limiter.transfer_history.len() as u64 * 16; // 每个记录约16字节
-        }
 
         usage
     }
@@ -465,31 +419,6 @@ impl TapeOperations {
         // 性能监控统计功能已移除
         report.push_str("\n--- Performance Monitoring ---\n");
         report.push_str("Monitoring: Disabled (功能已移除)\n");
-
-        // 速度限制器详细信息
-        if let Some(ref speed_limiter) = self.speed_limiter {
-            report.push_str("\n--- Speed Limiter ---\n");
-            report.push_str(&format!(
-                "Target rate: {:.2} MB/s\n",
-                speed_limiter.target_rate_bps as f64 / (1024.0 * 1024.0)
-            ));
-            report.push_str(&format!(
-                "History window: {}s\n",
-                speed_limiter.history_window_seconds
-            ));
-            report.push_str(&format!(
-                "Transfer history entries: {}\n",
-                speed_limiter.transfer_history.len()
-            ));
-            report.push_str(&format!("Adaptive mode: {}\n", speed_limiter.adaptive_mode));
-            report.push_str(&format!(
-                "Burst allowance: {:.2} MB\n",
-                speed_limiter.burst_allowance as f64 / (1024.0 * 1024.0)
-            ));
-        } else {
-            report.push_str("\n--- Speed Limiter ---\n");
-            report.push_str("Speed limiting: Disabled\n");
-        }
 
         // 写入进度
         report.push_str("\n--- Write Progress ---\n");
@@ -540,11 +469,7 @@ impl TapeOperations {
     pub fn reset_performance_stats(&mut self) {
         // 性能监控缓存清理功能已移除
 
-        if let Some(ref mut speed_limiter) = self.speed_limiter {
-            speed_limiter.transfer_history.clear();
-        }
 
-        self.performance_state.current_transfer_rate = 0;
         self.performance_state.active_operations = 0;
         self.performance_state.queued_operations = 0;
 
@@ -556,12 +481,7 @@ impl TapeOperations {
 
     /// 启用自适应性能调优（对应LTFSCopyGUI的自动性能优化）
     pub fn enable_adaptive_performance(&mut self) {
-        // 启用自适应速度控制
-        if let Some(ref mut speed_limiter) = self.speed_limiter {
-            speed_limiter.adaptive_mode = true;
-        }
 
-        // 根据设备类型优化并发设置
         let optimal_concurrent = match self.device_path.as_str() {
             path if path.contains("tape") || path.contains("st") => 2, // 磁带设备通常较低并发
             _ => 4,                                                    // 默认并发数
@@ -585,14 +505,7 @@ impl TapeOperations {
 
 
 
-    /// Save deduplication database (对应LTFSCopyGUI的数据库保存)
-    pub fn save_deduplication_database(&mut self) -> Result<()> {
-        if let Some(ref mut manager) = self.dedup_manager {
-            manager.save_database()?;
-            info!("去重数据库已保存");
-        }
-        Ok(())
-    }
+
 
     /// Get current write progress
     pub fn get_write_progress(&self) -> &WriteProgress {

@@ -136,24 +136,6 @@ pub struct TapeSpaceInfo {
     pub compression_ratio: f64,
 }
 
-/// LTFS access interface for tape device operations
-pub struct LtfsAccess {
-    _device_path: String,
-}
-
-impl LtfsAccess {
-    /// Create new LTFS access instance
-    pub fn new(device_path: String) -> Self {
-        Self { device_path }
-    }
-
-    /// Get tape medium information
-    pub async fn get_medium_info(&self) -> Result<TapeMediumInfo> {
-        // Implementation would go here
-        Err(RustLtfsError::unsupported("get_medium_info".to_string()))
-    }
-}
-
 /// Write queue entry for file operations
 #[derive(Debug, Clone)]
 pub struct FileWriteEntry {

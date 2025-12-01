@@ -677,62 +677,7 @@ impl TapeOperations {
             None
         };
 
-        // === 去重检查逻辑（对应LTFSCopyGUI的DuplicateCheck） ===
-        let mut duplicate_detected = false;
-        let duplicate_count = if self.write_options.dedupe {
-            if let Some(ref dedup_manager) = self.dedup_manager {
-                info!("执行去重检查：{:?}", source_path);
 
-                // 快速计算文件哈希（只计算主要哈希算法）
-                let quick_hashes = self.calculate_file_hashes(source_path).await?;
-
-                // 检查是否存在重复文件
-                if let Some(duplicates) = dedup_manager.check_file_exists(&quick_hashes) {
-                    duplicate_detected = true;
-                    let dup_count = duplicates.len();
-
-                    info!(
-                        "🔍 检测到重复文件：{:?}，已存在 {} 个副本",
-                        source_path, dup_count
-                    );
-
-                    // 根据策略决定是否跳过写入
-                    if self.write_options.skip_duplicates {
-                        info!("⏭️ 跳过重复文件写入：{:?}", source_path);
-
-                        // 更新统计信息
-                        self.write_progress.current_files_processed += 1;
-                        self.write_progress.duplicates_skipped += 1;
-                        self.write_progress.space_saved += file_size;
-
-                        return Ok(WriteResult {
-                            position: crate::scsi::TapePosition {
-                                partition: 1,
-                                block_number: 0,
-                                file_number: 0,
-                                set_number: 0,
-                                end_of_data: false,
-                                beginning_of_partition: false,
-                            },
-                            blocks_written: 0,
-                            bytes_written: 0,
-                        });
-                    } else {
-                        info!("📝 仍然写入重复文件（去重策略允许）");
-                    }
-
-                    dup_count
-                } else {
-                    0
-                }
-            } else {
-                0
-            }
-        } else {
-            0
-        };
-
-        // Write statistics
         let mut total_blocks_written = 0u32;
         let mut total_bytes_written = 0u64;
         let write_start_time = std::time::Instant::now();
@@ -830,13 +775,7 @@ impl TapeOperations {
                     calc.propagate(&buffer[..bytes_read]);
                 }
 
-                // Apply speed limiting (if configured)
-                if let Some(speed_limit_mbps) = self.write_options.speed_limit {
-                    self.apply_speed_limit(self.block_size as u64, speed_limit_mbps)
-                        .await;
-                }
 
-                // Apply comprehensive performance controls (对应LTFSCopyGUI的全面性能控制)
                 // Pass 0 for memory_delta because we are reusing the buffer in this loop
                 self.apply_performance_controls(bytes_read as u64, 0).await?;
 
@@ -908,33 +847,7 @@ impl TapeOperations {
         self.write_progress.current_files_processed += 1;
         self.write_progress.total_bytes_unindexed += file_size;
 
-        // 注册文件到去重数据库（如果启用）
-        if !duplicate_detected && self.write_options.dedupe {
-            if let (Some(ref mut dedup_manager), Some(ref hash_calc)) =
-                (&mut self.dedup_manager, &hash_calculator)
-            {
-                let hashes = hash_calc.get_enabled_hashes(&self.write_options);
-                let tape_location = super::deduplication::TapeLocation {
-                    partition: write_start_position.partition,
-                    start_block: write_start_position.block_number,
-                    file_uid: 0, // UID will be set when updating index
-                };
 
-                if let Err(e) = dedup_manager.register_file(
-                    &source_path.to_string_lossy(),
-                    file_size,
-                    &hashes,
-                    Some(tape_location),
-                ) {
-                    warn!("Failed to register file to deduplication database: {}", e);
-                }
-            }
-        }
-
-        // 记录重复文件统计信息（用于日志记录）
-        debug!("Duplicate count for tracking: {}", duplicate_count);
-
-        // Check if index update is needed based on interval, force_index option, or small file scenario
         // For testing and small files, we automatically force index write when total unindexed data is small
         let should_force_index = self.write_options.force_index
             || (self.write_progress.total_bytes_unindexed < 100 * 1024 * 1024 && // Less than 100MB
@@ -2064,33 +1977,7 @@ impl TapeOperations {
     }
 
 
-    /// Enhanced apply speed limiting with intelligent control (对应LTFSCopyGUI的SpeedLimit功能增强版)
-    async fn apply_speed_limit(&mut self, bytes_to_write: u64, speed_limit_mbps: u32) {
-        // 使用新的智能速度控制系统
-        if let Some(ref mut speed_limiter) = self.speed_limiter {
-            let delay = speed_limiter.apply_rate_limit(bytes_to_write).await;
-            if delay > std::time::Duration::ZERO {
-                debug!(
-                    "Intelligent speed limiting: delaying {}ms for {} bytes",
-                    delay.as_millis(),
-                    bytes_to_write
-                );
-                tokio::time::sleep(delay).await;
-            }
-        } else {
-            // 回退到原始的简单速度限制
-            let speed_limit_bytes_per_sec = (speed_limit_mbps as u64) * 1024 * 1024;
-            let expected_duration = bytes_to_write * 1000 / speed_limit_bytes_per_sec; // in milliseconds
 
-            if expected_duration > 0 {
-                debug!(
-                    "Basic speed limiting: waiting {}ms for {} bytes at {} MiB/s",
-                    expected_duration, bytes_to_write, speed_limit_mbps
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(expected_duration)).await;
-            }
-        }
-    }
 
 
     /// Create new empty LTFS index

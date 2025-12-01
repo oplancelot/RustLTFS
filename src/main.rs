@@ -61,7 +61,7 @@ async fn run(args: Cli) -> Result<()> {
             ops.set_write_options(write_options);
 
             // Display progress if requested
-            let show_progress = progress && !quiet;
+            let show_progress = progress;
             if show_progress {
                 println!("🔧 Initializing tape device: {}", device);
             }
@@ -80,52 +80,21 @@ async fn run(args: Cli) -> Result<()> {
 
                     // Provide helpful error messages for write operations
                     if e.to_string().contains("No tape loaded") {
-                        if !quiet {
-                            println!("❌ No tape cartridge detected in drive: {}", device);
-                            println!("💡 Insert a tape cartridge and try again");
-                        }
+                        println!("❌ No tape cartridge detected in drive: {}", device);
+                        println!("💡 Insert a tape cartridge and try again");
                         return Err(e);
                     } else if e.to_string().contains("Write protected") {
-                        if !quiet {
-                            println!("❌ Tape is write-protected");
-                            println!("💡 Remove write protection or use a different tape");
-                        }
+                        println!("❌ Tape is write-protected");
+                        println!("💡 Remove write protection or use a different tape");
                         return Err(e);
                     } else {
-                        if !quiet {
-                            println!("❌ Device initialization failed: {}", e);
-                            if index_file.is_some() {
-                                println!("💡 Trying offline mode with provided index file...");
-                            }
-                        }
-                        if !skip_index && index_file.is_none() {
-                            return Err(e);
-                        }
+                        println!("❌ Device initialization failed: {}", e);
+                        return Err(e);
                     }
-                    false
                 }
             };
 
-            // Load index from file if specified, or read from tape
-            if let Some(ref index_path) = index_file {
-                if show_progress {
-                    println!("📂 Loading index from file: {:?}", index_path);
-                }
-                ops.load_index_from_file(index_path).await?;
-                if show_progress {
-                    println!("✅ Index loaded from file");
-                }
-            } else if device_initialized && !skip_index {
-                if show_progress {
-                    println!("📼 Reading index from tape...");
-                }
-                // Index was already loaded during initialization
-                if show_progress {
-                    println!("✅ Index read from tape");
-                }
-            }
 
-            // Create unified input reader and determine operation type
             let (estimated_size, operation_mode): (Option<u64>, &str) = match &source {
                 Some(source_path) => {
                     // File or directory input
@@ -148,24 +117,6 @@ async fn run(args: Cli) -> Result<()> {
                         })?;
                         let file_size = metadata.len();
                         
-                        // Handle max file size check
-                        if let Some(max_size_gib) = max_file_size {
-                            let max_size_bytes = (max_size_gib as u64) * 1024 * 1024 * 1024;
-                            if file_size > max_size_bytes {
-                                if !quiet {
-                                    println!(
-                                        "❌ File size ({}) exceeds maximum allowed size ({})",
-                                        rust_ltfs::utils::format_bytes(file_size),
-                                        rust_ltfs::utils::format_bytes(max_size_bytes)
-                                    );
-                                }
-                                return Err(error::RustLtfsError::parameter_validation(format!(
-                                    "File too large: {} > {} GiB",
-                                    file_size, max_size_gib
-                                )));
-                            }
-                        }
-                        
                         (Some(file_size), "file")
                     }
                 },
@@ -181,43 +132,19 @@ async fn run(args: Cli) -> Result<()> {
             };
 
             // Display write operation details
-            if !quiet {
-                println!("\n🚀 Starting Write Operation");
-                println!("  Source: {}", source_display);
-                println!("  Device: {}", device);
-                println!("  Target: {:?}", destination);
+            println!("\n🚀 Starting Write Operation");
+            println!("  Source: {}", source_display);
+            println!("  Device: {}", device);
+            println!("  Target: {:?}", destination);
 
-                let mut options = Vec::new();
-                if force {
-                    options.push("Overwrite existing files".to_string())
-                };
-                if verify {
-                    options.push("Hash verification enabled".to_string())
-                };
-                if skip_symlinks {
-                    options.push("Skip symbolic links".to_string())
-                };
-                if parallel {
-                    options.push("Parallel processing".to_string())
-                };
-                if let Some(speed) = speed_limit {
-                    options.push(format!("Speed limited to {} MiB/s", speed));
-                }
-                if dry_run {
-                    options.push("DRY RUN - no actual writing".to_string())
-                };
+            let mut options = Vec::new();
+            if verify {
+                options.push("Hash verification enabled".to_string())
+            };
 
-                if !options.is_empty() {
+            if !options.is_empty() {
                     let options_str: Vec<&str> = options.iter().map(|s| s.as_str()).collect();
                     println!("  Options: {}", options_str.join(", "));
-                }
-
-                if !excluded_extensions_copy.is_empty() {
-                    println!(
-                        "  Excluded extensions: {}",
-                        excluded_extensions_copy.join(", ")
-                    );
-                }
             }
 
             // Display current write progress if requested
@@ -232,15 +159,6 @@ async fn run(args: Cli) -> Result<()> {
                     "  Bytes processed: {}",
                     rust_ltfs::utils::format_bytes(write_progress.current_bytes_processed)
                 );
-            }
-
-            // Handle dry run mode
-            if dry_run {
-                if !quiet {
-                    println!("\n🔍 DRY RUN: Analyzing source files...");
-                    println!("✅ Dry run completed - no data was written");
-                }
-                return Ok(());
             }
 
             // Execute write operation with enhanced progress reporting
@@ -296,32 +214,30 @@ async fn run(args: Cli) -> Result<()> {
 
             let write_duration = write_start.elapsed();
 
-            // Show final progress with enhanced reporting
-            if !quiet {
-                let final_progress = ops.get_write_progress();
-                println!("\n✅ Write Operation Completed");
-                println!(
-                    "  Files written: {}",
-                    final_progress.current_files_processed
-                );
-                println!(
-                    "  Bytes written: {}",
-                    rust_ltfs::utils::format_bytes(final_progress.current_bytes_processed)
-                );
-                println!(
-                    "  Duration: {}",
-                    rust_ltfs::utils::format_duration(write_duration.as_secs_f64())
-                );
+            // Show final progress
+            let final_progress = ops.get_write_progress();
+            println!("\n✅ Write Operation Completed");
+            println!(
+                "  Files written: {}",
+                final_progress.current_files_processed
+            );
+            println!(
+                "  Bytes written: {}",
+                rust_ltfs::utils::format_bytes(final_progress.current_bytes_processed)
+            );
+            println!(
+                "  Duration: {}",
+                rust_ltfs::utils::format_duration(write_duration.as_secs_f64())
+            );
 
-                if final_progress.current_bytes_processed > 0 && write_duration.as_secs() > 0 {
-                    println!(
-                        "  Average Speed: {}/s",
-                        rust_ltfs::utils::format_speed(
-                            final_progress.current_bytes_processed,
-                            write_duration.as_secs_f64()
-                        )
-                    );
-                }
+            if final_progress.current_bytes_processed > 0 && write_duration.as_secs() > 0 {
+                println!(
+                    "  Average Speed: {}/s",
+                    rust_ltfs::utils::format_speed(
+                        final_progress.current_bytes_processed,
+                        write_duration.as_secs_f64()
+                    )
+                );
             }
 
             info!(
@@ -329,33 +245,31 @@ async fn run(args: Cli) -> Result<()> {
                 write_duration.as_secs_f64()
             );
 
-            // Auto update LTFS index (对应LTFSCopyGUI的自动索引更新)
-            if device_initialized && !skip_index {
-                if progress {
-                    println!("\n🔄 Updating LTFS index...");
-                }
-                info!("Auto updating LTFS index...");
+            // Auto update LTFS index
+            if progress {
+                println!("\n🔄 Updating LTFS index...");
+            }
+            info!("Auto updating LTFS index...");
 
-                match ops
-                    .update_index_on_tape_with_options_dual_partition(false)
-                    .await
-                {
-                    Ok(_) => {
-                        if progress {
-                            println!("✅ Index updated successfully");
-                        }
-                        info!("Index update completed");
+            match ops
+                .update_index_on_tape_with_options_dual_partition(false)
+                .await
+            {
+                Ok(_) => {
+                    if progress {
+                        println!("✅ Index updated successfully");
                     }
-                    Err(e) => {
-                        warn!("Index update failed: {}", e);
-                        println!("⚠️  Index update failed: {}", e);
-                        println!("💡 Manual index update may be required");
-                    }
+                    info!("Index update completed");
+                }
+                Err(e) => {
+                    warn!("Index update failed: {}", e);
+                    println!("⚠️  Index update failed: {}", e);
+                    println!("💡 Manual index update may be required");
                 }
             }
 
             // Save index to local file for backup
-            if device_initialized && !skip_index {
+            if device_initialized {
                 let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
                 let index_filename = format!("LTFSIndex_Write_{}.schema", timestamp);
 
@@ -426,7 +340,6 @@ async fn run(args: Cli) -> Result<()> {
 
         Commands::Space {
             device,
-            skip_index: _,
             detailed,
         } => {
             info!("Getting tape space information: {}", device);
