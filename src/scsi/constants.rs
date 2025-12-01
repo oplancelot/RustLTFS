@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 // SCSI constant definitions (based on C code)
 pub const SENSE_INFO_LEN: usize = 64;
 pub const TC_MP_PC_CURRENT: u8 = 0x00;

@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use crate::error::Result;
 use crate::scsi::{MediaType, check_tape_media};
 use tracing::{info, debug, error, warn};

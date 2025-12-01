@@ -1,5 +1,4 @@
 // Re-export modules
-#![allow(dead_code)]
 pub mod capacity_manager;
 pub mod core;
 pub mod deduplication;

@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use crate::error::{Result, RustLtfsError};
 use std::ffi::CString;
 
@@ -726,77 +725,6 @@ impl ScsiInterface {
         }
     }
 
-    /// Tape ejection (based on TapeEject function logic in C code)
-    pub fn eject_tape(&self) -> Result<bool> {
-        debug!("Ejecting tape");
-
-        #[cfg(windows)]
-        {
-            if let Some(ref device) = self.device_handle {
-                unsafe {
-                    let mut bytes_returned: DWORD = 0;
-
-                    // 1. Lock volume
-                    let lock_result = DeviceIoControl(
-                        device.handle,
-                        0x00090018, // FSCTL_LOCK_VOLUME
-                        std::ptr::null_mut(),
-                        0,
-                        std::ptr::null_mut(),
-                        0,
-                        &mut bytes_returned,
-                        std::ptr::null_mut(),
-                    ) != 0;
-
-                    if !lock_result {
-                        warn!("lock failed");
-                        return Ok(false);
-                    }
-
-                    // 2. Dismount volume
-                    let dismount_result = DeviceIoControl(
-                        device.handle,
-                        0x00090020, // FSCTL_DISMOUNT_VOLUME
-                        std::ptr::null_mut(),
-                        0,
-                        std::ptr::null_mut(),
-                        0,
-                        &mut bytes_returned,
-                        std::ptr::null_mut(),
-                    ) != 0;
-
-                    if !dismount_result {
-                        warn!("Dismount volume failed");
-                        return Ok(false);
-                    }
-
-                    // 3. Eject media
-                    let eject_result = DeviceIoControl(
-                        device.handle,
-                        0x002D4808, // IOCTL_DISK_EJECT_MEDIA
-                        std::ptr::null_mut(),
-                        0,
-                        std::ptr::null_mut(),
-                        0,
-                        &mut bytes_returned,
-                        std::ptr::null_mut(),
-                    ) != 0;
-
-                    Ok(eject_result)
-                }
-            } else {
-                Err(crate::error::RustLtfsError::scsi("Device not opened"))
-            }
-        }
-
-        #[cfg(not(windows))]
-        {
-            Err(crate::error::RustLtfsError::unsupported(
-                "Non-Windows platform",
-            ))
-        }
-    }
-
     /// Read tape blocks (enhanced implementation for large file support)
     pub fn read_blocks(&self, block_count: u32, buffer: &mut [u8]) -> Result<u32> {
         debug!(
@@ -805,7 +733,7 @@ impl ScsiInterface {
             buffer.len()
         );
 
-        // 移除硬编码的LTO_BLOCK_SIZE检查，改为动态缓冲区处理
+
         // 对应LTFSCopyGUI的自适应缓冲区逻辑，不预先检查缓冲区大小
         // 让SCSI驱动返回实际读取的字节数或错误信息
 
@@ -2707,12 +2635,6 @@ pub fn load_tape(tape_drive: &str) -> Result<bool> {
     scsi.load_tape()
 }
 
-/// Convenience function: Directly eject tape of specified device
-pub fn eject_tape(tape_drive: &str) -> Result<bool> {
-    let mut scsi = ScsiInterface::new();
-    scsi.open_device(tape_drive)?;
-    scsi.eject_tape()
-}
 
 /// Convenience function: Locate to specific block (corresponding to LTFSCopyGUI overloads)
 pub fn locate_block(tape_drive: &str, block_address: u64, partition: u8) -> Result<u16> {

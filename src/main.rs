@@ -1,5 +1,4 @@
 mod cli;
-mod display;
 mod error;
 mod logger;
 mod ltfs_index;

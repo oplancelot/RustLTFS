@@ -1,5 +1,4 @@
 use super::{FileWriteEntry, TapeOperations, WriteOptions, WriteResult};
-#[allow(dead_code)]
 use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::LtfsIndex;
 use std::collections::HashMap;

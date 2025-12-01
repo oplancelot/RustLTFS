@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, RustLtfsError>;
