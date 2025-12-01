@@ -24,6 +24,8 @@ rustltfs write C:\local\file.txt --tape \\.\TAPE0 /tape/file.txt
 
 # Write from stdin
 rustltfs write --tape \\.\TAPE0 /tape/stream.tar < C:\local\stream.tar
+or
+Get-Content -Path 'C:\local\stream.tar' -Encoding Byte -Raw | rustltfs write --tape \\.\TAPE0 /tape/stream.tar
 ```
 
 ### 2. Read (`read`)
