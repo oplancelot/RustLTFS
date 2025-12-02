@@ -49,7 +49,7 @@ async fn run(args: Cli) -> Result<()> {
             );
 
             // Create tape operations instance
-            let mut ops = tape_ops::TapeOperations::new(&device, false);
+            let mut ops = tape_ops::TapeOperations::new(&device);
 
             // Configure advanced write options
             let mut write_options = tape_ops::WriteOptions::default();
@@ -305,7 +305,7 @@ async fn run(args: Cli) -> Result<()> {
             info!("Starting read operation: {} -> {:?}", device, source);
 
             // Create tape operations instance (never skip index for read operations)
-            let mut ops = tape_ops::TapeOperations::new(&device, false);
+            let mut ops = tape_ops::TapeOperations::new(&device);
 
             // Initialize tape device with auto index reading
             ops.initialize(Some(tape_ops::core::OperationType::Read)).await?;
@@ -345,7 +345,7 @@ async fn run(args: Cli) -> Result<()> {
             info!("Getting tape space information: {}", device);
 
             // Create tape operations instance (never offline for space command)
-            let mut ops = tape_ops::TapeOperations::new(&device, false);
+            let mut ops = tape_ops::TapeOperations::new(&device);
 
             // Initialize for space operation
             ops.initialize(Some(tape_ops::core::OperationType::Space)).await?;

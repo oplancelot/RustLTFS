@@ -19,12 +19,7 @@ impl TapeOperations {
     pub async fn update_index_on_tape_with_options_dual_partition(&mut self, force_index: bool) -> Result<()> {
         info!("Starting to update tape LTFS index...");
 
-        // Allow execution in offline mode but skip actual tape operations
-        if self.offline_mode {
-            info!("Offline mode: simulating index update operation");
-            self.write_progress.total_bytes_unindexed = 0;
-            return Ok(());
-        }
+
 
         // Check if index exists and has modifications  
         // 优先使用 self.index (包含最新的文件状态)，回退到 self.schema

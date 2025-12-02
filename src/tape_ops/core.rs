@@ -155,7 +155,7 @@ pub enum OperationType {
 /// Tape operations - core functionality from LTFSCopyGUI
 pub struct TapeOperations {
     pub(crate) device_path: String,
-    pub(crate) offline_mode: bool,
+
     pub(crate) index: Option<LtfsIndex>,
     pub(crate) schema: Option<LtfsIndex>,
     pub(crate) block_size: u32,
@@ -178,13 +178,13 @@ pub struct TapeOperations {
 
 impl TapeOperations {
     /// Create new tape operations instance with performance control
-    pub fn new(device: &str, offline_mode: bool) -> Self {
+    pub fn new(device: &str) -> Self {
         let performance_state = PerformanceControlState::default();
         let max_concurrent = performance_state.max_concurrent_operations as usize;
 
         Self {
             device_path: device.to_string(),
-            offline_mode,
+
             index: None,
             schema: None,
             block_size: crate::scsi::block_sizes::LTO_BLOCK_SIZE, // Default block size (64KB)
@@ -535,11 +535,7 @@ impl TapeOperations {
             "Initializing partition detection (LTFSCopyGUI compatible) - using opened SCSI device"
         );
 
-        if self.offline_mode {
-            info!("Offline mode: skipping partition detection");
-            self.extra_partition_count = Some(1); // Assume dual-partition in offline mode
-            return Ok(());
-        }
+
 
         // 直接使用已打开的self.scsi进行MODE SENSE检测 (对应LTFSCopyGUI的MODE SENSE检测)
         debug!("🔧 Using opened SCSI device for MODE SENSE (fixing device handle inconsistency)");
@@ -661,7 +657,6 @@ impl TapeOperations {
     pub fn create_partition_manager(&self) -> super::partition_manager::PartitionManager {
         super::partition_manager::PartitionManager::new(
             std::sync::Arc::new(crate::scsi::ScsiInterface::new()),
-            self.offline_mode,
         )
     }
 
@@ -762,12 +757,7 @@ impl TapeOperations {
     pub async fn initialize(&mut self, operation_type: Option<OperationType>) -> Result<()> {
         let op_type = operation_type.unwrap_or(OperationType::Write); // 默认为写入模式
 
-        if self.offline_mode {
-            if matches!(op_type, OperationType::Read | OperationType::Write) {
-                info!("Offline mode, skipping device initialization");
-            }
-            return Ok(());
-        }
+
 
         // 设备初始化（所有操作都需要）
         self.scsi.open_device(&self.device_path)?;

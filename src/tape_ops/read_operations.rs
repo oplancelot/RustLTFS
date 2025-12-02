@@ -102,10 +102,7 @@ impl super::TapeOperations {
     pub async fn read_index_from_tape(&mut self) -> Result<()> {
         info!("Starting LTFS index reading process with LTFSCopyGUI compatible method...");
 
-        if self.offline_mode {
-            info!("Offline mode: using dummy index for simulation");
-            return Ok(());
-        }
+
 
         debug!("=== LTFSCopyGUI Compatible Index Reading Process ===");
 

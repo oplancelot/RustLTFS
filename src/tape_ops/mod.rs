@@ -275,24 +275,9 @@ pub struct EncryptionStatus {
     pub method: String,
 }
 
-/// Write result information
-#[derive(Debug, Clone)]
-pub struct WriteResult {
-    pub position: crate::scsi::TapePosition,
-    pub blocks_written: u32,
-    pub bytes_written: u64,
-}
 
-/// Index statistics structure
-#[derive(Debug, Clone)]
-pub struct IndexStatistics {
-    pub total_files: u64,
-    pub total_directories: u64,
-    pub total_size: u64,
-    pub index_generation: u64,
-    pub format_time: String,
-    pub volume_uuid: String,
-}
+
+
 
 // IndexViewer removed - `view-index` CLI command was deleted and IndexViewer utilities are no longer needed.
 // Retained index-related core functionality lives in `ltfs_index` and read_operations modules.

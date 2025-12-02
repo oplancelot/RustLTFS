@@ -1,4 +1,4 @@
-use super::{FileWriteEntry, TapeOperations, WriteOptions, WriteResult};
+use super::{FileWriteEntry, TapeOperations, WriteOptions};
 use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::LtfsIndex;
 use std::collections::HashMap;
@@ -302,7 +302,7 @@ impl TapeOperations {
         &mut self,
         source_path: &Path,
         target_path: &str,
-    ) -> Result<WriteResult> {
+    ) -> Result<()> {
         info!(
             "Streaming file write to tape: {:?} -> {}",
             source_path, target_path
@@ -315,23 +315,7 @@ impl TapeOperations {
             ));
         }
 
-        // Offline mode handling
-        if self.offline_mode {
-            info!("Offline mode: simulating file write operation");
-            self.write_progress.current_files_processed += 1;
-            return Ok(WriteResult {
-                position: crate::scsi::TapePosition {
-                    partition: 1,
-                    block_number: 0,
-                    file_number: 0,
-                    set_number: 0,
-                    end_of_data: false,
-                    beginning_of_partition: false,
-                },
-                blocks_written: 0,
-                bytes_written: 0,
-            });
-        }
+
 
         // Get file metadata
         let metadata = tokio::fs::metadata(source_path).await.map_err(|e| {
@@ -345,36 +329,14 @@ impl TapeOperations {
         if let Some(ext) = source_path.extension() {
             if ext.to_string_lossy().to_lowercase() == "xattr" {
                 info!("Skipping .xattr file: {:?}", source_path);
-                return Ok(WriteResult {
-                    position: crate::scsi::TapePosition {
-                        partition: 1,
-                        block_number: 0,
-                        file_number: 0,
-                        set_number: 0,
-                        end_of_data: false,
-                        beginning_of_partition: false,
-                    },
-                    blocks_written: 0,
-                    bytes_written: 0,
-                });
+                return Ok(());
             }
         }
 
         // Skip symlinks if configured
         if self.write_options.skip_symlinks && metadata.file_type().is_symlink() {
             info!("Skipping symlink: {:?}", source_path);
-            return Ok(WriteResult {
-                position: crate::scsi::TapePosition {
-                    partition: 1,
-                    block_number: 0,
-                    file_number: 0,
-                    set_number: 0,
-                    end_of_data: false,
-                    beginning_of_partition: false,
-                },
-                blocks_written: 0,
-                bytes_written: 0,
-            });
+            return Ok(());
         }
 
         // Check available tape space
@@ -605,11 +567,7 @@ impl TapeOperations {
             );
         }
 
-        Ok(WriteResult {
-            position: write_start_position,
-            blocks_written: total_blocks_written,
-            bytes_written: total_bytes_written,
-        })
+        Ok(())
     }
 
     /// Write data from a BufRead stream to tape (supports stdin and files)
@@ -618,7 +576,7 @@ impl TapeOperations {
         mut reader: Box<dyn BufRead + Send>,
         target_path: &str,
         _estimated_size: Option<u64>,
-    ) -> Result<WriteResult> {
+    ) -> Result<()> {
         info!("Writing from reader stream to tape: {}", target_path);
 
         // Check stop flag
@@ -628,23 +586,7 @@ impl TapeOperations {
             ));
         }
 
-        // Offline mode handling
-        if self.offline_mode {
-            info!("Offline mode: simulating stream write operation");
-            self.write_progress.current_files_processed += 1;
-            return Ok(WriteResult {
-                position: crate::scsi::TapePosition {
-                    partition: 1,
-                    block_number: 0,
-                    file_number: 0,
-                    set_number: 0,
-                    end_of_data: false,
-                    beginning_of_partition: false,
-                },
-                blocks_written: 0,
-                bytes_written: 0,
-            });
-        }
+
 
         // Prepare for writing to tape
         self.scsi.locate_to_eod(1)?;
@@ -833,11 +775,7 @@ impl TapeOperations {
                 .await?;
         }
 
-        Ok(WriteResult {
-            position: write_start_position,
-            blocks_written: total_blocks_written as u32,
-            bytes_written: total_bytes_written,
-        })
+        Ok(())
     }
 
     /// Write directory to tape (enhanced version based on LTFSCopyGUI AddDirectory)
@@ -858,11 +796,7 @@ impl TapeOperations {
             ));
         }
 
-        // Allow execution in offline mode but skip actual tape operations
-        if self.offline_mode {
-            info!("Offline mode: simulating directory write operation");
-            return Ok(());
-        }
+
 
         // Skip symlinks if configured (对应LTFSCopyGUI的SkipSymlink)
         let metadata = tokio::fs::metadata(source_dir).await.map_err(|e| {
@@ -1539,238 +1473,5 @@ impl TapeOperations {
         Ok(())
     }
 
-    /// Write index to tape
-    pub async fn write_index_to_tape(&mut self) -> Result<()> {
-        self.update_index_on_tape().await
-    }
 
-    /// Commit index changes
-    pub async fn commit_index_changes(&mut self) -> Result<()> {
-        self.update_index_on_tape().await
-    }
-
-    /// Enhanced index update on tape (based on LTFSCopyGUI WriteCurrentIndex)
-    /// Supports ForceIndex option for compatibility
-    pub async fn update_index_on_tape(&mut self) -> Result<()> {
-        self.update_index_on_tape_with_options(false).await
-    }
-
-    /// Update index on tape with force option (corresponds to VB.NET WriteCurrentIndex)
-    pub async fn update_index_on_tape_with_options(&mut self, force_index: bool) -> Result<()> {
-        info!(
-            "Starting to update tape LTFS index (force: {})...",
-            force_index
-        );
-
-        // Allow execution in offline mode but skip actual tape operations
-        if self.offline_mode {
-            info!("Offline mode: simulating index update operation");
-            self.write_progress.total_bytes_unindexed = 0;
-            return Ok(());
-        }
-
-        // Check if index exists and has modifications
-        let mut current_index = match &self.index {
-            Some(idx) => idx.clone(),
-            None => {
-                match &self.schema {
-                    Some(schema_idx) => schema_idx.clone(),
-                    None => {
-                        // Create new index if none exists
-                        self.create_new_ltfs_index()
-                    }
-                }
-            }
-        };
-
-        // Enhanced logic following LTFSCopyGUI: check force_index OR TotalBytesUnindexed
-        let should_update = force_index
-            || self.write_options.force_index
-            || self.write_progress.total_bytes_unindexed > 0;
-
-        if !should_update {
-            info!("No unindexed data and force_index not set, skipping update");
-            return Ok(());
-        }
-
-        // Position to End of Data (EOD) in data partition (对应LTFSCopyGUI的分区映射逻辑)
-        let current_position = self.scsi.read_position()?;
-        info!(
-            "Current tape position: partition={}, block={}, ExtraPartitionCount={}",
-            current_position.partition,
-            current_position.block_number,
-            self.get_extra_partition_count()
-        );
-
-        // 使用ExtraPartitionCount进行分区映射 (对应LTFSCopyGUI的Math.Min逻辑)
-        let logical_data_partition = 1u8; // Partition B
-        let data_partition = self.get_target_partition(logical_data_partition);
-
-        if current_position.partition != data_partition || self.write_options.goto_eod_on_write {
-            if current_position.partition != data_partition {
-                info!(
-                    "Moving to data partition {} (mapped from logical partition {})",
-                    data_partition, logical_data_partition
-                );
-                self.scsi.locate_block(data_partition, 0)?; // Move to beginning of data partition first
-            }
-            // Go to end of data
-            self.scsi.space(crate::scsi::SpaceType::EndOfData, 0)?;
-        }
-
-        let eod_position = self.scsi.read_position()?;
-        info!(
-            "End of data position: partition={}, block={}",
-            eod_position.partition, eod_position.block_number
-        );
-
-        // Validate position for index write (对应LTFSCopyGUI的ExtraPartitionCount验证逻辑)
-        let extra_partition_count = self.get_extra_partition_count();
-        if extra_partition_count > 0 {
-            let current_schema_partition = if current_index.location.partition == "b" {
-                1
-            } else {
-                0
-            };
-            let target_schema_partition = self.get_target_partition(current_schema_partition);
-
-            if target_schema_partition != eod_position.partition {
-                return Err(RustLtfsError::tape_device(format!(
-                    "Current position p{}b{} not allowed for index write (ExtraPartitionCount={})",
-                    eod_position.partition, eod_position.block_number, extra_partition_count
-                )));
-            }
-
-            // Enhanced validation logic for first write scenarios
-            // 首次写入时，索引startblock可能为0，EOD位置也可能为0，这是正常情况
-            let is_first_write =
-                current_index.generationnumber <= 1 && current_index.location.startblock == 0;
-            let is_eod_at_start = eod_position.block_number == 0;
-
-            // 如果不是首次写入，或者EOD不在开始位置，才进行位置冲突检查
-            if !is_first_write
-                && !is_eod_at_start
-                && current_index.location.startblock >= eod_position.block_number
-            {
-                return Err(RustLtfsError::tape_device(format!(
-                    "Current position p{}b{} not allowed for index write, index at startblock {} (ExtraPartitionCount={})",
-                    eod_position.partition, eod_position.block_number, current_index.location.startblock, extra_partition_count
-                )));
-            }
-
-            debug!("Index write validation passed: first_write={}, eod_at_start={}, startblock={}, eod_block={}",
-                  is_first_write, is_eod_at_start, current_index.location.startblock, eod_position.block_number);
-        }
-
-        // Write filemark before index (corresponding to LTFSCopyGUI's WriteFileMark)
-        self.scsi.write_filemarks(1)?;
-
-        // Update index metadata (corresponding to LTFSCopyGUI's index metadata update)
-        current_index.generationnumber += 1;
-        current_index.updatetime = get_current_ltfs_timestamp();
-        current_index.location.partition = "b".to_string(); // Data partition
-
-        // Store previous generation location if exists
-        if let Some(ref existing_index) = &self.index {
-            current_index.previousgenerationlocation = Some(existing_index.location.clone());
-        }
-
-        // Get position for index write location
-        let index_position = self.scsi.read_position()?;
-        current_index.location.startblock = index_position.block_number;
-        debug!(
-            "Index will be written at position: partition={}, block={}",
-            index_position.partition, index_position.block_number
-        );
-
-        debug!("Generating index XML...");
-
-        // Create temporary file for index (matching LTFSCopyGUI's temporary file approach)
-        let temp_index_path = std::env::temp_dir().join(format!(
-            "LWI_{}.tmp",
-            chrono::Utc::now().format("%Y%m%d_%H%M%S%.7f")
-        ));
-
-        // Serialize index to XML and save to temporary file
-        let index_xml = current_index.to_xml()?;
-
-        // Debug: Print first 500 chars of generated XML
-        debug!(
-            "Generated XML (first 500 chars): {}",
-            &index_xml.chars().take(500).collect::<String>()
-        );
-        tokio::fs::write(&temp_index_path, index_xml)
-            .await
-            .map_err(|e| {
-                RustLtfsError::file_operation(format!("Cannot write temporary index file: {}", e))
-            })?;
-
-        debug!("Writing index to tape...");
-
-        // Write index file to tape (matching LTFSCopyGUI's TapeUtils.Write approach)
-        let index_content = tokio::fs::read(&temp_index_path).await.map_err(|e| {
-            RustLtfsError::file_operation(format!("Cannot read temporary index file: {}", e))
-        })?;
-
-        // Calculate blocks needed for index
-        let blocks_needed =
-            (index_content.len() + self.block_size as usize - 1) / self.block_size as usize;
-        let buffer_size = blocks_needed * self.block_size as usize;
-        let mut buffer = vec![0u8; buffer_size];
-
-        // Copy index content to buffer (rest will be zero-padded)
-        buffer[..index_content.len()].copy_from_slice(&index_content);
-
-        // Apply performance controls for index write (对应LTFSCopyGUI的索引写入性能控制)
-        // Apply performance controls for index write (对应LTFSCopyGUI的索引写入性能控制)
-        self.apply_performance_controls(index_content.len() as u64, buffer_size as u64)
-            .await?;
-
-        // Write index blocks to tape
-        let blocks_written = self.scsi.write_blocks(blocks_needed as u32, &buffer)?;
-
-        if blocks_written != blocks_needed as u32 {
-            // Clean up temporary file
-            if let Err(e) = tokio::fs::remove_file(&temp_index_path).await {
-                warn!("Failed to remove temporary index file: {}", e);
-            }
-            return Err(RustLtfsError::scsi(format!(
-                "Expected to write {} blocks for index, but wrote {}",
-                blocks_needed, blocks_written
-            )));
-        }
-
-        // Clean up temporary file (matching LTFSCopyGUI's IO.File.Delete)
-        if let Err(e) = tokio::fs::remove_file(&temp_index_path).await {
-            warn!("Failed to remove temporary index file: {}", e);
-        }
-
-        // Reset TotalBytesUnindexed (matching LTFSCopyGUI's logic)
-        self.write_progress.total_bytes_unindexed = 0;
-
-        // Clear current progress stats if requested (matching LTFSCopyGUI's ClearCurrentStat)
-        if !force_index {
-            // Only clear on normal updates, not forced ones
-            self.write_progress.current_bytes_processed = 0;
-            self.write_progress.current_files_processed = 0;
-        }
-
-        // Write filemark after index
-        self.scsi.write_filemarks(1)?;
-
-        // Update current position tracking
-        let final_position = self.scsi.read_position()?;
-        debug!(
-            "Index write completed at position: partition={}, block={}",
-            final_position.partition, final_position.block_number
-        );
-
-        // Update internal state
-        self.index = Some(current_index.clone());
-        self.schema = Some(current_index);
-        self.modified = false;
-
-        info!("LTFS index update completed successfully");
-        Ok(())
-    }
 }

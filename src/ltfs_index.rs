@@ -120,47 +120,9 @@ pub struct ExtendedAttribute {
     pub value: String,
 }
 
-/// Result of path lookup in LTFS index
-#[derive(Debug, Clone)]
-pub enum PathType {
-    File(File),
-    Directory(Directory),
-    NotFound,
-}
 
-/// Directory entry for listing
-#[derive(Debug, Clone)]
-pub enum DirectoryEntry {
-    File(File),
-    Directory(Directory),
-}
 
-impl DirectoryEntry {
-    pub fn name(&self) -> &str {
-        match self {
-            DirectoryEntry::File(f) => &f.name,
-            DirectoryEntry::Directory(d) => &d.name,
-        }
-    }
 
-    pub fn size(&self) -> u64 {
-        match self {
-            DirectoryEntry::File(f) => f.length,
-            DirectoryEntry::Directory(_) => 0,
-        }
-    }
-
-    pub fn modify_time(&self) -> &str {
-        match self {
-            DirectoryEntry::File(f) => &f.modify_time,
-            DirectoryEntry::Directory(d) => &d.modify_time,
-        }
-    }
-
-    pub fn is_directory(&self) -> bool {
-        matches!(self, DirectoryEntry::Directory(_))
-    }
-}
 
 impl LtfsIndex {
     /// Parse LTFS index from XML content with enhanced error handling
@@ -205,35 +167,7 @@ impl LtfsIndex {
         Ok(index)
     }
 
-    /// Parse LTFS index from XML content using streaming parser for very large files
-    pub fn from_xml_streaming(xml_content: &str) -> Result<Self> {
-        debug!(
-            "Parsing large LTFS index using streaming parser, length: {}",
-            xml_content.len()
-        );
 
-        // For very large indexes (>100MB), use streaming approach
-        if xml_content.len() > 100_000_000 {
-            warn!(
-                "Large XML detected ({} bytes), parsing may take time",
-                xml_content.len()
-            );
-
-            // Try chunked parsing approach
-            match Self::parse_xml_in_chunks(xml_content) {
-                Ok(index) => return Ok(index),
-                Err(e) => {
-                    warn!(
-                        "Chunked parsing failed: {}, falling back to standard parsing",
-                        e
-                    );
-                }
-            }
-        }
-
-        // Fallback to standard parsing
-        Self::from_xml(xml_content)
-    }
 
     /// Extract LTFS index section from combined XML content 
     /// (separates ltfsindex from ltfslabel if both are present)
@@ -704,31 +638,7 @@ impl LtfsIndex {
         count
     }
 
-    /// Parse XML in chunks for very large files (experimental)
-    fn parse_xml_in_chunks(xml_content: &str) -> Result<Self> {
-        debug!("Attempting chunked XML parsing");
 
-        // This is a simplified chunked approach
-        // For production, would need more sophisticated streaming XML parser
-
-        // For now, try to split the XML and reassemble if possible
-        // This is mainly to test memory usage patterns with large indexes
-
-        const CHUNK_SIZE: usize = 10_000_000; // 10MB chunks
-        let mut processed_xml = String::new();
-
-        for (i, chunk) in xml_content.as_bytes().chunks(CHUNK_SIZE).enumerate() {
-            let chunk_str = String::from_utf8_lossy(chunk);
-            debug!("Processing XML chunk {} ({} bytes)", i, chunk.len());
-            processed_xml.push_str(&chunk_str);
-
-            // Small delay to prevent memory pressure
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-
-        // Parse the reassembled XML
-        Self::from_xml(&processed_xml)
-    }
 
     /// Serialize LTFS index to XML string
     pub fn to_xml(&self) -> Result<String> {
@@ -782,29 +692,6 @@ impl LtfsIndex {
         }
     }
 
-    /// Insert a file into the specified directory path
-    pub fn insert_file(&mut self, parent_path: &str, file: File) -> Result<()> {
-        let normalized_path = normalize_path(parent_path);
-        debug!(
-            "Inserting file '{}' into directory '{}'",
-            file.name, normalized_path
-        );
-
-        if normalized_path == "/" || normalized_path.is_empty() {
-            // Insert into root directory
-            self.root_directory.contents.files.push(file);
-            return Ok(());
-        }
-
-        // For simplicity, just insert into root for now
-        info!(
-            "Simplified implementation: inserting '{}' into root directory",
-            file.name
-        );
-        self.root_directory.contents.files.push(file);
-        Ok(())
-    }
-
     /// Increment generation number
     pub fn increment_generation(&mut self) {
         self.generationnumber += 1;
@@ -812,130 +699,7 @@ impl LtfsIndex {
         debug!("Updated LTFS index generation to {}", self.generationnumber);
     }
 
-    /// Find a path in the LTFS index
-    pub fn find_path(&self, path: &str) -> Result<PathType> {
-        debug!("Finding path: {}", path);
 
-        let normalized_path = self.normalize_path(path);
-        let path_parts: Vec<&str> = normalized_path
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .collect();
-
-        if path_parts.is_empty() {
-            // Root directory
-            return Ok(PathType::Directory(self.root_directory.clone()));
-        }
-
-        self.find_path_recursive(&self.root_directory, &path_parts, 0)
-    }
-
-    /// List directory contents
-    pub fn list_directory(&self, path: &str) -> Result<Vec<DirectoryEntry>> {
-        debug!("Listing directory: {}", path);
-
-        match self.find_path(path)? {
-            PathType::Directory(dir) => {
-                let mut entries = Vec::new();
-
-                // Add subdirectories
-                for subdir in &dir.contents.directories {
-                    entries.push(DirectoryEntry::Directory(subdir.clone()));
-                }
-
-                // Add files
-                for file in &dir.contents.files {
-                    entries.push(DirectoryEntry::File(file.clone()));
-                }
-
-                // Sort entries by name
-                entries.sort_by(|a, b| a.name().cmp(b.name()));
-
-                debug!("Found {} entries in directory {}", entries.len(), path);
-                Ok(entries)
-            }
-            PathType::File(_) => Err(crate::error::RustLtfsError::file_operation(format!(
-                "Path {} is a file, not a directory",
-                path
-            ))),
-            PathType::NotFound => Err(crate::error::RustLtfsError::file_operation(format!(
-                "Directory {} not found",
-                path
-            ))),
-        }
-    }
-
-    /// Get file information
-    pub fn get_file_info(&self, path: &str) -> Result<File> {
-        debug!("Getting file info: {}", path);
-
-        match self.find_path(path)? {
-            PathType::File(file) => Ok(file),
-            PathType::Directory(_) => Err(crate::error::RustLtfsError::file_operation(format!(
-                "Path {} is a directory, not a file",
-                path
-            ))),
-            PathType::NotFound => Err(crate::error::RustLtfsError::file_operation(format!(
-                "File {} not found",
-                path
-            ))),
-        }
-    }
-
-    /// Normalize path (remove redundant slashes, etc.)
-    fn normalize_path(&self, path: &str) -> String {
-        let mut normalized = path.replace('\\', "/");
-
-        // Remove multiple consecutive slashes
-        while normalized.contains("//") {
-            normalized = normalized.replace("//", "/");
-        }
-
-        // Remove trailing slash unless it's root
-        if normalized.len() > 1 && normalized.ends_with('/') {
-            normalized.pop();
-        }
-
-        normalized
-    }
-
-    /// Recursively find path in directory tree
-    fn find_path_recursive(
-        &self,
-        current_dir: &Directory,
-        path_parts: &[&str],
-        index: usize,
-    ) -> Result<PathType> {
-        if index >= path_parts.len() {
-            return Ok(PathType::Directory(current_dir.clone()));
-        }
-
-        let current_part = path_parts[index];
-
-        // Check subdirectories
-        for subdir in &current_dir.contents.directories {
-            if subdir.name == current_part {
-                if index == path_parts.len() - 1 {
-                    // This is the target
-                    return Ok(PathType::Directory(subdir.clone()));
-                } else {
-                    // Continue searching in subdirectory
-                    return self.find_path_recursive(subdir, path_parts, index + 1);
-                }
-            }
-        }
-
-        // Check files (only if this is the last part)
-        if index == path_parts.len() - 1 {
-            for file in &current_dir.contents.files {
-                if file.name == current_part {
-                    return Ok(PathType::File(file.clone()));
-                }
-            }
-        }
-
-        Ok(PathType::NotFound)
-    }
 }
 
 impl File {
@@ -1183,7 +947,7 @@ impl LtfsIndex {
 
     /// 根据文件路径查找磁带位置信息
     pub fn find_file_location(&self, file_path: &str) -> Option<TapeFileLocation> {
-        let normalized_path = self.normalize_path(file_path);
+        let normalized_path = file_path.replace('\\', "/");
         debug!("查找文件位置: {}", normalized_path);
 
         // 在Load格式中，文件通常直接在根目录下

@@ -59,16 +59,16 @@ pub struct IndexLocation {
 /// Partition Manager - 专门处理磁带分区管理的结构体
 pub struct PartitionManager {
     scsi: Arc<ScsiInterface>,
-    offline_mode: bool,
+
     partition_label: Option<LtfsPartitionLabel>,
 }
 
 impl PartitionManager {
     /// 创建新的分区管理器实例
-    pub fn new(scsi: Arc<ScsiInterface>, offline_mode: bool) -> Self {
+    pub fn new(scsi: Arc<ScsiInterface>) -> Self {
         Self {
             scsi,
-            offline_mode,
+
             partition_label: None,
         }
     }
@@ -78,10 +78,7 @@ impl PartitionManager {
     pub async fn detect_extra_partition_count(&self) -> Result<u8> {
         debug!("Detecting ExtraPartitionCount using MODE SENSE 0x11 (LTFSCopyGUI exact logic)");
 
-        if self.offline_mode {
-            debug!("Offline mode: assuming dual-partition (ExtraPartitionCount = 1)");
-            return Ok(1);
-        }
+
 
         // 执行MODE SENSE 0x11命令 (对应LTFSCopyGUI的ModeSense(driveHandle, &H11))
         match self.scsi.mode_sense_partition_info() {
@@ -240,10 +237,7 @@ impl PartitionManager {
     async fn check_multi_partition_support(&self) -> Result<bool> {
         debug!("Checking multi-partition support using SCSI MODE SENSE (ExtraPartitionCount detection)");
 
-        if self.offline_mode {
-            debug!("Offline mode: assuming dual-partition support");
-            return Ok(true);
-        }
+
 
         // 使用我们实现的SCSI MODE SENSE命令来准确检测分区
         // 这比尝试读取数据更可靠，因为分区可能存在但为空
@@ -540,10 +534,7 @@ impl PartitionManager {
     pub fn switch_to_partition(&self, partition: u8) -> Result<()> {
         debug!("Switching to partition {}", partition);
 
-        if self.offline_mode {
-            debug!("Offline mode: simulating partition switch");
-            return Ok(());
-        }
+
 
         self.scsi.locate_block(partition, 0)?;
         debug!("Successfully switched to partition {}", partition);
@@ -554,10 +545,7 @@ impl PartitionManager {
     pub fn position_to_partition(&self, partition: u8, block: u64) -> Result<()> {
         debug!("Positioning to partition {}, block {}", partition, block);
 
-        if self.offline_mode {
-            debug!("Offline mode: simulating partition positioning");
-            return Ok(());
-        }
+
 
         self.scsi.locate_block(partition, block)?;
         debug!(
@@ -576,9 +564,7 @@ impl PartitionManager {
     pub async fn read_partition_labels(&mut self) -> Result<LtfsPartitionLabel> {
         debug!("Reading LTFS partition label from tape");
 
-        if self.offline_mode {
-            return Ok(LtfsPartitionLabel::default());
-        }
+
 
         // LTFS分区标签通常位于分区a的block 0
         // 首先定位到开头
@@ -773,10 +759,7 @@ impl PartitionManager {
     pub async fn partition_health_check(&self) -> Result<bool> {
         debug!("Performing partition health check");
 
-        if self.offline_mode {
-            debug!("Offline mode: simulating partition health check");
-            return Ok(true);
-        }
+
 
         // 检查是否能成功访问所有分区
         let partition_info = self.detect_partition_sizes().await?;
@@ -966,10 +949,7 @@ impl crate::tape_ops::TapeOperations {
     pub async fn partition_health_check(&self) -> Result<bool> {
         info!("🔧 Performing partition health check using opened SCSI device");
 
-        if self.offline_mode {
-            info!("Offline mode: simulating partition health check");
-            return Ok(true);
-        }
+
 
         // 检查是否能成功访问所有分区
         let partition_info = self.detect_partition_sizes().await?;
@@ -1009,10 +989,7 @@ impl crate::tape_ops::TapeOperations {
             partition
         );
 
-        if self.offline_mode {
-            info!("Offline mode: simulating partition switch");
-            return Ok(());
-        }
+
 
         self.scsi.locate_block(partition, 0)?;
         info!("Successfully switched to partition {}", partition);
@@ -1026,10 +1003,7 @@ impl crate::tape_ops::TapeOperations {
             partition, block
         );
 
-        if self.offline_mode {
-            info!("Offline mode: simulating partition positioning");
-            return Ok(());
-        }
+
 
         self.scsi.locate_block(partition, block)?;
         info!(
@@ -1196,7 +1170,7 @@ impl crate::tape_ops::TapeOperations {
             );
 
             match self.scsi.locate_block(index_partition, block) {
-                Ok(()) => match self.try_read_index_at_current_position_sync() {
+                Ok(()) => match self.try_read_index_at_current_position_advanced().await {
                     Ok(xml_content) => {
                         if !xml_content.trim().is_empty()
                             && xml_content.contains("<ltfsindex")
@@ -1404,19 +1378,15 @@ impl crate::tape_ops::TapeOperations {
         debug!("🎯 Executing LTFSCopyGUI exact index reading method");
 
         // 步骤1: 检测ExtraPartitionCount (对应LTFSCopyGUI的分区检测)
-        let extra_partition_count = if self.offline_mode {
-            1
-        } else {
-            match self.scsi.mode_sense_partition_page_0x11() {
-                Ok(mode_data) if mode_data.len() >= 4 => {
-                    let count = mode_data[3];
-                    debug!("📊 ExtraPartitionCount detected from MODE SENSE: {}", count);
-                    count
-                }
-                _ => {
-                    debug!("📊 Cannot read ExtraPartitionCount, assuming single partition");
-                    0
-                }
+        let extra_partition_count = match self.scsi.mode_sense_partition_page_0x11() {
+            Ok(mode_data) if mode_data.len() >= 4 => {
+                let count = mode_data[3];
+                debug!("📊 ExtraPartitionCount detected from MODE SENSE: {}", count);
+                count
+            }
+            _ => {
+                debug!("📊 Cannot read ExtraPartitionCount, assuming single partition");
+                0
             }
         };
 
@@ -1704,72 +1674,7 @@ impl crate::tape_ops::TapeOperations {
             && xml_content.len() > 200
     }
 
-    /// 尝试从当前位置读取索引 (同步版本，用于回退策略)
-    pub fn try_read_index_at_current_position_sync(&self) -> Result<String> {
-        let block_size = crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize;
-        let max_blocks = 50; // 限制读取块数，避免读取过多数据
-        let mut xml_content = String::new();
-        let mut blocks_read = 0;
 
-        // 读取多个块直到找到完整的XML或达到限制
-        for block_num in 0..max_blocks {
-            let mut buffer = vec![0u8; block_size];
-
-            match self.scsi.read_blocks(1, &mut buffer) {
-                Ok(read_count) => {
-                    if read_count == 0 {
-                        break;
-                    }
-
-                    blocks_read += 1;
-
-                    // 检查是否为全零块（可能的文件标记）
-                    if buffer.iter().all(|&b| b == 0) {
-                        debug!(
-                            "Encountered zero block at {}, assuming end of data",
-                            block_num
-                        );
-                        break;
-                    }
-
-                    // 转换为UTF-8并添加到内容
-                    match String::from_utf8(buffer) {
-                        Ok(block_content) => {
-                            let trimmed = block_content.trim_end_matches('\0');
-                            xml_content.push_str(trimmed);
-
-                            // 检查是否已读取完整的XML
-                            if xml_content.contains("</ltfsindex>") {
-                                debug!(
-                                    "Found complete LTFS index XML after {} blocks",
-                                    blocks_read
-                                );
-                                break;
-                            }
-                        }
-                        Err(_) => {
-                            debug!("Non-UTF8 data encountered at block {}, stopping", block_num);
-                            break;
-                        }
-                    }
-                }
-                Err(_) => {
-                    debug!("Read error at block {}, stopping", block_num);
-                    break;
-                }
-            }
-        }
-
-        let cleaned_xml = xml_content.replace('\0', "").trim().to_string();
-
-        if cleaned_xml.is_empty() {
-            Err(RustLtfsError::ltfs_index(
-                "No XML content found at current position".to_string(),
-            ))
-        } else {
-            Ok(cleaned_xml)
-        }
-    }
 
     /// 使用临时文件读取到文件标记 (精准对应TapeUtils.ReadToFileMark)
 
@@ -2027,39 +1932,7 @@ impl crate::tape_ops::TapeOperations {
         Ok(error_count <= 2) // 允许有限重试
     }
 
-    /// 支持高级搜索的索引读取方法 (对应LTFSCopyGUI高级功能)
-    pub fn try_read_index_at_current_position_advanced_sync(&self) -> Result<String> {
-        let block_size = self
-            .partition_label
-            .as_ref()
-            .map(|plabel| plabel.blocksize as usize)
-            .unwrap_or(crate::scsi::block_sizes::LTO_BLOCK_SIZE as usize);
 
-        debug!(
-            "Advanced index reading with dynamic blocksize: {}",
-            block_size
-        );
-
-        // 读取并清理临时文件
-        let xml_content = self.read_to_file_mark_with_temp_file(block_size)?;
-
-        // 清理临时文件已在read_to_file_mark_with_temp_file中处理
-
-        // 清理XML内容（对应VB的Replace和Trim）
-        let cleaned_xml = xml_content.replace('\0', "").trim().to_string();
-
-        if cleaned_xml.is_empty() {
-            debug!("No LTFS index data found");
-            return Err(RustLtfsError::ltfs_index("Index XML is empty".to_string()));
-        } else {
-            debug!(
-                "Advanced index reading extracted {} bytes of index data",
-                cleaned_xml.len()
-            );
-        }
-
-        Ok(cleaned_xml)
-    }
 
     /// 高级当前位置索引读取 (增强版本，支持更好的错误处理)
     pub async fn try_read_index_at_current_position_advanced(&self) -> Result<String> {
@@ -2072,91 +1945,6 @@ impl crate::tape_ops::TapeOperations {
 
         // 使用ReadToFileMark方法，与标准流程保持一致
         self.read_to_file_mark_with_temp_file(block_size)
-    }
-
-    /// 搜索数据区域中的索引副本 (分区管理器版本)
-    pub async fn search_data_area_for_index_partition(&mut self) -> Result<()> {
-        debug!("Searching data area for index copies (optimized search)");
-
-        // 缩减搜索范围：如果磁带是空白的，不需要大范围搜索
-        let limited_search_locations = vec![
-            // 只搜索最可能的位置
-            50, 100, 500, 1000, 2000,
-        ];
-
-        for &block in &limited_search_locations {
-            debug!("Extended search: trying block {}", block);
-
-            // 在单分区磁带上，所有数据都在partition 0
-            match self.scsi.locate_block(0, block) {
-                Ok(()) => match self.try_read_index_at_current_position_advanced().await {
-                    Ok(xml_content) => {
-                        if self
-                            .validate_and_process_index_partition(&xml_content)
-                            .await?
-                        {
-                            debug!("✅ Found valid index in data area at block {}", block);
-                            return Ok(());
-                        }
-                    }
-                    Err(e) => {
-                        debug!("No valid index at data block {}: {}", block, e);
-                    }
-                },
-                Err(e) => {
-                    debug!("Cannot position to data block {}: {}", block, e);
-                }
-            }
-
-            // 更短的延迟
-            if block > 1000 {
-                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-            }
-        }
-
-        Err(RustLtfsError::ltfs_index(
-            "No valid index found in data area search".to_string(),
-        ))
-    }
-
-    /// 验证并处理索引内容 (分区管理器版本)
-    pub async fn validate_and_process_index_partition(
-        &mut self,
-        xml_content: &str,
-    ) -> Result<bool> {
-        if xml_content.trim().is_empty() {
-            return Ok(false);
-        }
-
-        if !xml_content.contains("<ltfsindex") || !xml_content.contains("</ltfsindex>") {
-            return Ok(false);
-        }
-
-        // 尝试解析索引
-        match LtfsIndex::from_xml_streaming(xml_content) {
-            Ok(_index) => {
-                debug!("✅ Index validation successful, updating internal state");
-
-                // 保存索引文件到当前目录（按时间命名）
-                let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-                let index_filename = format!("ltfs_index_{}.xml", timestamp);
-
-                match std::fs::write(&index_filename, xml_content) {
-                    Ok(()) => {
-                        debug!("📄 LTFS索引已保存到: {}", index_filename);
-                    }
-                    Err(e) => {
-                        warn!("⚠️ 保存索引文件失败: {} - {}", index_filename, e);
-                    }
-                }
-
-                Ok(true)
-            }
-            Err(e) => {
-                debug!("Index parsing failed: {}", e);
-                Ok(false)
-            }
-        }
     }
 
     /// 异步版本：尝试从数据分区读取索引副本 (分区管理器版本)
@@ -2181,7 +1969,7 @@ impl crate::tape_ops::TapeOperations {
                     debug!("Trying data partition block {}", block);
 
                     match self.scsi.locate_block(data_partition, block) {
-                        Ok(()) => match self.try_read_index_at_current_position_sync() {
+                        Ok(()) => match self.try_read_index_at_current_position_advanced().await {
                             Ok(xml_content) => {
                                 if xml_content.contains("<ltfsindex")
                                     && xml_content.contains("</ltfsindex>")
@@ -2203,6 +1991,12 @@ impl crate::tape_ops::TapeOperations {
             "No valid index found in data partition".to_string(),
         ))
     }
+
+
+
+
+
+
 
     /// 在数据区搜索索引
     pub async fn search_data_area_for_index(&mut self) -> Result<()> {
