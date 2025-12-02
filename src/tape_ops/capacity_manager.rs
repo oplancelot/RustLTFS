@@ -26,14 +26,6 @@ pub struct TapeCapacityInfo {
     pub generation_info: String,
 }
 
-/// 磁带错误率信息
-#[derive(Debug, Clone)]
-pub struct ErrorRateInfo {
-    pub channel_error_rates: Vec<f64>,
-    pub overall_error_rate: f64,
-    pub c1_errors: Vec<u32>,
-    pub no_ccps: Vec<u32>,
-}
 
 /// 分区容量页面数据解析器（对应LTFSCopyGUI的TapeCapacityLogPage）
 pub struct CapacityPageParser {

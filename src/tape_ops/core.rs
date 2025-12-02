@@ -977,14 +977,6 @@ pub struct TapeSpaceInfo {
     pub available_space: u64,
 }
 
-/// 文件提取结果
-#[derive(Debug)]
-pub struct ExtractResult {
-    pub files_extracted: u64,
-    pub directories_created: u64,
-    pub total_bytes: u64,
-    pub verification_passed: bool,
-}
 
 // 辅助函数
 fn count_files_in_directory(dir: &crate::ltfs_index::Directory) -> u64 {
