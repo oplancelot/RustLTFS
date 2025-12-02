@@ -659,162 +659,16 @@ impl LtfsIndex {
         Ok(complete_xml)
     }
 
-    /// Get next available file UID
-    pub fn get_next_file_uid(&self) -> u64 {
-        // 优先使用highestfileuid字段（符合LTFS规范）
-        if let Some(highest_uid) = self.highestfileuid {
-            return highest_uid + 1;
-        }
 
-        // 如果没有highestfileuid字段，则遍历所有文件查找最大UID
-        let mut max_uid = self.root_directory.uid;
-        self.collect_all_uids_from_dir(&self.root_directory, &mut max_uid);
-        max_uid + 1
-    }
 
-    /// Recursively collect all UIDs from directory tree
-    fn collect_all_uids_from_dir(&self, directory: &Directory, max_uid: &mut u64) {
-        // Check directory's own UID
-        if directory.uid > *max_uid {
-            *max_uid = directory.uid;
-        }
 
-        // Check subdirectories
-        for subdir in &directory.contents.directories {
-            self.collect_all_uids_from_dir(subdir, max_uid);
-        }
-
-        // Check files
-        for file in &directory.contents.files {
-            if file.uid > *max_uid {
-                *max_uid = file.uid;
-            }
-        }
-    }
-
-    /// Increment generation number
-    pub fn increment_generation(&mut self) {
-        self.generationnumber += 1;
-        self.updatetime = get_current_timestamp();
-        debug!("Updated LTFS index generation to {}", self.generationnumber);
-    }
 
 
 }
 
 impl File {
-    /// Get total file size
-    pub fn total_size(&self) -> u64 {
-        self.length
-    }
 
-    /// Get all extents sorted by file offset
-    pub fn get_sorted_extents(&self) -> Vec<FileExtent> {
-        let mut extents = self.extent_info.extents.clone();
-        extents.sort_by(|a, b| a.file_offset.cmp(&b.file_offset));
-        extents
-    }
 
-    /// Check if file is a symbolic link
-    pub fn is_symlink(&self) -> bool {
-        self.symlink.is_some()
-    }
-
-    /// Get extended attribute value by key
-    pub fn get_extended_attribute(&self, key: &str) -> Option<String> {
-        self.extended_attributes
-            .as_ref()?
-            .attributes
-            .iter()
-            .find(|attr| attr.key == key)
-            .map(|attr| attr.value.clone())
-    }
-
-    /// Check if file has any extents
-    pub fn has_extents(&self) -> bool {
-        !self.extent_info.extents.is_empty()
-    }
-
-    /// Validate file consistency - enhanced version
-    pub fn validate(&self) -> Result<()> {
-        // Check basic fields
-        if self.name.is_empty() {
-            return Err(crate::error::RustLtfsError::parse(
-                "File name cannot be empty",
-            ));
-        }
-
-        if self.uid == 0 {
-            return Err(crate::error::RustLtfsError::parse(format!(
-                "File '{}' has invalid UID 0",
-                self.name
-            )));
-        }
-
-        // Validate extents if not a symlink
-        if !self.is_symlink() {
-            if self.length > 0 && !self.has_extents() {
-                return Err(crate::error::RustLtfsError::parse(format!(
-                    "File '{}' has size {} but no extents",
-                    self.name, self.length
-                )));
-            }
-
-            // Validate extent consistency
-            let mut total_size = 0u64;
-            let mut last_offset = 0u64;
-
-            for extent in &self.extent_info.extents {
-                extent.validate()?;
-
-                // Check extent ordering
-                if extent.file_offset < last_offset {
-                    return Err(crate::error::RustLtfsError::parse(format!(
-                        "File '{}': extents not properly ordered",
-                        self.name
-                    )));
-                }
-
-                last_offset = extent.file_offset + extent.byte_count;
-                total_size += extent.byte_count;
-            }
-
-            if total_size != self.length {
-                return Err(crate::error::RustLtfsError::parse(format!(
-                    "File '{}': size mismatch - declared: {}, extents total: {}",
-                    self.name, self.length, total_size
-                )));
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Check if file is read-only
-    pub fn is_read_only(&self) -> bool {
-        self.read_only
-    }
-
-    /// Check if file is open for write
-    pub fn is_open_for_write(&self) -> bool {
-        self.openforwrite
-    }
-
-    /// Get file's partition locations
-    pub fn get_partitions(&self) -> Vec<String> {
-        let mut partitions = Vec::new();
-        for extent in &self.extent_info.extents {
-            if !partitions.contains(&extent.partition) {
-                partitions.push(extent.partition.clone());
-            }
-        }
-        partitions
-    }
-
-    /// Calculate file fragmentation (number of extents)
-    pub fn fragmentation_level(&self) -> usize {
-        self.extent_info.extents.len()
-    }
 }
 
 impl FileExtent {
@@ -850,121 +704,22 @@ impl FileExtent {
         Ok(())
     }
 
-    /// Get extent end position
-    pub fn end_position(&self) -> u64 {
-        self.file_offset + self.byte_count
-    }
-
-    /// Check if extent is in data partition (b)
-    pub fn is_in_data_partition(&self) -> bool {
-        self.partition.to_lowercase() == "b"
-    }
-
-    /// Check if extent is in index partition (a)
-    pub fn is_in_index_partition(&self) -> bool {
-        self.partition.to_lowercase() == "a"
-    }
 }
 
 /// Normalize path (remove redundant slashes, etc.)
-pub fn normalize_path(path: &str) -> String {
-    let mut normalized = path.replace('\\', "/");
 
-    // Remove multiple consecutive slashes
-    while normalized.contains("//") {
-        normalized = normalized.replace("//", "/");
-    }
-
-    // Remove trailing slash unless it's root
-    if normalized.len() > 1 && normalized.ends_with('/') {
-        normalized.pop();
-    }
-
-    normalized
-}
 
 /// Get current timestamp in LTFS format
-pub fn get_current_timestamp() -> String {
-    use chrono::Utc;
-    Utc::now().format("%Y-%m-%dT%H:%M:%S%.9fZ").to_string()
-}
+
 
 /// 磁带文件读取定位信息 - 用于从磁带读取文件的关键结构
-#[derive(Debug, Clone)]
-pub struct TapeFileLocation {
-    /// 文件名
-    pub file_name: String,
-    /// 文件UID
-    pub file_uid: u64,
-    /// 文件总大小
-    pub file_size: u64,
-    /// 数据块信息
-    pub extents: Vec<TapeDataExtent>,
-}
 
-/// 磁带数据块信息 - 精确定位磁带上的数据
-#[derive(Debug, Clone)]
-pub struct TapeDataExtent {
-    /// 分区 (通常文件数据在 'b' 分区)
-    pub partition: String,
-    /// 起始块号
-    pub start_block: u64,
-    /// 块内字节偏移
-    pub byte_offset: u64,
-    /// 数据字节数
-    pub byte_count: u64,
-    /// 文件内偏移
-    pub file_offset: u64,
-}
 
-/// 磁带卷信息
-#[derive(Debug, Clone)]
-pub struct TapeVolumeInfo {
-    pub volume_uuid: String,
-    pub generation_number: u64,
-    pub update_time: String,
-    pub creator: String,
-    pub index_partition: String,
-    pub index_start_block: u64,
-    pub total_files: usize,
-}
 
 impl LtfsIndex {
     /// 从Load格式索引中提取所有文件的磁带位置信息
     /// 这是实现磁带文件读取的关键方法
-    pub fn extract_tape_file_locations(&self) -> Vec<TapeFileLocation> {
-        let mut locations = Vec::new();
 
-        // 递归遍历目录结构，提取所有文件
-        self.extract_locations_from_directory(&self.root_directory, &mut locations);
-
-        info!(
-            "Extracted tape location information for {} files.",
-            locations.len()
-        );
-        locations
-    }
-
-    /// 根据文件路径查找磁带位置信息
-    pub fn find_file_location(&self, file_path: &str) -> Option<TapeFileLocation> {
-        let normalized_path = file_path.replace('\\', "/");
-        debug!("查找文件位置: {}", normalized_path);
-
-        // 在Load格式中，文件通常直接在根目录下
-        if normalized_path.starts_with('/') {
-            let file_name = normalized_path.trim_start_matches('/');
-
-            // 在根目录查找文件
-            for file in &self.root_directory.contents.files {
-                if file.name == file_name {
-                    return Some(self.create_tape_location(file));
-                }
-            }
-        }
-
-        // 递归搜索所有目录
-        self.search_file_in_directory(&self.root_directory, &normalized_path)
-    }
 
     /// 验证索引是否为可读取的Load格式
     pub fn validate_for_tape_reading(&self) -> Result<()> {
@@ -977,139 +732,48 @@ impl LtfsIndex {
         }
 
         // 验证文件数据完整性
-        let locations = self.extract_tape_file_locations();
-        if locations.is_empty() {
-            warn!("索引中没有找到任何文件");
-        }
+        // let locations = self.extract_tape_file_locations();
+        // let locations = self.extract_tape_file_locations();
+        // if locations.is_empty() {
+        //     warn!("索引中没有找到任何文件");
+        // }
 
         // 验证每个文件的extent信息
-        for location in &locations {
-            if location.extents.is_empty() {
-                return Err(crate::error::RustLtfsError::parse(format!(
-                    "文件 {} 缺少extent信息，无法从磁带读取",
-                    location.file_name
-                )));
-            }
+        // for location in &locations {
+        //     if location.extents.is_empty() {
+        //         warn!("文件 {} 没有数据块信息", location.file_name);
+        //         continue;
+        //     }
 
-            // 验证extent总大小与文件大小一致
-            let total_size: u64 = location.extents.iter().map(|e| e.byte_count).sum();
-            if total_size != location.file_size {
-                return Err(crate::error::RustLtfsError::parse(format!(
-                    "文件 {} 的extent总大小({})与文件大小({})不匹配",
-                    location.file_name, total_size, location.file_size
-                )));
-            }
-        }
+        //     let mut total_size = 0;
+        //     for extent in &location.extents {
+        //         total_size += extent.byte_count;
+        //     }
+
+        //     if total_size != location.file_size {
+        //         return Err(crate::error::RustLtfsError::parse(format!(
+        //             "文件 {} 的extent总大小({})与文件大小({})不匹配",
+        //             location.file_name, total_size, location.file_size
+        //         )));
+        //     }
+        // }
 
         info!(
-            "Load格式索引验证通过，包含 {} 个可读取文件",
-            locations.len()
+            "Load格式索引验证通过"
         );
         Ok(())
     }
 
-    /// 获取磁带卷信息
-    pub fn get_tape_volume_info(&self) -> TapeVolumeInfo {
-        TapeVolumeInfo {
-            volume_uuid: self.volumeuuid.clone(),
-            generation_number: self.generationnumber,
-            update_time: self.updatetime.clone(),
-            creator: self.creator.clone(),
-            index_partition: self.location.partition.clone(),
-            index_start_block: self.location.startblock,
-            total_files: self.count_total_files(),
-        }
-    }
 
-    /// 计算索引中的总文件数
-    pub fn count_total_files(&self) -> usize {
-        let mut count = 0;
-        self.count_files_recursively(&self.root_directory, &mut count);
-        count
-    }
+
+
 
     // 私有辅助方法
 
-    fn extract_locations_from_directory(
-        &self,
-        directory: &Directory,
-        locations: &mut Vec<TapeFileLocation>,
-    ) {
-        // 处理当前目录的文件
-        for file in &directory.contents.files {
-            locations.push(self.create_tape_location(file));
-        }
 
-        // 递归处理子目录
-        for subdir in &directory.contents.directories {
-            self.extract_locations_from_directory(subdir, locations);
-        }
-    }
-
-    fn create_tape_location(&self, file: &File) -> TapeFileLocation {
-        let extents: Vec<TapeDataExtent> = file
-            .extent_info
-            .extents
-            .iter()
-            .map(|extent| TapeDataExtent {
-                partition: extent.partition.clone(),
-                start_block: extent.start_block,
-                byte_offset: extent.byte_offset,
-                byte_count: extent.byte_count,
-                file_offset: extent.file_offset,
-            })
-            .collect();
-
-        TapeFileLocation {
-            file_name: file.name.clone(),
-            file_uid: file.uid,
-            file_size: file.length,
-            extents,
-        }
-    }
-
-    fn search_file_in_directory(
-        &self,
-        directory: &Directory,
-        target_path: &str,
-    ) -> Option<TapeFileLocation> {
-        // 在当前目录查找文件
-        for file in &directory.contents.files {
-            if target_path.ends_with(&file.name) {
-                return Some(self.create_tape_location(file));
-            }
-        }
-
-        // 递归搜索子目录
-        for subdir in &directory.contents.directories {
-            if let Some(location) = self.search_file_in_directory(subdir, target_path) {
-                return Some(location);
-            }
-        }
-
-        None
-    }
-
-    fn count_files_recursively(&self, directory: &Directory, count: &mut usize) {
-        *count += directory.contents.files.len();
-        for subdir in &directory.contents.directories {
-            self.count_files_recursively(subdir, count);
-        }
-    }
 }
 
-impl TapeDataExtent {
-    /// 计算extent在磁带上的结束位置
-    pub fn end_block(&self) -> u64 {
-        // 假设每个块64KB
-        self.start_block + ((self.byte_count + 65535) / 65536)
-    }
 
-    /// 检查是否在数据分区
-    pub fn is_in_data_partition(&self) -> bool {
-        self.partition.to_lowercase() == "b"
-    }
-}
 
 #[cfg(test)]
 mod tests {

@@ -1,7 +1,5 @@
-use crate::error::{Result, RustLtfsError};
-use crate::scsi::ScsiInterface;
-use std::sync::Arc;
-use tracing::{debug, info, warn};
+use crate::error::Result;
+use tracing::{debug, warn};
 
 /// 磁带容量信息结构（对应LTFSCopyGUI的RefreshCapacity返回值）
 #[derive(Debug, Clone)]

@@ -1,7 +1,7 @@
 use crate::error::{Result, RustLtfsError};
 use super::partition_manager::PartitionStrategy;
 use super::TapeFormatAnalysis;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 // LtfsPartitionLabel 在 format_operations.rs 中定义
 // 通过模块重新导出使用

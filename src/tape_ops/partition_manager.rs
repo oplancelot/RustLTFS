@@ -1,5 +1,5 @@
 use crate::error::{Result, RustLtfsError};
-use crate::ltfs_index::LtfsIndex;
+
 use crate::scsi::{block_sizes, MediaType, ScsiInterface};
 use chrono;
 use std::io::Write;
@@ -207,31 +207,9 @@ impl PartitionManager {
         physical_partition
     }
 
-    /// 验证和标准化ExtraPartitionCount值 (对应LTFSCopyGUI的双重Math.Min验证)
-    /// 对应: Math.Min(1, value) 和 Math.Min(value, MaxExtraPartitionAllowed)
-    pub fn validate_extra_partition_count(&self, value: u8, max_allowed: u8) -> u8 {
-        // 第一层验证: Math.Min(1, value)
-        let step1 = std::cmp::min(1, value);
 
-        // 第二层验证: Math.Min(step1, MaxExtraPartitionAllowed)
-        let final_value = std::cmp::min(step1, max_allowed);
-
-        if final_value != value {
-            warn!(
-                "ExtraPartitionCount normalized: {} -> {} (limits: max=1, max_allowed={})",
-                value, final_value, max_allowed
-            );
-        }
-
-        final_value
-    }
 
     /// 获取目标分区号用于定位操作 (对应LTFSCopyGUI的分区选择逻辑)
-    /// 对应: Math.Min(ExtraPartitionCount, IndexPartition) 和 Math.Min(ExtraPartitionCount, ext.partition)
-    pub fn get_target_partition(&self, logical_partition: u8, extra_partition_count: u8) -> u8 {
-        self.map_partition_number(logical_partition, extra_partition_count)
-    }
-
     /// 检查磁带多分区支持 (对应LTFSCopyGUI的ExtraPartitionCount检测)
     /// 使用SCSI MODE SENSE命令来准确检测分区结构，而不是依赖数据读取测试
     async fn check_multi_partition_support(&self) -> Result<bool> {
@@ -310,6 +288,7 @@ impl PartitionManager {
         }
     }
 
+
     /// 检查volume label中的索引位置 (对应LTFSCopyGUI的索引位置检测)
 
     /// 检测分区大小 (对应LTFSCopyGUI的分区大小检测逻辑)
@@ -329,44 +308,40 @@ impl PartitionManager {
             });
         }
 
-        debug!("Multi-partition detected, reading partition sizes");
-
-        // 对于多分区磁带，尝试从不同位置获取分区信息
-        // 对应LTFSCopyGUI中的分区大小检测逻辑
-
-        // 方法1：从媒体类型估算标准分区大小
+        debug!("Multi-partition detected, using estimated partition sizes");
+        
+        // Use estimated partition sizes for multi-partition tapes
         let (p0_size, p1_size) = self.estimate_standard_partition_sizes().await;
+        Ok(PartitionInfo {
+            partition_0_size: p0_size,
+            partition_1_size: p1_size,
+            has_multi_partition: true,
+        })
+    }
 
-        // 方法2：尝试从磁带读取实际分区信息（如果支持的话）
-        match self.read_partition_info_from_tape().await {
-            Ok((actual_p0, actual_p1)) => {
-                debug!(
-                    "✅ Successfully read actual partition sizes from tape: p0={}GB, p1={}GB",
-                    actual_p0 / 1_000_000_000,
-                    actual_p1 / 1_000_000_000
-                );
-                Ok(PartitionInfo {
-                    partition_0_size: actual_p0,
-                    partition_1_size: actual_p1,
-                    has_multi_partition: true,
-                })
+    /// Estimate tape capacity based on media type
+    fn estimate_tape_capacity_bytes(&self) -> u64 {
+        // Default to LTO-8 capacity
+        // In real implementation, this would query the device for actual capacity
+        match self.scsi.check_media_status() {
+            Ok(media_type) => {
+                match media_type {
+                    MediaType::Lto8Rw | MediaType::Lto8Worm | MediaType::Lto8Ro => {
+                        12_000_000_000_000
+                    } // 12TB
+                    MediaType::Lto7Rw | MediaType::Lto7Worm | MediaType::Lto7Ro => {
+                        6_000_000_000_000
+                    } // 6TB
+                    MediaType::Lto6Rw | MediaType::Lto6Worm | MediaType::Lto6Ro => {
+                        2_500_000_000_000
+                    } // 2.5TB
+                    MediaType::Lto5Rw | MediaType::Lto5Worm | MediaType::Lto5Ro => {
+                        1_500_000_000_000
+                    } // 1.5TB
+                    _ => 12_000_000_000_000, // Default to LTO-8
+                }
             }
-            Err(e) => {
-                debug!(
-                    "Failed to read actual partition info: {}, using estimates",
-                    e
-                );
-                debug!(
-                    "📊 Using estimated partition sizes: p0={}GB, p1={}GB",
-                    p0_size / 1_000_000_000,
-                    p1_size / 1_000_000_000
-                );
-                Ok(PartitionInfo {
-                    partition_0_size: p0_size,
-                    partition_1_size: p1_size,
-                    has_multi_partition: true,
-                })
-            }
+            Err(_) => 12_000_000_000_000, // Default capacity
         }
     }
 
@@ -431,129 +406,9 @@ impl PartitionManager {
         }
     }
 
-    /// 从磁带读取实际分区信息 (对应LTFSCopyGUI的分区检测逻辑)
-    async fn read_partition_info_from_tape(&self) -> Result<(u64, u64)> {
-        info!("🔍 Reading actual partition information from tape using SCSI commands");
-
-        // 首先尝试MODE SENSE命令读取分区表
-        match self.scsi.mode_sense_partition_info() {
-            Ok(mode_sense_data) => {
-                debug!("MODE SENSE command successful, parsing partition data");
-
-                // 解析MODE SENSE返回的分区信息
-                match self.scsi.parse_partition_info(&mode_sense_data) {
-                    Ok((p0_size, p1_size)) => {
-                        debug!("✅ Successfully parsed partition sizes from MODE SENSE:");
-                        debug!(
-                            "   - p0 (index): {}GB ({} bytes)",
-                            p0_size / 1_000_000_000,
-                            p0_size
-                        );
-                        debug!(
-                            "   - p1 (data):  {}GB ({} bytes)",
-                            p1_size / 1_000_000_000,
-                            p1_size
-                        );
-                        return Ok((p0_size, p1_size));
-                    }
-                    Err(e) => {
-                        debug!("MODE SENSE data parsing failed: {}", e);
-                        // 继续尝试其他方法
-                    }
-                }
-            }
-            Err(e) => {
-                debug!("MODE SENSE command failed: {}", e);
-                // 继续尝试其他方法
-            }
-        }
-
-        // 如果MODE SENSE失败，尝试READ POSITION获取当前位置信息
-        debug!("Trying READ POSITION as fallback");
-        match self.scsi.read_position_raw() {
-            Ok(position_data) => {
-                debug!("READ POSITION command successful");
-
-                // READ POSITION主要用于获取当前位置，不直接提供分区大小
-                // 但可以确认分区存在性
-                if position_data.len() >= 32 {
-                    let current_partition = position_data[1];
-                    debug!(
-                        "Current partition from READ POSITION: {}",
-                        current_partition
-                    );
-
-                    // 如果能读取到分区信息，说明是多分区磁带
-                    // 但READ POSITION不提供分区大小，需要使用其他方法
-                    debug!("Confirmed multi-partition tape, but READ POSITION doesn't provide partition sizes");
-                }
-
-                // READ POSITION无法提供分区大小信息，使用估算值
-                return Err(RustLtfsError::scsi(
-                    "READ POSITION doesn't provide partition size information".to_string(),
-                ));
-            }
-            Err(e) => {
-                debug!("READ POSITION command also failed: {}", e);
-            }
-        }
-
-        // 所有SCSI命令都失败，返回错误让调用者使用估算值
-        Err(RustLtfsError::scsi(
-            "All SCSI partition detection methods failed, will use estimated values".to_string(),
-        ))
-    }
-
-    /// Estimate tape capacity based on media type
-    fn estimate_tape_capacity_bytes(&self) -> u64 {
-        // Default to LTO-8 capacity
-        // In real implementation, this would query the device for actual capacity
-        match self.scsi.check_media_status() {
-            Ok(media_type) => {
-                match media_type {
-                    MediaType::Lto8Rw | MediaType::Lto8Worm | MediaType::Lto8Ro => {
-                        12_000_000_000_000
-                    } // 12TB
-                    MediaType::Lto7Rw | MediaType::Lto7Worm | MediaType::Lto7Ro => {
-                        6_000_000_000_000
-                    } // 6TB
-                    MediaType::Lto6Rw | MediaType::Lto6Worm | MediaType::Lto6Ro => {
-                        2_500_000_000_000
-                    } // 2.5TB
-                    MediaType::Lto5Rw | MediaType::Lto5Worm | MediaType::Lto5Ro => {
-                        1_500_000_000_000
-                    } // 1.5TB
-                    _ => 12_000_000_000_000, // Default to LTO-8
-                }
-            }
-            Err(_) => 12_000_000_000_000, // Default capacity
-        }
-    }
-
-    /// 切换到指定分区
-    pub fn switch_to_partition(&self, partition: u8) -> Result<()> {
-        debug!("Switching to partition {}", partition);
 
 
 
-        self.scsi.locate_block(partition, 0)?;
-        debug!("Successfully switched to partition {}", partition);
-        Ok(())
-    }
-
-    /// 定位到指定分区的指定块
-    pub fn position_to_partition(&self, partition: u8, block: u64) -> Result<()> {
-        debug!("Positioning to partition {}, block {}", partition, block);
-
-
-
-        self.scsi.locate_block(partition, block)?;
-        debug!(
-            "Successfully positioned to partition {}, block {}",
-            partition, block
-        );
-        Ok(())
-    }
 
     /// 获取分区信息
     pub async fn get_partition_info(&self) -> Result<PartitionInfo> {

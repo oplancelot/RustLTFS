@@ -30,110 +30,11 @@ pub enum TapeFormatAnalysis {
     PossibleLTFS,
 }
 
-/// LTFS格式化状态枚举（基于LTFSCopyGUI的检测策略）
-#[derive(Debug, Clone, PartialEq)]
-pub enum LtfsFormatStatus {
-    /// 磁带已正常格式化为LTFS（包含索引大小）
-    LtfsFormatted(usize),
-    /// 磁带为空白（未写入任何数据）
-    BlankTape,
-    /// 磁带有数据但不是LTFS格式
-    NonLtfsFormat,
-    /// LTFS索引损坏或不完整
-    CorruptedIndex,
-    /// 磁带定位失败
-    PositioningFailed,
-    /// 硬件错误或通信问题
-    HardwareError,
-    /// 未知状态（无法确定）
-    Unknown,
-}
 
-impl LtfsFormatStatus {
-    /// Get human-readable description of the status
-    pub fn description(&self) -> &'static str {
-        match self {
-            LtfsFormatStatus::LtfsFormatted(_) => "LTFS formatted tape with valid index",
-            LtfsFormatStatus::BlankTape => "Blank tape (no data written)",
-            LtfsFormatStatus::NonLtfsFormat => "Non-LTFS formatted tape",
-            LtfsFormatStatus::CorruptedIndex => "LTFS tape with corrupted index",
-            LtfsFormatStatus::PositioningFailed => "Failed to position on tape",
-            LtfsFormatStatus::HardwareError => "Hardware communication error",
-            LtfsFormatStatus::Unknown => "Unknown format status",
-        }
-    }
-
-    /// Check if the tape is usable for LTFS operations
-    pub fn is_usable(&self) -> bool {
-        matches!(self, LtfsFormatStatus::LtfsFormatted(_))
-    }
-
-    /// Check if the tape is LTFS formatted
-    pub fn is_ltfs_formatted(&self) -> bool {
-        matches!(self, LtfsFormatStatus::LtfsFormatted(_))
-    }
-}
 
 /// Path content types for describing tape path contents
-#[derive(Debug, Clone)]
-pub enum PathContent {
-    /// Directory containing other files and directories
-    Directory {
-        entries: Vec<DirectoryEntry>,
-        subdirs: Vec<String>,
-    },
-    /// Regular file
-    File(FileInfo),
-    /// Path does not exist
-    NotFound,
-}
 
-/// Directory entry information
-#[derive(Debug, Clone)]
-pub struct DirectoryEntry {
-    pub name: String,
-    pub is_directory: bool,
-    pub size: Option<u64>,
-    pub modified_time: Option<String>,
-    pub uid: Option<u64>,
-}
 
-/// File information
-#[derive(Debug, Clone)]
-pub struct FileInfo {
-    pub name: String,
-    pub size: u64,
-    pub modified_time: String,
-    pub uid: u64,
-    pub checksum: Option<String>,
-}
-
-/// Extraction result information
-#[derive(Debug, Clone)]
-pub struct ExtractionResult {
-    pub extracted_files: Vec<String>,
-    pub total_bytes: u64,
-    pub errors: Vec<String>,
-    pub skipped_files: Vec<String>,
-}
-
-/// Tape medium information including barcode
-#[derive(Debug, Clone)]
-pub struct TapeMediumInfo {
-    pub barcode: String,
-    pub volume_uuid: String,
-    pub format_time: String,
-    pub blocksize: u32,
-}
-
-/// Tape space information
-#[derive(Debug, Clone)]
-pub struct TapeSpaceInfo {
-    pub used_capacity: u64,
-    pub remaining_capacity: u64,
-    pub total_capacity: u64,
-    pub compression_ratio: f64,
-}
 
 /// Write queue entry for file operations
 #[derive(Debug, Clone)]
@@ -179,7 +80,6 @@ pub struct WriteOptions {
     pub parallel_add: bool,
     pub speed_limit: Option<u32>,  // MiB/s
     pub index_write_interval: u64, // bytes
-    pub excluded_extensions: Vec<String>,
     pub compression: bool,
     pub verify_writes: bool,
     pub preserve_permissions: bool,
@@ -218,7 +118,6 @@ impl Default for WriteOptions {
             parallel_add: true,
             speed_limit: None,
             index_write_interval: 38_654_705_664, // 36GiB (matching LTFSCopyGUI)
-            excluded_extensions: vec![".xattr".to_string()],
             compression: false,
             verify_writes: true,
             preserve_permissions: true,
@@ -248,33 +147,6 @@ impl Default for WriteOptions {
         }
     }
 }
-
-/// Tape capacity information (对应LTFSCopyGUI的容量信息)
-#[derive(Debug, Clone)]
-pub struct TapeCapacityInfo {
-    pub total_capacity: u64,
-    pub used_capacity: u64,
-    pub available_capacity: u64,
-    pub compression_ratio: f64,
-    pub estimated_remaining_hours: f32,
-}
-
-/// Drive cleaning status (对应LTFSCopyGUI的清洁状态)
-#[derive(Debug, Clone)]
-pub struct CleaningStatus {
-    pub cleaning_required: bool,
-    pub cleaning_media_expired: bool,
-    pub operations_since_clean: u32,
-}
-
-/// Encryption status (对应LTFSCopyGUI的加密状态)
-#[derive(Debug, Clone)]
-pub struct EncryptionStatus {
-    pub enabled: bool,
-    pub key_format: String,
-    pub method: String,
-}
-
 
 
 

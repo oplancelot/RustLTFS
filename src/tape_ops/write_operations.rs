@@ -6,7 +6,7 @@ use std::io::BufRead;
 use std::path::Path;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, BufReader};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 
 
@@ -898,19 +898,6 @@ impl TapeOperations {
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }
 
-                // Skip excluded extensions (对应LTFSCopyGUI的exceptExtension逻辑)
-                if let Some(ext) = file_path.extension() {
-                    let ext_str = ext.to_string_lossy().to_lowercase();
-                    if self
-                        .write_options
-                        .excluded_extensions
-                        .iter()
-                        .any(|e| e.to_lowercase() == ext_str)
-                    {
-                        info!("Skipping excluded extension file: {:?}", file_path);
-                        continue;
-                    }
-                }
 
                 // Create target path for this file
                 let file_name = file_path

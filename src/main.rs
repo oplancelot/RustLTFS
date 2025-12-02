@@ -56,8 +56,6 @@ async fn run(args: Cli) -> Result<()> {
             write_options.verify = verify;
 
 
-            let excluded_extensions_copy = write_options.excluded_extensions.clone();
-
             ops.set_write_options(write_options);
 
             // Display progress if requested

@@ -244,7 +244,7 @@ impl TapeOperations {
     /// Apply performance controls during operation (智能性能控制应用)
     pub async fn apply_performance_controls(
         &mut self,
-        bytes_processed: u64,
+        _bytes_processed: u64,
         memory_delta: u64,
     ) -> Result<()> {
         // 1. 内存使用控制 (使用实际内存增量)
