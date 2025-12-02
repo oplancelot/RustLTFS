@@ -2,7 +2,6 @@
 pub mod capacity_manager;
 pub mod core;
 pub mod dual_partition_index;
-pub mod index_validator;
 pub mod partition_manager;
 pub mod read_operations;
 pub mod write_operations;

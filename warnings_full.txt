@@ -1,0 +1,38 @@
+src\error.rs:20:5: warning: variants `Config`, `Verification`, `UnsupportedOperation`, `Permission`, `Connection`, and `Cli` are never constructed
+src\scsi\mod.rs:57:12: warning: multiple associated items are never used
+src\scsi\constants.rs:25:15: warning: constant `INQUIRY` is never used
+src\scsi\constants.rs:26:15: warning: constant `LOAD_UNLOAD` is never used
+src\scsi\constants.rs:30:15: warning: constant `READ_BLOCK_LIMITS` is never used
+src\scsi\constants.rs:31:15: warning: constant `READ_ATTRIBUTE` is never used
+src\scsi\types.rs:80:12: warning: struct `MamAttribute` is never constructed
+src\scsi\types.rs:90:5: warning: variants `Blocks` and `SequentialFileMarks` are never constructed
+src\scsi\types.rs:102:5: warning: variant `FileMark` is never constructed
+src\scsi\types.rs:113:5: warning: variants `SLR3`, `SLR1`, and `M2488` are never constructed
+src\scsi\types.rs:122:10: warning: enum `LoadOption` is never used
+src\scsi\types.rs:134:10: warning: enum `MamAttributeFormat` is never used
+src\scsi\types.rs:142:12: warning: struct `TapeDriveInfo` is never constructed
+src\tape_ops\mod.rs:42:9: warning: multiple fields are never read
+src\tape_ops\mod.rs:57:9: warning: multiple fields are never read
+src\tape_ops\mod.rs:81:9: warning: multiple fields are never read
+src\tape_ops\capacity_manager.rs:16:9: warning: fields `media_description`, `error_rate_log_value`, `capacity_loss`, `is_worm`, `is_write_protected`, and `generation_info` are never read
+src\tape_ops\capacity_manager.rs:31:12: warning: struct `ErrorRateInfo` is never constructed
+src\tape_ops\core.rs:12:12: warning: struct `SpeedLimiter` is never constructed
+src\tape_ops\core.rs:29:12: warning: associated items `new`, `apply_rate_limit`, and `get_current_rate` are never used
+src\tape_ops\core.rs:115:9: warning: fields `current_transfer_rate`, `target_speed_limit`, `memory_usage`, `queued_operations`, and `monitoring_enabled` are never read
+src\tape_ops\core.rs:212:12: warning: multiple methods are never used
+src\tape_ops\core.rs:1082:12: warning: struct `ExtractResult` is never constructed
+src\tape_ops\index_validator.rs:8:12: warning: struct `IndexValidator` is never constructed
+src\tape_ops\index_validator.rs:17:5: warning: multiple variants are never constructed
+src\tape_ops\index_validator.rs:46:12: warning: struct `ValidationResult` is never constructed
+src\tape_ops\index_validator.rs:61:12: warning: multiple associated items are never used
+src\tape_ops\index_validator.rs:514:8: warning: function `validate_index_data` is never used
+src\tape_ops\index_validator.rs:520:8: warning: function `validate_index_data_lenient` is never used
+src\tape_ops\index_validator.rs:526:8: warning: function `is_valid_index_data` is never used
+src\tape_ops\partition_manager.rs:12:9: warning: fields `volume_uuid`, `compression`, `index_partition`, `data_partition`, and `format_time` are never read
+src\tape_ops\partition_manager.rs:41:5: warning: variant `IndexFromDataPartition` is never constructed
+src\tape_ops\partition_manager.rs:46:12: warning: struct `PartitionInfo` is never constructed
+src\tape_ops\partition_manager.rs:61:5: warning: fields `scsi` and `partition_label` are never read
+src\tape_ops\partition_manager.rs:78:18: warning: multiple methods are never used
+src\tape_ops\partition_manager.rs:664:18: warning: multiple methods are never used
+warning: `rust-ltfs` (bin "rustltfs") generated 36 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.20s
