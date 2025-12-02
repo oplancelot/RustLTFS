@@ -53,14 +53,7 @@ impl ScsiInterface {
         }
     }
 
-    /// Create new SCSI interface with specific drive type
-    pub fn with_drive_type(drive_type: DriveType) -> Self {
-        Self {
-            device_handle: None,
-            drive_type,
-            allow_partition: true,
-        }
-    }
+
 
     /// Open tape device (based on CreateFile call in C code)
     pub fn open_device(&mut self, device_path: &str) -> Result<()> {
@@ -293,74 +286,8 @@ impl ScsiInterface {
         }
     }
 
-    /// Tape loading (based on TapeLoad function in C code)
-    pub fn load_tape(&self) -> Result<bool> {
-        debug!("Loading tape");
 
-        #[cfg(windows)]
-        {
-            let mut cdb = [0u8; 6];
-            cdb[0] = 0x1B; // SCSIOP_LOAD_UNLOAD，based on C code
-            cdb[4] = 1; // Start = 1，based on C code
 
-            let result =
-                self.scsi_io_control(&cdb, None, SCSI_IOCTL_DATA_UNSPECIFIED, 300, None)?;
-
-            Ok(result)
-        }
-
-        #[cfg(not(windows))]
-        {
-            Err(crate::error::RustLtfsError::unsupported(
-                "Non-Windows platform",
-            ))
-        }
-    }
-
-    /// Enhanced LOAD_UNLOAD command (based on LTFSCopyGUI implementation)
-    /// LTFSCopyGUI: {&H1B, 0, 0, 0, LoadOption, 0}
-    pub fn load_unload_enhanced(&self, load_option: LoadOption) -> Result<bool> {
-        debug!("Executing LOAD_UNLOAD with option: {:?}", load_option);
-
-        #[cfg(windows)]
-        {
-            let mut cdb = [0u8; 6];
-            cdb[0] = scsi_commands::LOAD_UNLOAD; // 0x1B
-            cdb[1] = 0x00;
-            cdb[2] = 0x00;
-            cdb[3] = 0x00;
-            cdb[4] = load_option as u8;
-            cdb[5] = 0x00;
-
-            let result = self.scsi_io_control(
-                &cdb,
-                None,
-                SCSI_IOCTL_DATA_UNSPECIFIED,
-                300, // 5 minute timeout for load/unload operations
-                None,
-            )?;
-
-            if result {
-                debug!(
-                    "LOAD_UNLOAD completed successfully with option: {:?}",
-                    load_option
-                );
-                Ok(true)
-            } else {
-                Err(crate::error::RustLtfsError::scsi(
-                    "LOAD_UNLOAD command failed",
-                ))
-            }
-        }
-
-        #[cfg(not(windows))]
-        {
-            let _ = load_option;
-            Err(crate::error::RustLtfsError::unsupported(
-                "Non-Windows platform",
-            ))
-        }
-    }
 
     /// Send SCSI command with simplified interface (for compatibility with tape_ops.rs)
     pub fn send_scsi_command(
