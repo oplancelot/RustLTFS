@@ -61,39 +61,8 @@ impl MediaType {
             _ => MediaType::Unknown(code),
         }
     }
-
-    /// Convert to description string
-    pub fn description(&self) -> &'static str {
-        match self {
-            MediaType::NoTape => "No tape loaded",
-            MediaType::Lto3Rw => "LTO3 RW",
-            MediaType::Lto3Worm => "LTO3 WORM",
-            MediaType::Lto3Ro => "LTO3 RO",
-            MediaType::Lto4Rw => "LTO4 RW",
-            MediaType::Lto4Worm => "LTO4 WORM",
-            MediaType::Lto4Ro => "LTO4 RO",
-            MediaType::Lto5Rw => "LTO5 RW",
-            MediaType::Lto5Worm => "LTO5 WORM",
-            MediaType::Lto5Ro => "LTO5 RO",
-            MediaType::Lto6Rw => "LTO6 RW",
-            MediaType::Lto6Worm => "LTO6 WORM",
-            MediaType::Lto6Ro => "LTO6 RO",
-            MediaType::Lto7Rw => "LTO7 RW",
-            MediaType::Lto7Worm => "LTO7 WORM",
-            MediaType::Lto7Ro => "LTO7 RO",
-            MediaType::Lto8Rw => "LTO8 RW",
-            MediaType::Lto8Worm => "LTO8 WORM",
-            MediaType::Lto8Ro => "LTO8 RO",
-            MediaType::Lto9Rw => "LTO9 RW",
-            MediaType::Lto9Worm => "LTO9 WORM",
-            MediaType::Lto9Ro => "LTO9 RO",
-            MediaType::LtoM8Rw => "LTOM8 RW",
-            MediaType::LtoM8Worm => "LTOM8 WORM",
-            MediaType::LtoM8Ro => "LTOM8 RO",
-            MediaType::Unknown(_) => "Unknown media type",
-        }
-    }
 }
+
 
 /// Tape position information structure
 #[derive(Debug, Clone)]
