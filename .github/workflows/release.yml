@@ -45,21 +45,28 @@ jobs:
           body: |
             ## RustLTFS ${{ github.ref_name }}
             
-            使用方法：
+            ### 下载
+            下载 `rustltfs.exe` 并放到系统PATH中即可使用。
+            
+            ### 快速开始
             ```bash
-            # 写入文件到磁带
-            rustltfs.exe write -t \\.\\TAPE0 -o /path/in/tape source_file
+            # 查看版本
+            rustltfs --version
+            
+            # 写入文件夹到磁带
+            rustltfs write C:\backup --output /tape/backup --tape \\.\TAPE0
             
             # 读取磁带索引
-            rustltfs.exe read -t \\.\\TAPE0
+            rustltfs read --tape \\.\TAPE0
             
             # 查看磁带容量
-            rustltfs.exe space -t \\.\\TAPE0
-            
-            # 查看版本
-            rustltfs.exe --version
+            rustltfs space --tape \\.\TAPE0
             ```
             
-            详细文档请参考 README.md
+            ### 变更日志
+            详细变更请查看 [Commits](${{ github.server_url }}/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.ref_name }})
+            
+            ### 文档
+            完整文档请参考 [README.md](https://github.com/${{ github.repository }}/blob/main/README.md)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

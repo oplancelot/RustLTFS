@@ -17,15 +17,13 @@ RustLTFS 是一个精简的 LTFS 磁带读写命令行工具，专注于 `write`
 
 ```powershell
 # 写入文件夹
-rustltfs write C:\local\folder --tape \\.\TAPE0 /tape/target_folder
+rustltfs write C:\local\folder --output /tape/target_folder --tape \\.\TAPE0
 
 # 写入单个文件
-rustltfs write C:\local\file.txt --tape \\.\TAPE0 /tape/file.txt
+rustltfs write C:\local\file.txt --output /tape/file.txt --tape \\.\TAPE0
 
 # 从标准输入 (stdin) 写入
-rustltfs write --tape \\.\TAPE0 /tape/stream.tar < C:\local\stream.tar
-or
-Get-Content -Path 'C:\local\stream.tar' -Encoding Byte -Raw | rustltfs write --tape \\.\TAPE0 /tape/stream.tar
+Get-Content -Path 'C:\local\stream.tar' -Encoding Byte -Raw | rustltfs write --output /tape/stream.tar --tape \\.\TAPE0
 ```
 
 ### 2. 读取 (`read`)
