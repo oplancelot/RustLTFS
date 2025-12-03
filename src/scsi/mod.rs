@@ -660,7 +660,7 @@ impl ScsiInterface {
                 add_key, asc, ascq
             );
         } else {
-            info!("📄 Normal data read: Add_Key=0x{:04X}", add_key);
+            info!("Normal data read: Add_Key=0x{:04X}", add_key);
         }
 
         // 特殊情况：如果sense key表示文件标记或EOD
@@ -1208,7 +1208,7 @@ impl ScsiInterface {
                 }
             } else {
                 // AllowPartition=false: 使用Space6命令回退 (Space6(handle, -1, Block))
-                info!("🔧 ReadFileMark: Using non-AllowPartition mode - Space6 backtrack");
+                info!("ReadFileMark: Using non-AllowPartition mode - Space6 backtrack");
                 self.space6(-1, 0)?; // Count=-1, Code=0 (Block)
             }
 
@@ -1451,7 +1451,7 @@ impl ScsiInterface {
 
                                 // 🎯 使用重新读取后的add_key进行FileMark检测
                                 if reread_add_key >= 1 && reread_add_key != 4 {
-                                    info!("🎯 FileMark detected after auto-backtrack: Add_Key=0x{:04X}", reread_add_key);
+                                    info!("FileMark detected after auto-backtrack: Add_Key=0x{:04X}", reread_add_key);
                                     break;
                                 }
                                 continue;

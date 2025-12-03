@@ -103,7 +103,7 @@ impl super::TapeOperations {
 
     /// Read LTFS index from tape (LTFSCopyGUI兼容方法)
     pub async fn read_index_from_tape(&mut self) -> Result<()> {
-        info!("Starting LTFS index reading process with LTFSCopyGUI compatible method...");
+        info!("Starting LTFS index reading process");
 
 
 
@@ -356,9 +356,7 @@ impl super::TapeOperations {
     /// Enhanced VOL1 label validation with comprehensive format detection
     /// 增强版 VOL1 标签验证：支持多种磁带格式检测和详细诊断
     fn parse_vol1_label(&self, buffer: &[u8]) -> Result<bool> {
-        info!(
-            "🔍 Enhanced VOL1 validation (LTFSCopyGUI compatible with extended format support)..."
-        );
+        info!("Validating VOL1 label");
 
         // Enhanced Condition 1: Dynamic buffer length check with detailed analysis
         if buffer.len() < 80 {
@@ -391,37 +389,37 @@ impl super::TapeOperations {
         // Enhanced Condition 2: Multi-format tape detection with detailed analysis
         let vol1_prefix = b"VOL1";
         if !vol1_label.starts_with(vol1_prefix) {
-            info!("⚠️ VOL1 prefix not found, performing enhanced format detection...");
+            info!("VOL1 prefix not found, performing format detection");
 
             // Comprehensive tape format analysis
             let tape_analysis = self.analyze_tape_format_enhanced(vol1_label);
             match tape_analysis {
                 TapeFormatAnalysis::BlankTape => {
-                    info!("📭 Confirmed: Blank tape detected (all zeros in VOL1 area)");
+                    info!("Blank tape detected");
                     return Ok(false);
                 }
                 TapeFormatAnalysis::LegacyTape(format_name) => {
-                    info!("🏛️ Legacy tape format detected: {}", format_name);
-                    info!("💡 Tip: This tape may contain data but is not LTFS formatted");
+                    info!("Legacy tape format detected: {}", format_name);
+                    info!("This tape may contain data but is not LTFS formatted");
                     return Ok(false);
                 }
                 TapeFormatAnalysis::CorruptedLabel => {
                     warn!("💥 Corrupted or damaged VOL1 label detected");
-                    info!("🔧 Suggestion: Try cleaning the tape drive or using a different tape");
+                    info!("Try cleaning the tape drive or using a different tape");
                     return Ok(false);
                 }
                 TapeFormatAnalysis::UnknownFormat => {
-                    info!("❓ Unknown tape format detected");
+                    info!("Unknown tape format detected");
                     self.log_detailed_tape_analysis(vol1_label);
                     return Ok(false);
                 }
                 TapeFormatAnalysis::PossibleLTFS => {
-                    info!("🤔 Possible LTFS tape with non-standard VOL1, proceeding with extended validation...");
+                    info!("Possible LTFS tape with non-standard VOL1, proceeding with validation");
                     // Continue to LTFS identifier check
                 }
             }
         } else {
-            info!("✅ VOL1 prefix validation passed");
+            info!("VOL1 prefix validation passed");
         }
 
         // Enhanced Condition 3: Advanced LTFS identifier validation with fallback strategies
@@ -437,31 +435,28 @@ impl super::TapeOperations {
         let expected_ltfs = b"LTFS";
 
         if ltfs_bytes == expected_ltfs {
-            info!("✅ Standard LTFS identifier found at position 24-27");
+            info!("LTFS identifier found at standard position");
             return self.validate_extended_ltfs_properties(vol1_label);
         }
 
         // Enhanced fallback strategies for LTFS detection
-        info!("🔄 Standard LTFS identifier not found, trying enhanced detection strategies...");
+        info!("Standard LTFS identifier not found, trying alternative detection");
 
         // Strategy 1: Search for LTFS identifier in alternative positions
         if let Some(ltfs_position) = self.search_ltfs_identifier_in_vol1(vol1_label) {
-            info!(
-                "🎯 Found LTFS identifier at alternative position: {}",
-                ltfs_position
-            );
+            info!("Found LTFS identifier at alternative position: {}", ltfs_position);
             return self.validate_extended_ltfs_properties(vol1_label);
         }
 
         // Strategy 2: Check for LTFS version indicators
         if self.detect_ltfs_version_indicators(vol1_label) {
-            info!("🔍 LTFS version indicators detected, likely LTFS tape with non-standard label");
+            info!("LTFS version indicators detected");
             return self.validate_extended_ltfs_properties(vol1_label);
         }
 
         // Strategy 3: Pattern-based LTFS detection
         if self.detect_ltfs_patterns(vol1_label) {
-            info!("📊 LTFS patterns detected in VOL1 label");
+            info!("LTFS patterns detected in VOL1 label");
             return Ok(true); // Allow with pattern-based detection
         }
 
@@ -470,12 +465,12 @@ impl super::TapeOperations {
             "❌ LTFS identifier validation failed: expected 'LTFS' at position 24-27, found: {:?}",
             String::from_utf8_lossy(ltfs_bytes)
         );
-        info!("🔧 Enhanced diagnostic: checking for partial LTFS compatibility...");
+        info!("Checking for partial LTFS compatibility");
 
         // Check if this might be a partially formatted or corrupted LTFS tape
         if self.detect_partial_ltfs_formatting(vol1_label) {
             warn!("⚠️ Partial LTFS formatting detected - tape may be recoverable");
-            info!("💡 Suggestion: Try reformatting with mkltfs or use recovery tools");
+            info!("Try reformatting with mkltfs or use recovery tools");
         }
 
         self.log_detailed_tape_analysis(vol1_label);
@@ -668,7 +663,7 @@ impl super::TapeOperations {
 
     /// Validate extended LTFS properties in VOL1 label
     fn validate_extended_ltfs_properties(&self, vol1_label: &[u8]) -> Result<bool> {
-        info!("🔍 Validating extended LTFS properties in VOL1 label...");
+        info!("Validating extended LTFS properties in VOL1 label");
 
         // Basic validation passed, now check additional LTFS properties
         let mut validation_score = 0u32;
@@ -735,15 +730,15 @@ impl super::TapeOperations {
 
         let validation_percentage = (validation_score as f64 / max_score as f64) * 100.0;
         info!(
-            "📊 Extended LTFS validation score: {}/{} ({:.1}%)",
+            "Extended LTFS validation score: {}/{} ({:.1}%)",
             validation_score, max_score, validation_percentage
         );
 
         if validation_score >= 6 {
-            info!("✅ Extended LTFS properties validation passed with high confidence");
+            info!("Extended LTFS properties validation passed with high confidence");
             Ok(true)
         } else if validation_score >= 4 {
-            info!("⚠️ Extended LTFS properties validation passed with medium confidence");
+            info!("Extended LTFS properties validation passed with medium confidence");
             Ok(true) // Allow with warnings
         } else {
             warn!("❌ Extended LTFS properties validation failed - score too low");
@@ -784,7 +779,7 @@ impl super::TapeOperations {
 
     /// Log detailed tape analysis for diagnostic purposes
     fn log_detailed_tape_analysis(&self, vol1_label: &[u8]) {
-        info!("🔧 === Detailed Tape Analysis Report ===");
+        info!("Detailed Tape Analysis Report");
 
         // Basic statistics
         let total_bytes = vol1_label.len();
@@ -796,14 +791,14 @@ impl super::TapeOperations {
         let control_bytes = vol1_label.iter().filter(|&&b| b < 0x20).count();
 
         info!(
-            "📊 Statistics: {} total bytes, {} non-zero, {} ASCII printable, {} control",
+            "Statistics: {} total bytes, {} non-zero, {} ASCII printable, {} control",
             total_bytes, non_zero_bytes, ascii_bytes, control_bytes
         );
 
         // Hex dump of first 40 bytes
         let preview_len = std::cmp::min(40, vol1_label.len());
         info!(
-            "🔍 Hex dump (first {} bytes): {:02X?}",
+            "Hex dump (first {} bytes): {:02X?}",
             preview_len,
             &vol1_label[0..preview_len]
         );
@@ -819,18 +814,18 @@ impl super::TapeOperations {
                 }
             })
             .collect::<String>();
-        info!("🔤 ASCII representation: '{}'", ascii_repr);
+        info!("ASCII representation: '{}'", ascii_repr);
 
         // Pattern analysis
         let unique_bytes = vol1_label
             .iter()
             .collect::<std::collections::HashSet<_>>()
             .len();
-        info!("🎨 Data diversity: {} unique byte values", unique_bytes);
+        info!("Data diversity: {} unique byte values", unique_bytes);
 
         // Look for any recognizable patterns
         if let Some(pattern) = self.identify_tape_patterns(vol1_label) {
-            info!("🔍 Identified pattern: {}", pattern);
+            info!("Identified pattern: {}", pattern);
         }
     }
 
@@ -896,7 +891,7 @@ impl super::TapeOperations {
     /// 按照LTFSCopyGUI逻辑从数据分区EOD读取最新索引
     /// 对应VB.NET读取数据区索引ToolStripMenuItem_Click的核心逻辑
     async fn try_read_latest_index_from_data_partition_eod(&mut self) -> Result<String> {
-        info!("Reading latest index from data partition EOD (matching LTFSCopyGUI 读取数据区索引)");
+        info!("Reading latest index from data partition end");
 
         let data_partition = 1; // 数据分区
 
@@ -921,7 +916,7 @@ impl super::TapeOperations {
         }
 
         // 使用LOCATE命令而非SPACE命令进行EOD定位（LTFSCopyGUI兼容）
-        info!("Using LOCATE command for EOD positioning (LTFSCopyGUI compatible)");
+        info!("Using LOCATE command for end-of-data positioning");
         match self.scsi.locate_to_eod(data_partition) {
             Ok(()) => info!(
                 "Successfully located to End of Data in partition {}",
@@ -1378,7 +1373,7 @@ impl super::TapeOperations {
     }
 
     pub fn search_index_copies_in_data_partition(&self) -> Result<String> {
-        info!("🔧 Starting LTFSCopyGUI-compatible index search (exact replication)");
+        info!("Starting index search from standard locations");
 
         // 精确复制LTFSCopyGUI的读取索引逻辑
         self.read_index_ltfscopygui_method()

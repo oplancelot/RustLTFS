@@ -12,7 +12,7 @@ const CLAP_STYLING: Styles = Styles::styled()
 #[derive(Parser)]
 #[command(name = "rustltfs")]
 #[command(about = "A Rust CLI tool for IBM tape direct read/write operations")]
-#[command(version = "0.1.0")]
+#[command(version)]
 #[command(author = "lance <oplancelot@gmail.com>")]
 #[command(styles = CLAP_STYLING)]
 pub struct Cli {
