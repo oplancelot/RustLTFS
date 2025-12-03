@@ -22,13 +22,13 @@ pub mod scsi_commands {
     pub const READ_6: u8 = 0x08;
     pub const WRITE_6: u8 = 0x0A;
     pub const SPACE: u8 = 0x11;
-    pub const INQUIRY: u8 = 0x12;
-    pub const LOAD_UNLOAD: u8 = 0x1B;
+
+
     pub const LOCATE: u8 = 0x2B;
     pub const READ_POSITION: u8 = 0x34;
     pub const LOG_SENSE: u8 = 0x4D;
-    pub const READ_BLOCK_LIMITS: u8 = 0x05;
-    pub const READ_ATTRIBUTE: u8 = 0x8C;
+
+
 }
 
 

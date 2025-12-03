@@ -16,29 +16,29 @@ pub enum RustLtfsError {
     #[error("File operation error: {0}")]
     FileOperation(String),
     
-    #[error("Configuration error: {0}")]
-    Config(String),
+
+
     
-    #[error("Verification error: {0}")]
-    Verification(String),
+
+
     
-    #[error("Unsupported operation: {0}")]
-    UnsupportedOperation(String),
+
+
     
     #[error("System error: {0}")]
     System(String),
     
-    #[error("Permission error: {0}")]
-    Permission(String),
+
+
     
-    #[error("Network or connection error: {0}")]
-    Connection(String),
+
+
     
     #[error("Parse error: {0}")]
     Parse(String),
     
-    #[error("CLI error: {0}")]
-    Cli(String),
+
+
     
     #[error("LTFS index error: {0}")]
     LtfsIndex(String),
@@ -46,11 +46,11 @@ pub enum RustLtfsError {
     #[error("Parameter validation error: {0}")]
     ParameterValidation(String),
     
-    #[error("Operation cancelled: {0}")]
-    OperationCancelled(String),
+
+
     
-    #[error("Resource exhausted: {0}")]
-    ResourceExhausted(String),
+
+
     
     #[error("Generic error: {0}")]
     Generic(#[from] anyhow::Error),
@@ -97,12 +97,7 @@ impl RustLtfsError {
         Self::ParameterValidation(msg.into())
     }
     
-    pub fn operation_cancelled<T: Into<String>>(msg: T) -> Self {
-        Self::OperationCancelled(msg.into())
-    }
-    
-    pub fn resource_exhausted<T: Into<String>>(msg: T) -> Self {
-        Self::ResourceExhausted(msg.into())
-    }
-}
 
+    
+
+}

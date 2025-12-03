@@ -1,48 +1,12 @@
-use super::partition_manager::LtfsPartitionLabel;
-use super::{FileWriteEntry, WriteOptions, WriteProgress};
+use super::LtfsPartitionLabel;
+use super::{WriteOptions, WriteProgress};
 use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::LtfsIndex;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, Semaphore};
 use tracing::{debug, info, warn};
 
 
-/// 性能控制状态结构体（对应LTFSCopyGUI的性能管理）
-#[derive(Debug, Clone)]
-pub struct PerformanceControlState {
-    /// 当前传输速度 (字节/秒)
-    pub current_transfer_rate: u64,
-    /// 目标速度限制 (字节/秒)
-    pub target_speed_limit: Option<u64>,
-    /// 活跃的并发操作数
-    pub active_operations: u32,
-    /// 最大并发操作数（对应LTFSCopyGUI的线程池大小）
-    pub max_concurrent_operations: u32,
-    /// 内存使用情况 (字节)
-    pub memory_usage: u64,
-    /// 最大内存限制 (字节)
-    pub max_memory_limit: u64,
-    /// 队列中等待的操作数
-    pub queued_operations: u32,
-    /// 性能监控启用状态
-    pub monitoring_enabled: bool,
-}
 
-impl Default for PerformanceControlState {
-    fn default() -> Self {
-        Self {
-            current_transfer_rate: 0,
-            target_speed_limit: None,
-            active_operations: 0,
-            max_concurrent_operations: 4, // LTFSCopyGUI默认并发数
-            memory_usage: 0,
-            max_memory_limit: 2 * 1024 * 1024 * 1024, // 2GB 内存限制
-            queued_operations: 0,
-            monitoring_enabled: true,
-        }
-    }
-}
+
 
 /// 操作类型枚举
 #[derive(Debug, Clone, Copy)]
@@ -61,27 +25,17 @@ pub struct TapeOperations {
     pub(crate) block_size: u32,
     pub(crate) scsi: crate::scsi::ScsiInterface,
     pub(crate) partition_label: Option<LtfsPartitionLabel>, // 对应LTFSCopyGUI的plabel
-    pub(crate) write_queue: Vec<FileWriteEntry>,
+
     pub(crate) write_progress: WriteProgress,
     pub(crate) write_options: WriteOptions,
     pub(crate) modified: bool,   // 对应LTFSCopyGUI的Modified标志
-    pub(crate) stop_flag: bool,  // 对应LTFSCopyGUI的StopFlag
-    pub(crate) pause_flag: bool, // 对应LTFSCopyGUI的Pause
     pub(crate) extra_partition_count: Option<u8>, // 对应LTFSCopyGUI的ExtraPartitionCount
     pub(crate) max_extra_partition_allowed: u8, // 对应LTFSCopyGUI的MaxExtraPartitionAllowed
-
-    // === 新增性能控制组件（对应LTFSCopyGUI的性能管理） ===
-    pub(crate) performance_state: PerformanceControlState,      // 性能控制状态
-    pub(crate) operation_semaphore: Option<Arc<Semaphore>>,     // 并发控制信号量
-    pub(crate) memory_usage_tracker: Arc<Mutex<u64>>,           // 内存使用跟踪器
 }
 
 impl TapeOperations {
-    /// Create new tape operations instance with performance control
+    /// Create new tape operations instance
     pub fn new(device: &str) -> Self {
-        let performance_state = PerformanceControlState::default();
-        let max_concurrent = performance_state.max_concurrent_operations as usize;
-
         Self {
             device_path: device.to_string(),
 
@@ -90,311 +44,35 @@ impl TapeOperations {
             block_size: crate::scsi::block_sizes::LTO_BLOCK_SIZE, // Default block size (64KB)
             scsi: crate::scsi::ScsiInterface::new(),
             partition_label: None, // 初始化为None，稍后读取
-            write_queue: Vec::new(),
+
             write_progress: WriteProgress::default(),
             write_options: WriteOptions::default(),
             modified: false,
-            stop_flag: false,
-            pause_flag: false,
+
             extra_partition_count: None, // Will be detected during initialization
             max_extra_partition_allowed: 1, // LTO standard maximum
-
-            // 性能控制组件初始化
-            performance_state,
-            operation_semaphore: Some(Arc::new(Semaphore::new(max_concurrent))),
-            memory_usage_tracker: Arc::new(Mutex::new(0)),
         }
     }
 
 
 
-    /// Configure concurrency control (对应LTFSCopyGUI的并发控制)
-    pub fn set_max_concurrent_operations(&mut self, max_concurrent: u32) {
-        self.performance_state.max_concurrent_operations = max_concurrent;
-        self.operation_semaphore = Some(Arc::new(Semaphore::new(max_concurrent as usize)));
-        info!(
-            "Maximum concurrent operations set to {} for device: {}",
-            max_concurrent, self.device_path
-        );
-    }
-
-    /// Set memory limit (对应LTFSCopyGUI的内存限制)
-    pub fn set_memory_limit(&mut self, memory_limit_mb: u64) {
-        self.performance_state.max_memory_limit = memory_limit_mb * 1024 * 1024;
-        info!(
-            "Memory limit set to {} MB for device: {}",
-            memory_limit_mb, self.device_path
-        );
-    }
-
-    /// Get current performance status (对应LTFSCopyGUI的性能状态查询)
-    pub async fn get_performance_status(&self) -> PerformanceControlState {
-        let mut state = self.performance_state.clone();
-
-        // 更新内存使用情况
-        let memory_usage = self.memory_usage_tracker.lock().await;
-        state.memory_usage = *memory_usage;
 
 
-        state.queued_operations = self.write_queue.len() as u32;
-
-        state
-    }
-
-    /// Apply performance controls during operation (智能性能控制应用)
-    pub async fn apply_performance_controls(
-        &mut self,
-        _bytes_processed: u64,
-        memory_delta: u64,
-    ) -> Result<()> {
-        // 1. 内存使用控制 (使用实际内存增量)
-        self.check_memory_usage(memory_delta).await?;
-
-        // 2. 并发控制检查
-        self.check_operation_limits().await?;
-
-        // 4. 暂停和停止检查
-        self.check_pause_and_stop().await?;
-
-        // 性能监控记录功能已移除
-
-        Ok(())
-    }
-
-    /// Check memory usage and apply controls
-    async fn check_memory_usage(&mut self, additional_bytes: u64) -> Result<()> {
-        {
-            let mut memory_usage = self.memory_usage_tracker.lock().await;
-            *memory_usage += additional_bytes;
-
-            if *memory_usage > self.performance_state.max_memory_limit {
-                warn!(
-                    "Memory usage ({} MB) exceeds limit ({} MB), initiating memory management",
-                    *memory_usage / (1024 * 1024),
-                    self.performance_state.max_memory_limit / (1024 * 1024)
-                );
-
-                // 释放锁，以便调用cleanup函数
-                drop(memory_usage);
-
-                // 强制内存清理
-                self.force_memory_cleanup().await?;
-
-                // 重新获取锁并更新内存使用
-                let mut memory_usage = self.memory_usage_tracker.lock().await;
-                *memory_usage = self.get_actual_memory_usage().await;
-
-                if *memory_usage > self.performance_state.max_memory_limit {
-                    return Err(RustLtfsError::resource_exhausted(
-                        "Memory limit exceeded and cleanup failed".to_string(),
-                    ));
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Check operation limits and manage concurrency
-    async fn check_operation_limits(&mut self) -> Result<()> {
-        if self.performance_state.active_operations
-            >= self.performance_state.max_concurrent_operations
-        {
-            debug!(
-                "Maximum concurrent operations ({}) reached, waiting for slot",
-                self.performance_state.max_concurrent_operations
-            );
-
-            // 等待信号量可用
-            if let Some(ref semaphore) = self.operation_semaphore {
-                let _permit = semaphore.acquire().await.map_err(|e| {
-                    RustLtfsError::resource_exhausted(format!(
-                        "Semaphore acquisition failed: {}",
-                        e
-                    ))
-                })?;
-                // permit会在这个作用域结束时自动释放
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Check pause and stop flags
-    async fn check_pause_and_stop(&self) -> Result<()> {
-        if self.stop_flag {
-            return Err(RustLtfsError::operation_cancelled(
-                "Operation stopped by user".to_string(),
-            ));
-        }
-
-        while self.pause_flag {
-            debug!("Operation paused, waiting for resume");
-            tokio::time::sleep(Duration::from_millis(100)).await;
-
-            // 再次检查停止标志
-            if self.stop_flag {
-                return Err(RustLtfsError::operation_cancelled(
-                    "Operation stopped while paused".to_string(),
-                ));
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Force memory cleanup when approaching limits
-    async fn force_memory_cleanup(&mut self) -> Result<()> {
-        info!("Performing emergency memory cleanup");
-
-        // 性能监控缓存清理功能已移除
-
-        // 清理写入队列中不必要的数据
-        if self.write_queue.len() > 100 {
-            warn!(
-                "Large write queue detected ({}), optimizing",
-                self.write_queue.len()
-            );
-            // 可以实现队列优化逻辑
-        }
-
-        // 触发垃圾回收提示（Rust会自动管理，但可以建议）
-        std::hint::black_box(vec![0u8; 1]); // 触发分配器活动
-
-        Ok(())
-    }
-
-    /// Get actual memory usage estimation
-    async fn get_actual_memory_usage(&self) -> u64 {
-        let mut usage = 0u64;
-
-        // 估算各组件内存使用
-        usage += self.write_queue.len() as u64 * 1024; // 估算每个写入条目1KB
-        usage += self.block_size as u64; // SCSI缓冲区
-
-        // 性能监控内存统计功能已移除
-
-        usage
-    }
-
-    /// 获取详细的性能报告（对应LTFSCopyGUI的性能报告功能）
-    pub async fn get_performance_report(&self) -> String {
-        let mut report = String::new();
-
-        report.push_str("=== RustLTFS Performance Report ===\n");
-        report.push_str(&format!("Device: {}\n", self.device_path));
-        report.push_str(&format!("Block size: {} bytes\n", self.block_size));
-
-        // 性能控制状态
-        let perf_state = self.get_performance_status().await;
-        report.push_str("\n--- Performance Control Status ---\n");
-        report.push_str(&format!(
-            "Current transfer rate: {:.2} MB/s\n",
-            perf_state.current_transfer_rate as f64 / (1024.0 * 1024.0)
-        ));
-
-        if let Some(target_speed) = perf_state.target_speed_limit {
-            report.push_str(&format!(
-                "Target speed limit: {:.2} MB/s\n",
-                target_speed as f64 / (1024.0 * 1024.0)
-            ));
-        } else {
-            report.push_str("Speed limit: Disabled\n");
-        }
-
-        report.push_str(&format!(
-            "Active operations: {} / {}\n",
-            perf_state.active_operations, perf_state.max_concurrent_operations
-        ));
-        report.push_str(&format!(
-            "Memory usage: {:.2} MB / {:.2} MB\n",
-            perf_state.memory_usage as f64 / (1024.0 * 1024.0),
-            perf_state.max_memory_limit as f64 / (1024.0 * 1024.0)
-        ));
-        report.push_str(&format!(
-            "Queued operations: {}\n",
-            perf_state.queued_operations
-        ));
-
-        // 性能监控统计功能已移除
-        report.push_str("\n--- Performance Monitoring ---\n");
-        report.push_str("Monitoring: Disabled (功能已移除)\n");
-
-        // 写入进度
-        report.push_str("\n--- Write Progress ---\n");
-        report.push_str(&format!(
-            "Total files processed: {}\n",
-            self.write_progress.total_files_processed
-        ));
-        report.push_str(&format!(
-            "Current files processed: {}\n",
-            self.write_progress.current_files_processed
-        ));
-        report.push_str(&format!(
-            "Total bytes processed: {:.2} MB\n",
-            self.write_progress.total_bytes_processed as f64 / (1024.0 * 1024.0)
-        ));
-        report.push_str(&format!(
-            "Files in queue: {}\n",
-            self.write_progress.files_in_queue
-        ));
-        report.push_str(&format!(
-            "Files written: {}\n",
-            self.write_progress.files_written
-        ));
-        report.push_str(&format!(
-            "Bytes written: {:.2} MB\n",
-            self.write_progress.bytes_written as f64 / (1024.0 * 1024.0)
-        ));
-        report.push_str(&format!(
-            "Current file: {}\n",
-            self.write_progress.current_file
-        ));
-
-        if !self.write_progress.errors.is_empty() {
-            report.push_str(&format!("Errors: {}\n", self.write_progress.errors.len()));
-        }
-
-        // 控制状态
-        report.push_str("\n--- Control Status ---\n");
-        report.push_str(&format!("Stop flag: {}\n", self.stop_flag));
-        report.push_str(&format!("Pause flag: {}\n", self.pause_flag));
-        report.push_str(&format!("Modified: {}\n", self.modified));
-
-        report.push_str("\n=== End Performance Report ===\n");
-        report
-    }
-
-    /// 重置性能统计（对应LTFSCopyGUI的统计重置功能）
-    pub fn reset_performance_stats(&mut self) {
-        // 性能监控缓存清理功能已移除
 
 
-        self.performance_state.active_operations = 0;
-        self.performance_state.queued_operations = 0;
 
-        info!(
-            "Performance statistics reset for device: {}",
-            self.device_path
-        );
-    }
 
-    /// 启用自适应性能调优（对应LTFSCopyGUI的自动性能优化）
-    pub fn enable_adaptive_performance(&mut self) {
 
-        let optimal_concurrent = match self.device_path.as_str() {
-            path if path.contains("tape") || path.contains("st") => 2, // 磁带设备通常较低并发
-            _ => 4,                                                    // 默认并发数
-        };
 
-        self.set_max_concurrent_operations(optimal_concurrent);
 
-        // 性能监控功能已移除，保留自适应并发控制
 
-        info!(
-            "Adaptive performance optimization enabled for device: {}",
-            self.device_path
-        );
+
+
+
+
+    /// Get current write progress
+    pub fn get_write_progress(&self) -> &WriteProgress {
+        &self.write_progress
     }
 
     /// Set write options
@@ -407,26 +85,7 @@ impl TapeOperations {
 
 
 
-    /// Get current write progress
-    pub fn get_write_progress(&self) -> &WriteProgress {
-        &self.write_progress
-    }
 
-    /// Stop write operations
-    pub fn stop_write(&mut self) {
-        self.stop_flag = true;
-        info!("Write operations stopped by user request");
-    }
-
-    /// Pause/resume write operations
-    pub fn set_pause(&mut self, pause: bool) {
-        self.pause_flag = pause;
-        if pause {
-            info!("Write operations paused");
-        } else {
-            info!("Write operations resumed");
-        }
-    }
 
     /// 初始化分区检测 (精确对应LTFSCopyGUI的初始化逻辑)
     /// 检测ExtraPartitionCount并设置分区策略 - 修复版本：直接使用已打开的SCSI设备
@@ -551,14 +210,8 @@ impl TapeOperations {
         }
     }
 
-    /// 创建分区管理器 (已废弃：使用直接SCSI方法替代，仅保留以防向后兼容)
-    #[deprecated(note = "Use direct SCSI methods instead to avoid device handle inconsistency")]
-    #[allow(dead_code)]
-    pub fn create_partition_manager(&self) -> super::partition_manager::PartitionManager {
-        super::partition_manager::PartitionManager::new(
-            std::sync::Arc::new(crate::scsi::ScsiInterface::new()),
-        )
-    }
+
+
 
     /// Wait for device ready using TestUnitReady retry logic (对应LTFSCopyGUI的TestUnitReady重试逻辑)
     pub async fn wait_for_device_ready(&self) -> Result<()> {
@@ -835,19 +488,7 @@ impl TapeOperations {
         None
     }
 
-    /// 手动更新磁带索引
-    pub async fn update_index_on_tape_manual_new(&mut self) -> Result<()> {
-        info!("Manually updating index on tape");
 
-        if self.index.is_none() {
-            return Err(RustLtfsError::ltfs_index("No index to update".to_string()));
-        }
-
-        // 这里应该实现索引更新逻辑
-        // 暂时返回成功
-        warn!("Manual index update is not fully implemented yet");
-        Ok(())
-    }
 
     /// 刷新磁带容量信息（精确对应LTFSCopyGUI RefreshCapacity）
     pub async fn refresh_capacity(&mut self) -> Result<super::capacity_manager::TapeCapacityInfo> {
@@ -858,12 +499,6 @@ impl TapeOperations {
             p0_maximum: 0,
             p1_remaining: 0,
             p1_maximum: 0,
-            media_description: "Unknown".to_string(),
-            error_rate_log_value: 0.0,
-            capacity_loss: None,
-            is_worm: false,
-            is_write_protected: false,
-            generation_info: "".to_string(),
         };
 
         // 直接使用self.scsi来读取容量信息
@@ -903,22 +538,7 @@ impl TapeOperations {
         Ok(capacity_info)
     }
 
-    /// 读取错误率信息（对应LTFSCopyGUI ReadChanLRInfo）
-    pub async fn read_error_rate_info(&mut self) -> Result<f64> {
-        info!("Reading tape error rate information");
 
-        // 直接使用self.scsi读取错误率信息
-        match self.scsi.log_sense(0x02, 1) {
-            Ok(_data) => {
-                // 简单解析错误率（可以后续完善）
-                Ok(0.0)
-            }
-            Err(e) => {
-                warn!("Failed to read error rate: {}", e);
-                Ok(0.0)
-            }
-        }
-    }
 
     /// 获取磁带容量信息（简化版本，用于向后兼容）
     pub async fn get_tape_capacity_info(&mut self) -> Result<TapeSpaceInfo> {

@@ -25,7 +25,7 @@ pub mod types;
 pub mod ffi;
 
 pub use constants::*;
-pub use types::*;
+pub use types::{DriveType, MediaType, TapePosition, SpaceType, LocateDestType};
 pub use ffi::*;
 
 /// SCSI operation structure that encapsulates low-level SCSI commands
@@ -290,20 +290,7 @@ impl ScsiInterface {
 
 
     /// Send SCSI command with simplified interface (for compatibility with tape_ops.rs)
-    pub fn send_scsi_command(
-        &self,
-        cdb: &[u8],
-        data_buffer: &mut [u8],
-        data_direction: u8,
-    ) -> Result<bool> {
-        let data_in = match data_direction {
-            0 => SCSI_IOCTL_DATA_OUT,
-            1 => SCSI_IOCTL_DATA_IN,
-            _ => SCSI_IOCTL_DATA_UNSPECIFIED,
-        };
 
-        self.scsi_io_control(cdb, Some(data_buffer), data_in, 300, None)
-    }
 
     /// Test Unit Ready command - check if device is ready
     pub fn test_unit_ready(&self) -> Result<Vec<u8>> {
@@ -343,106 +330,11 @@ impl ScsiInterface {
     }
 
     /// INQUIRY command to get device information (based on LTFSCopyGUI implementation)
-    pub fn inquiry(&self, page_code: Option<u8>) -> Result<Vec<u8>> {
-        debug!("Executing INQUIRY command with page code: {:?}", page_code);
 
-        #[cfg(windows)]
-        {
-            let mut cdb = [0u8; 6];
-            let mut data_buffer = [0u8; 96]; // Standard INQUIRY buffer size
-
-            cdb[0] = scsi_commands::INQUIRY;
-
-            if let Some(page) = page_code {
-                // VPD page inquiry (matches LTFSCopyGUI: {&H12, 1, &H80, 0, 4, 0})
-                cdb[1] = 0x01; // EVPD=1 for VPD pages
-                cdb[2] = page; // Page code (0x80 for serial number, etc.)
-                cdb[4] = data_buffer.len() as u8; // Allocation length
-            } else {
-                // Standard INQUIRY (matches LTFSCopyGUI: {&H12, 0, 0, 0, &H60, 0})
-                cdb[1] = 0x00; // EVPD=0 for standard inquiry
-                cdb[2] = 0x00; // Page/operation code
-                cdb[4] = data_buffer.len() as u8; // Allocation length
-            }
-            cdb[5] = 0x00; // Control byte
-
-            let result = self.scsi_io_control(
-                &cdb,
-                Some(&mut data_buffer),
-                SCSI_IOCTL_DATA_IN,
-                30, // 30 second timeout
-                None,
-            )?;
-
-            if result {
-                debug!("INQUIRY command completed successfully");
-                Ok(data_buffer.to_vec())
-            } else {
-                Err(crate::error::RustLtfsError::scsi("INQUIRY command failed"))
-            }
-        }
-
-        #[cfg(not(windows))]
-        {
-            let _ = page_code;
-            Err(crate::error::RustLtfsError::unsupported(
-                "Non-Windows platform",
-            ))
-        }
-    }
 
     /// READ BLOCK LIMITS command (based on LTFSCopyGUI implementation)
     /// Returns (max_block_length, min_block_length)
-    pub fn read_block_limits(&self) -> Result<(u32, u16)> {
-        debug!("Executing READ BLOCK LIMITS command");
 
-        #[cfg(windows)]
-        {
-            let mut cdb = [0u8; 6];
-            let mut data_buffer = [0u8; 6];
-
-            // LTFSCopyGUI: {5, 0, 0, 0, 0, 0}
-            cdb[0] = scsi_commands::READ_BLOCK_LIMITS;
-            cdb[1] = 0x00;
-            cdb[2] = 0x00;
-            cdb[3] = 0x00;
-            cdb[4] = 0x00;
-            cdb[5] = 0x00;
-
-            let result = self.scsi_io_control(
-                &cdb,
-                Some(&mut data_buffer),
-                SCSI_IOCTL_DATA_IN,
-                30, // 30 second timeout
-                None,
-            )?;
-
-            if result {
-                // Parse response (matches LTFSCopyGUI parsing logic)
-                let max_block_length = ((data_buffer[1] as u32) << 16)
-                    | ((data_buffer[2] as u32) << 8)
-                    | (data_buffer[3] as u32);
-                let min_block_length = ((data_buffer[4] as u16) << 8) | (data_buffer[5] as u16);
-
-                debug!(
-                    "Block limits: max={}, min={}",
-                    max_block_length, min_block_length
-                );
-                Ok((max_block_length, min_block_length))
-            } else {
-                Err(crate::error::RustLtfsError::scsi(
-                    "READ_block_limits command failed",
-                ))
-            }
-        }
-
-        #[cfg(not(windows))]
-        {
-            Err(crate::error::RustLtfsError::unsupported(
-                "Non-Windows platform",
-            ))
-        }
-    }
 
     /// LOG SENSE command (based on LTFSCopyGUI implementation)
     /// LTFSCopyGUI: {&H4D, 0, PageControl << 6 Or PageCode, 0, 0, 0, 0, (PageLen + 4) >> 8 And &HFF, (PageLen + 4) And &HFF, 0}
@@ -532,88 +424,7 @@ impl ScsiInterface {
 
     /// READ EOW POSITION command (based on LTFSCopyGUI implementation)
     /// LTFSCopyGUI: {&HA3, &H1F, &H45, 2, 0, 0, 0, 0, len >> 8, len And &HFF, 0, 0}
-    pub fn read_eow_position(&self) -> Result<Vec<u8>> {
-        debug!("Executing READ EOW POSITION command");
 
-        #[cfg(windows)]
-        {
-            // Step 1: Get length
-            let mut len_cdb = [0u8; 12];
-            let mut len_buffer = [0u8; 2];
-
-            len_cdb[0] = 0xA3; // READ EOW POSITION
-            len_cdb[1] = 0x1F;
-            len_cdb[2] = 0x45;
-            len_cdb[3] = 2;
-            len_cdb[4] = 0x00;
-            len_cdb[5] = 0x00;
-            len_cdb[6] = 0x00;
-            len_cdb[7] = 0x00;
-            len_cdb[8] = 0x00;
-            len_cdb[9] = 2; // Allocation length for length data
-            len_cdb[10] = 0x00;
-            len_cdb[11] = 0x00;
-
-            let result = self.scsi_io_control(
-                &len_cdb,
-                Some(&mut len_buffer),
-                SCSI_IOCTL_DATA_IN,
-                30,
-                None,
-            )?;
-
-            if !result {
-                return Err(crate::error::RustLtfsError::scsi(
-                    "READ EOW POSITION length query failed",
-                ));
-            }
-
-            let mut len = ((len_buffer[0] as u16) << 8) | (len_buffer[1] as u16);
-            len += 2;
-
-            // Step 2: Read full EOW position data
-            let mut full_cdb = [0u8; 12];
-            let mut full_buffer = vec![0u8; len as usize];
-
-            full_cdb[0] = 0xA3;
-            full_cdb[1] = 0x1F;
-            full_cdb[2] = 0x45;
-            full_cdb[3] = 2;
-            full_cdb[4] = 0x00;
-            full_cdb[5] = 0x00;
-            full_cdb[6] = 0x00;
-            full_cdb[7] = 0x00;
-            full_cdb[8] = (len >> 8) as u8;
-            full_cdb[9] = (len & 0xFF) as u8;
-            full_cdb[10] = 0x00;
-            full_cdb[11] = 0x00;
-
-            let full_result = self.scsi_io_control(
-                &full_cdb,
-                Some(&mut full_buffer),
-                SCSI_IOCTL_DATA_IN,
-                30,
-                None,
-            )?;
-
-            if full_result {
-                debug!("READ EOW POSITION completed successfully");
-                // Return data skipping the first 4 bytes (header) like LTFSCopyGUI
-                Ok(full_buffer.into_iter().skip(4).collect())
-            } else {
-                Err(crate::error::RustLtfsError::scsi(
-                    "READ EOW POSITION command failed",
-                ))
-            }
-        }
-
-        #[cfg(not(windows))]
-        {
-            Err(crate::error::RustLtfsError::unsupported(
-                "Non-Windows platform",
-            ))
-        }
-    }
 
     /// Parse sense data for Test Unit Ready (similar to LTFSCopyGUI's ParseSenseData)
     pub fn parse_sense_data(&self, sense_data: &[u8]) -> String {
@@ -925,86 +736,11 @@ impl ScsiInterface {
     }
 
     /// Read blocks with retry mechanism for improved reliability
-    pub fn read_blocks_with_retry(
-        &self,
-        block_count: u32,
-        buffer: &mut [u8],
-        max_retries: u32,
-    ) -> Result<u32> {
-        debug!(
-            "Reading {} blocks with retry (max {} retries)",
-            block_count, max_retries
-        );
 
-        let mut last_error = None;
-
-        for retry in 0..=max_retries {
-            if retry > 0 {
-                warn!(
-                    "Retrying block read, attempt {} of {}",
-                    retry + 1,
-                    max_retries + 1
-                );
-
-                // Progressive backoff delay
-                let delay_ms = std::cmp::min(1000 * retry, 5000); // Max 5 second delay
-                std::thread::sleep(std::time::Duration::from_millis(delay_ms as u64));
-
-                // Try to recover tape position on retry
-                if let Err(e) = self.recover_tape_position() {
-                    debug!("Position recovery failed: {}", e);
-                }
-            }
-
-            match self.read_blocks(block_count, buffer) {
-                Ok(result) => {
-                    if retry > 0 {
-                        info!("Block read succeeded on retry {}", retry);
-                    }
-                    return Ok(result);
-                }
-                Err(e) => {
-                    last_error = Some(e);
-                    debug!("Block read attempt {} failed: {:?}", retry + 1, last_error);
-                }
-            }
-        }
-
-        Err(last_error
-            .unwrap_or_else(|| crate::error::RustLtfsError::scsi("All retry attempts failed")))
-    }
 
     /// Attempt to recover tape position after read error
-    fn recover_tape_position(&self) -> Result<()> {
-        debug!("Attempting tape position recovery");
 
-        // Try to read current position
-        match self.read_position() {
-            Ok(pos) => {
-                debug!(
-                    "Current position: partition {}, block {}",
-                    pos.partition, pos.block_number
-                );
 
-                // If we can read position, try a small test read
-                let mut test_buffer = vec![0u8; block_sizes::LTO_BLOCK_SIZE as usize];
-                match self.read_blocks_direct(1, &mut test_buffer) {
-                    Ok(_) => {
-                        debug!("Position recovery successful - test read OK");
-                        Ok(())
-                    }
-                    Err(e) => {
-                        debug!("Position recovery failed - test read failed: {}", e);
-                        Err(e)
-                    }
-                }
-            }
-            Err(e) => {
-                debug!("Position recovery failed - cannot read position: {}", e);
-                Err(e)
-            }
-        }
-    }
 
     /// Write tape blocks (based on LTFSCopyGUI implementation)
     pub fn write_blocks(&self, block_count: u32, buffer: &[u8]) -> Result<u32> {
@@ -1322,92 +1058,7 @@ impl ScsiInterface {
     }
 
     /// Read MAM (Medium Auxiliary Memory) attributes for capacity information
-    pub fn read_mam_attribute(&self, attribute_id: u16) -> Result<MamAttribute> {
-        debug!("Reading MAM attribute ID: 0x{:04X}", attribute_id);
 
-        #[cfg(windows)]
-        {
-            let mut cdb = [0u8; 16];
-            let mut data_buffer = [0u8; 512]; // Sufficient for most MAM attributes
-
-            cdb[0] = scsi_commands::READ_ATTRIBUTE;
-            cdb[1] = 0x00; // Service action = 0 (VALUES)
-            cdb[7] = 0x01; // Restrict to single attribute
-
-            // Attribute ID
-            cdb[8] = ((attribute_id >> 8) & 0xFF) as u8;
-            cdb[9] = (attribute_id & 0xFF) as u8;
-
-            // Allocation length
-            let alloc_length = data_buffer.len() as u32;
-            cdb[10] = ((alloc_length >> 24) & 0xFF) as u8;
-            cdb[11] = ((alloc_length >> 16) & 0xFF) as u8;
-            cdb[12] = ((alloc_length >> 8) & 0xFF) as u8;
-            cdb[13] = (alloc_length & 0xFF) as u8;
-
-            let result =
-                self.scsi_io_control(&cdb, Some(&mut data_buffer), SCSI_IOCTL_DATA_IN, 300, None)?;
-
-            if result {
-                // Parse MAM attribute header
-                if data_buffer.len() < 4 {
-                    return Err(crate::error::RustLtfsError::scsi("Invalid MAM response"));
-                }
-
-                // Skip header, find attribute
-                let data_length = ((data_buffer[0] as u32) << 24)
-                    | ((data_buffer[1] as u32) << 16)
-                    | ((data_buffer[2] as u32) << 8)
-                    | (data_buffer[3] as u32);
-
-                if data_length < 5 {
-                    return Err(crate::error::RustLtfsError::scsi("No MAM attributes found"));
-                }
-
-                // Parse first attribute (simplified - assumes single attribute response)
-                let attr_id = ((data_buffer[4] as u16) << 8) | (data_buffer[5] as u16);
-                let attr_format = data_buffer[6];
-                let attr_length = ((data_buffer[7] as u16) << 8) | (data_buffer[8] as u16);
-
-                if attr_id != attribute_id {
-                    return Err(crate::error::RustLtfsError::scsi(
-                        "Unexpected attribute ID in response",
-                    ));
-                }
-
-                let mut attr_data = Vec::new();
-                if attr_length > 0 && data_buffer.len() >= (9 + attr_length as usize) {
-                    attr_data.extend_from_slice(&data_buffer[9..9 + attr_length as usize]);
-                }
-
-                let attribute = MamAttribute {
-                    attribute_id: attr_id,
-                    attribute_format: attr_format,
-                    length: attr_length,
-                    data: attr_data,
-                };
-
-                debug!(
-                    "Read MAM attribute: ID=0x{:04X}, format={}, length={}",
-                    attribute.attribute_id, attribute.attribute_format, attribute.length
-                );
-
-                Ok(attribute)
-            } else {
-                Err(crate::error::RustLtfsError::scsi(
-                    "Read MAM attribute failed",
-                ))
-            }
-        }
-
-        #[cfg(not(windows))]
-        {
-            let _ = attribute_id;
-            Err(crate::error::RustLtfsError::unsupported(
-                "Non-Windows platform",
-            ))
-        }
-    }
 
     /// Write file mark (end of file marker)
     pub fn write_filemarks(&self, count: u32) -> Result<()> {
@@ -1867,7 +1518,7 @@ impl ScsiInterface {
             partition,
             match dest_type {
                 LocateDestType::Block => "block",
-                LocateDestType::FileMark => "filemark",
+
                 LocateDestType::EOD => "EOD",
             },
             dest_type,
@@ -1879,18 +1530,8 @@ impl ScsiInterface {
             let mut sense_buffer = [0u8; SENSE_INFO_LEN];
 
             // Execute locate command based on drive type
+            // Execute locate command based on drive type
             match self.drive_type {
-                DriveType::M2488 => {
-                    // M2488 specific implementation (placeholder)
-                    warn!("M2488 drive type not fully implemented");
-                    self.locate_standard(block_address, partition, dest_type, &mut sense_buffer)
-                }
-                DriveType::SLR3 => {
-                    self.locate_slr3(block_address, partition, dest_type, &mut sense_buffer)
-                }
-                DriveType::SLR1 => {
-                    self.locate_slr1(block_address, partition, dest_type, &mut sense_buffer)
-                }
                 DriveType::Standard => {
                     self.locate_standard(block_address, partition, dest_type, &mut sense_buffer)
                 }
@@ -1920,21 +1561,7 @@ impl ScsiInterface {
         //     Locate(handle, 0, 0)
         //     Space6(handle:=handle, Count:=BlockAddress, Code:=LocateDestType.FileMark)
         match dest_type {
-            LocateDestType::FileMark => {
-                info!("🔧 Using FileMark strategy: Locate(0,0) + Space6({}) in partition {}", block_address, partition);
 
-                // Step 1: 先定位到指定分区的开头 (对应Locate(handle, 0, 0))
-                self.locate(0, partition, LocateDestType::Block)?;
-
-                // Step 2: 然后用Space6命令移动到FileMark (对应Space6(handle, Count, FileMark))
-                info!(
-                    "🔧 Spacing to FileMark {} using SPACE command",
-                    block_address
-                );
-                self.space(SpaceType::FileMarks, block_address as i32)?;
-
-                Ok(0)
-            }
             _ => {
                 // 对于Block和EOD，使用标准的LOCATE(16)命令
                 if self.allow_partition || dest_type != LocateDestType::Block {
@@ -1983,111 +1610,9 @@ impl ScsiInterface {
         }
     }
 
-    /// SLR3 drive specific locate implementation
-    #[cfg(windows)]
-    fn locate_slr3(
-        &self,
-        block_address: u64,
-        _partition: u8,
-        dest_type: LocateDestType,
-        sense_buffer: &mut [u8; SENSE_INFO_LEN],
-    ) -> Result<u16> {
-        match dest_type {
-            LocateDestType::Block => {
-                let mut cdb = [0u8; 10];
-                cdb[0] = 0x2B; // LOCATE(10)
-                cdb[1] = 4; // SLR3 specific flags
-                cdb[2] = 0;
-                cdb[3] = ((block_address >> 24) & 0xFF) as u8;
-                cdb[4] = ((block_address >> 16) & 0xFF) as u8;
-                cdb[5] = ((block_address >> 8) & 0xFF) as u8;
-                cdb[6] = (block_address & 0xFF) as u8;
-                cdb[7] = 0;
-                cdb[8] = 0;
-                cdb[9] = 0;
 
-                self.execute_locate_command(&cdb, sense_buffer)
-            }
-            LocateDestType::FileMark => {
-                // First locate to beginning, then space to filemark
-                self.locate(0, 0, LocateDestType::Block)?;
-                self.space(SpaceType::FileMarks, block_address as i32)?;
-                Ok(0)
-            }
-            LocateDestType::EOD => {
-                if let Ok(pos) = self.read_position() {
-                    if !pos.end_of_data {
-                        let mut cdb = [0u8; 6];
-                        cdb[0] = 0x11; // SPACE
-                        cdb[1] = 3; // EOD
-                        cdb[2] = 0;
-                        cdb[3] = 0;
-                        cdb[4] = 0;
-                        cdb[5] = 0;
 
-                        self.execute_locate_command(&cdb, sense_buffer)
-                    } else {
-                        Ok(0)
-                    }
-                } else {
-                    Err(crate::error::RustLtfsError::scsi(
-                        "Cannot read position for EOD locate",
-                    ))
-                }
-            }
-        }
-    }
 
-    /// SLR1 drive specific locate implementation
-    #[cfg(windows)]
-    fn locate_slr1(
-        &self,
-        block_address: u64,
-        _partition: u8,
-        dest_type: LocateDestType,
-        sense_buffer: &mut [u8; SENSE_INFO_LEN],
-    ) -> Result<u16> {
-        match dest_type {
-            LocateDestType::Block => {
-                let mut cdb = [0u8; 6];
-                cdb[0] = 0x0C; // SLR1 specific locate command
-                cdb[1] = 0;
-                cdb[2] = ((block_address >> 16) & 0x0F) as u8; // Only 20-bit address
-                cdb[3] = ((block_address >> 8) & 0xFF) as u8;
-                cdb[4] = (block_address & 0xFF) as u8;
-                cdb[5] = 0;
-
-                self.execute_locate_command(&cdb, sense_buffer)
-            }
-            LocateDestType::FileMark => {
-                // First locate to beginning, then space to filemark
-                self.locate(0, 0, LocateDestType::Block)?;
-                self.space(SpaceType::FileMarks, block_address as i32)?;
-                Ok(0)
-            }
-            LocateDestType::EOD => {
-                if let Ok(pos) = self.read_position() {
-                    if !pos.end_of_data {
-                        let mut cdb = [0u8; 6];
-                        cdb[0] = 0x11; // SPACE
-                        cdb[1] = 3; // EOD
-                        cdb[2] = 0;
-                        cdb[3] = 0;
-                        cdb[4] = 0;
-                        cdb[5] = 0;
-
-                        self.execute_locate_command(&cdb, sense_buffer)
-                    } else {
-                        Ok(0)
-                    }
-                } else {
-                    Err(crate::error::RustLtfsError::scsi(
-                        "Cannot read position for EOD locate",
-                    ))
-                }
-            }
-        }
-    }
 
     /// Execute locate command and handle errors (based on LTFSCopyGUI error handling)
     #[cfg(windows)]
@@ -2222,38 +1747,16 @@ impl ScsiInterface {
     }
 
     /// Enhanced locate_block method that uses the comprehensive locate function
-    pub fn locate_block_enhanced(&self, partition: u8, block_number: u64) -> Result<()> {
-        let error_code = self.locate(block_number, partition, LocateDestType::Block)?;
-        if error_code == 0 {
-            debug!(
-                "Successfully positioned to partition {} block {}",
-                partition, block_number
-            );
-            Ok(())
-        } else {
-            Err(crate::error::RustLtfsError::scsi(format!(
-                "Locate operation completed with warning: 0x{:04X}",
-                error_code
-            )))
-        }
-    }
+
 
     /// Set drive type for optimization
-    pub fn set_drive_type(&mut self, drive_type: DriveType) {
-        self.drive_type = drive_type;
-        debug!("Drive type set to: {:?}", drive_type);
-    }
+
 
     /// Set partition support flag
-    pub fn set_allow_partition(&mut self, allow: bool) {
-        self.allow_partition = allow;
-        debug!("Partition support set to: {}", allow);
-    }
+
 
     /// Get current drive type
-    pub fn get_drive_type(&self) -> DriveType {
-        self.drive_type
-    }
+
 
     /// MODE SENSE command to read partition page 0x11 (对应LTFSCopyGUI的ModeSense实现)
     /// 这个方法复制LTFSCopyGUI的精确实现：TapeUtils.ModeSense(handle, &H11)
@@ -2398,154 +1901,10 @@ impl ScsiInterface {
         }
     }
 
-    /// READ POSITION command to get raw position data
-    pub fn read_position_raw(&self) -> Result<Vec<u8>> {
-        debug!("Executing READ POSITION command");
 
-        #[cfg(windows)]
-        {
-            let mut cdb = [0u8; 10];
-            cdb[0] = SCSIOP_READ_POSITION;
-            cdb[1] = 0x06; // Service Action: Long form
-            cdb[8] = 0x20; // Allocation Length: 32 bytes
 
-            let mut data_buffer = vec![0u8; 32];
-            let mut sense_buffer = [0u8; SENSE_INFO_LEN];
 
-            let result = self.scsi_io_control(
-                &cdb,
-                Some(&mut data_buffer),
-                SCSI_IOCTL_DATA_IN,
-                30, // 30 second timeout
-                Some(&mut sense_buffer),
-            )?;
 
-            if result {
-                debug!("READ POSITION completed successfully");
-                Ok(data_buffer)
-            } else {
-                let sense_info = self.parse_sense_data(&sense_buffer);
-                Err(crate::error::RustLtfsError::scsi(format!(
-                    "READ POSITION failed: {}",
-                    sense_info
-                )))
-            }
-        }
-
-        #[cfg(not(windows))]
-        {
-            Err(crate::error::RustLtfsError::unsupported(
-                "Non-Windows platform",
-            ))
-        }
-    }
-
-    /// 解析MODE SENSE返回的分区信息
-    pub fn parse_partition_info(&self, mode_sense_data: &[u8]) -> Result<(u64, u64)> {
-        if mode_sense_data.len() < 8 {
-            return Err(crate::error::RustLtfsError::scsi(
-                "MODE SENSE data too short".to_string(),
-            ));
-        }
-
-        // 解析MODE SENSE返回的数据结构
-        // 这需要根据SCSI标准和LTO设备规范来解析
-
-        // Mode Parameter Header (8 bytes)
-        let mode_data_length = u16::from_be_bytes([mode_sense_data[0], mode_sense_data[1]]);
-        debug!("Mode data length: {}", mode_data_length);
-
-        if mode_data_length < 8 || mode_sense_data.len() < (mode_data_length as usize + 2) {
-            return Err(crate::error::RustLtfsError::scsi(
-                "Invalid MODE SENSE response".to_string(),
-            ));
-        }
-
-        // 查找Medium Configuration Mode Page (0x1D)
-        let mut offset = 8; // Skip mode parameter header
-        while offset < mode_sense_data.len() - 1 {
-            let page_code = mode_sense_data[offset] & 0x3F;
-            let page_length = mode_sense_data[offset + 1] as usize;
-
-            if page_code == TC_MP_MEDIUM_CONFIGURATION {
-                debug!("Found Medium Configuration Mode Page at offset {}", offset);
-
-                if offset + page_length + 2 <= mode_sense_data.len() {
-                    return self.parse_medium_configuration_page(
-                        &mode_sense_data[offset..offset + page_length + 2],
-                    );
-                } else {
-                    return Err(crate::error::RustLtfsError::scsi(
-                        "Medium Configuration Page truncated".to_string(),
-                    ));
-                }
-            }
-
-            offset += page_length + 2;
-        }
-
-        Err(crate::error::RustLtfsError::scsi(
-            "Medium Configuration Mode Page not found".to_string(),
-        ))
-    }
-
-    /// 解析Medium Configuration Mode Page获取分区大小
-    fn parse_medium_configuration_page(&self, page_data: &[u8]) -> Result<(u64, u64)> {
-        if page_data.len() < 16 {
-            return Err(crate::error::RustLtfsError::scsi(
-                "Medium Configuration Page too short".to_string(),
-            ));
-        }
-
-        // Medium Configuration Page格式 (根据SCSI标准)
-        // Byte 2-3: Active Partition
-        // Byte 4: Medium Format Recognition
-        // Byte 8-15: Partition Size (Partition 0)
-        // Byte 16-23: Partition Size (Partition 1)
-
-        let active_partition = u16::from_be_bytes([page_data[2], page_data[3]]);
-        debug!("Active partition: {}", active_partition);
-
-        if page_data.len() >= 24 {
-            // 读取分区0大小 (8字节，大端序)
-            let partition_0_size = u64::from_be_bytes([
-                page_data[8],
-                page_data[9],
-                page_data[10],
-                page_data[11],
-                page_data[12],
-                page_data[13],
-                page_data[14],
-                page_data[15],
-            ]);
-
-            // 读取分区1大小 (8字节，大端序)
-            let partition_1_size = u64::from_be_bytes([
-                page_data[16],
-                page_data[17],
-                page_data[18],
-                page_data[19],
-                page_data[20],
-                page_data[21],
-                page_data[22],
-                page_data[23],
-            ]);
-
-            info!(
-                "Parsed partition sizes: p0={}MB, p1={}MB",
-                partition_0_size / 1_048_576,
-                partition_1_size / 1_048_576
-            );
-
-            Ok((partition_0_size, partition_1_size))
-        } else {
-            // 如果数据不够，返回估算值
-            debug!("Insufficient data for partition sizes, using estimation");
-            Err(crate::error::RustLtfsError::scsi(
-                "Insufficient data for partition size parsing".to_string(),
-            ))
-        }
-    }
 }
 
 

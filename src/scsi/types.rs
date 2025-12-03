@@ -75,21 +75,14 @@ pub struct TapePosition {
     pub beginning_of_partition: bool,
 }
 
-/// MAM (Medium Auxiliary Memory) attribute structure
-#[derive(Debug, Clone)]
-pub struct MamAttribute {
-    pub attribute_id: u16,
-    pub attribute_format: u8,
-    pub length: u16,
-    pub data: Vec<u8>,
-}
+
 
 /// Space types for SPACE command
 #[derive(Debug, Clone, Copy)]
 pub enum SpaceType {
-    Blocks = 0,
+
     FileMarks = 1,
-    SequentialFileMarks = 2,
+
     EndOfData = 3,
 }
 
@@ -99,7 +92,7 @@ pub enum LocateDestType {
     /// Locate to specific block number
     Block = 0,
     /// Locate to file mark
-    FileMark = 1,
+
     /// Locate to end of data
     EOD = 3,
 }
@@ -109,40 +102,12 @@ pub enum LocateDestType {
 pub enum DriveType {
     /// Standard/Generic drive
     Standard,
-    /// Legacy SLR3 drive type
-    SLR3,
-    /// Legacy SLR1 drive type
-    SLR1,
-    /// M2488 drive type
-    M2488,
+
+
 }
 
-/// Load option enumeration for LOAD_UNLOAD command (based on LTFSCopyGUI)
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum LoadOption {
-    /// Unthread the tape (0)
-    Unthread = 0,
-    /// Load and thread the tape (1)
-    LoadThreaded = 1,
-    /// Retension operation (2)
-    Retension = 2,
-}
 
-/// MAM attribute format types (对应LTFSCopyGUI的AttributeFormat)
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[repr(u8)]
-pub enum MamAttributeFormat {
-    Binary = 0x00,
-    Ascii = 0x01,
-    Text = 0x02,
-}
 
-/// Tape drive information structure, corresponds to TAPE_DRIVE in C code
-#[derive(Debug, Clone)]
-pub struct TapeDriveInfo {
-    pub vendor_id: String,
-    pub product_id: String,
-    pub serial_number: String,
-    pub device_index: u32,
-    pub device_path: String,
-}
+
+
+

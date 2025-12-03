@@ -1,4 +1,4 @@
-use super::{FileWriteEntry, TapeOperations, WriteOptions};
+use super::{TapeOperations, WriteOptions};
 use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::LtfsIndex;
 use std::collections::HashMap;
@@ -309,11 +309,7 @@ impl TapeOperations {
         );
 
         // Check stop flag
-        if self.stop_flag {
-            return Err(RustLtfsError::operation_cancelled(
-                "Write operation stopped by user".to_string(),
-            ));
-        }
+
 
 
 
@@ -403,9 +399,7 @@ impl TapeOperations {
                 calc.process_final_block();
             }
 
-            // Apply performance controls before write (对应LTFSCopyGUI的性能控制)
-            self.apply_performance_controls(self.block_size as u64, self.block_size as u64)
-                .await?;
+
 
             // Write to tape (variable-length for last/short block)
             let blocks_written = self.scsi.write_blocks(1, &buffer[..bytes_read])?;
@@ -436,16 +430,7 @@ impl TapeOperations {
             let mut remaining_bytes = file_size;
 
             while remaining_bytes > 0 {
-                // Check stop and pause flags
-                if self.stop_flag {
-                    return Err(RustLtfsError::operation_cancelled(
-                        "Write operation stopped".to_string(),
-                    ));
-                }
 
-                while self.pause_flag && !self.stop_flag {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                }
 
                 // Calculate bytes to read for current block
                 let bytes_to_read = std::cmp::min(remaining_bytes, self.block_size as u64) as usize;
@@ -471,8 +456,7 @@ impl TapeOperations {
                 }
 
 
-                // Pass 0 for memory_delta because we are reusing the buffer in this loop
-                self.apply_performance_controls(bytes_read as u64, 0).await?;
+
 
                 // Write block to tape (use variable-length buffer slice to avoid ILI)
                 let blocks_written = self.scsi.write_blocks(1, &buffer[..bytes_read])?;
@@ -578,13 +562,6 @@ impl TapeOperations {
         _estimated_size: Option<u64>,
     ) -> Result<()> {
         info!("Writing from reader stream to tape: {}", target_path);
-
-        // Check stop flag
-        if self.stop_flag {
-            return Err(RustLtfsError::operation_cancelled(
-                "Write operation stopped by user".to_string(),
-            ));
-        }
 
 
 
@@ -789,13 +766,6 @@ impl TapeOperations {
             source_dir, target_path
         );
 
-        // Check stop flag
-        if self.stop_flag {
-            return Err(RustLtfsError::operation_cancelled(
-                "Write operation stopped by user".to_string(),
-            ));
-        }
-
 
 
         // Skip symlinks if configured (对应LTFSCopyGUI的SkipSymlink)
@@ -849,54 +819,11 @@ impl TapeOperations {
                 .cmp(b.file_name().unwrap_or_default())
         });
 
-        if self.write_options.parallel_add {
-            // Parallel file processing (对应LTFSCopyGUI的Parallel.ForEach)
-            info!("Processing {} files in parallel", files.len());
+        // Sequential file processing (对应LTFSCopyGUI的串行处理)
+        info!("Processing {} files sequentially", files.len());
 
-            for file_path in files {
-                // Create target path for this file
-                let file_name = file_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown");
-                let file_target = format!("{}/{}", target_path, file_name);
+        for file_path in files {
 
-                // Add to processing queue instead of immediate processing for parallel control
-                let write_entry = FileWriteEntry {
-                    source_path: file_path.clone(),
-                    target_path: file_target.clone(),
-                    tape_path: file_target,
-                    file_size: tokio::fs::metadata(&file_path)
-                        .await
-                        .map(|m| m.len())
-                        .unwrap_or(0),
-                    size: tokio::fs::metadata(&file_path)
-                        .await
-                        .map(|m| m.len())
-                        .unwrap_or(0),
-                    is_directory: false,
-                    preserve_permissions: self.write_options.preserve_permissions,
-                    modified: false,
-                    overwrite: self.write_options.overwrite,
-                    hash: None,
-                };
-
-                self.write_queue.push(write_entry);
-            }
-
-        } else {
-            // Sequential file processing (对应LTFSCopyGUI的串行处理)
-            info!("Processing {} files sequentially", files.len());
-
-            for file_path in files {
-                if self.stop_flag {
-                    break;
-                }
-
-                // Handle pause
-                while self.pause_flag && !self.stop_flag {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                }
 
 
                 // Create target path for this file
@@ -915,13 +842,10 @@ impl TapeOperations {
                     // Continue with other files instead of failing entire directory
                 }
             }
-        }
 
         // Recursively process subdirectories
         for subdir_path in subdirs {
-            if self.stop_flag {
-                break;
-            }
+
 
             let subdir_name = subdir_path
                 .file_name()

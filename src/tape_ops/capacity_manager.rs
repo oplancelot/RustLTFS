@@ -12,18 +12,6 @@ pub struct TapeCapacityInfo {
     pub p1_remaining: u64,
     /// 分区1最大容量 (KB) - 仅多分区磁带
     pub p1_maximum: u64,
-    /// 媒体描述字符串
-    pub media_description: String,
-    /// 错误率日志值
-    pub error_rate_log_value: f64,
-    /// 容量损失 (bytes) - 可选
-    pub capacity_loss: Option<u64>,
-    /// 是否为WORM磁带
-    pub is_worm: bool,
-    /// 是否为只读磁带
-    pub is_write_protected: bool,
-    /// 磁带代数信息
-    pub generation_info: String,
 }
 
 
