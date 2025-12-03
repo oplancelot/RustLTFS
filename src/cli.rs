@@ -30,7 +30,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Write files or folders to tape (对应LTFSCopyGUI的写入数据功能)
+    /// Write files or folders to tape
     ///
     /// 将本地文件或目录写入到LTFS磁带，写入完成后自动更新索引
     Write {
@@ -55,7 +55,7 @@ pub enum Commands {
         progress: bool,
     },
 
-    /// Read from tape (对应LTFSCopyGUI的读取索引和提取功能)
+    /// Read from tape
     ///
     /// 从LTFS磁带读取目录和文件列表
     Read {
