@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build and Release
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      
+      - name: Build Release Binary
+        run: cargo build --release --verbose
+      
+      - name: Prepare artifacts
+        run: |
+          mkdir -p release-artifacts
+          cp target/release/rustltfs.exe release-artifacts/
+          cp README.md release-artifacts/
+          cp LICENSE.md release-artifacts/
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-artifacts/rustltfs.exe
+            release-artifacts/README.md
+            release-artifacts/LICENSE.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+          generate_release_notes: true
+          body: |
+            ## RustLTFS ${{ github.ref_name }}
+            
+            使用方法：
+            ```bash
+            # 写入文件到磁带
+            rustltfs.exe write -t \\.\\TAPE0 -o /path/in/tape source_file
+            
+            # 读取磁带索引
+            rustltfs.exe read -t \\.\\TAPE0
+            
+            # 查看磁带容量
+            rustltfs.exe space -t \\.\\TAPE0
+            
+            # 查看版本
+            rustltfs.exe --version
+            ```
+            
+            详细文档请参考 README.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
