@@ -8,6 +8,7 @@ use tracing::{debug, warn};
 
 #[cfg(windows)]
 use winapi::{
+    shared::ntdef::HANDLE,
     um::{
         errhandlingapi::GetLastError,
         fileapi::{CreateFileA, OPEN_EXISTING},
@@ -16,9 +17,16 @@ use winapi::{
     },
 };
 
-use super::{ScsiInterface, DeviceHandle};
+use super::ScsiInterface;
 use super::constants::*;
 use super::types::MediaType;
+
+/// Device handle wrapper that ensures proper resource cleanup
+pub struct DeviceHandle {
+    #[cfg(windows)]
+    pub(crate) handle: HANDLE,
+    pub(crate) device_path: String,
+}
 
 impl ScsiInterface {
     /// Open tape device (based on CreateFile call in C code)
