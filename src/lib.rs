@@ -15,5 +15,6 @@ pub mod utils;
 pub use error::{Result, RustLtfsError};
 pub use ltfs_index::{File, FileExtent, LtfsIndex};
 pub use scsi::{
-    DriveType, LocateDestType, MediaType, ScsiInterface, SpaceType, TapePosition,
+    DriveType, MediaType, ScsiInterface, SpaceType, TapePosition,
 };
+pub use scsi::types::LocateDestType;
