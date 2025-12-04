@@ -6,6 +6,7 @@ pub mod read_operations;
 pub mod write_operations;
 pub mod hash;
 pub mod utils;
+pub mod volume;
 
 pub use self::core::*;
 // 选择性导出避免重名冲突
