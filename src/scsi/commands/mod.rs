@@ -3,3 +3,4 @@
 //! This module contains implementations of various SCSI commands.
 
 pub mod basic;
+pub mod positioning;
