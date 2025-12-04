@@ -3,7 +3,6 @@ mod error;
 mod logger;
 mod ltfs_index;
 mod scsi;
-mod tape;
 mod tape_ops;
 
 use crate::cli::{Cli, Commands};
