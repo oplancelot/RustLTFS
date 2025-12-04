@@ -4,6 +4,7 @@ pub mod core;
 pub mod dual_partition_index;
 pub mod read_operations;
 pub mod write_operations;
+pub mod hash;
 
 pub use self::core::*;
 // 选择性导出避免重名冲突
