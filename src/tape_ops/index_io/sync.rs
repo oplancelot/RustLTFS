@@ -1,7 +1,14 @@
-// 双分区索引同步逻辑 - 严格按照LTFSCopyGUI实现
+//! LTFS Index Synchronization for Dual-Partition Tapes
+//!
+//! This module implements dual-partition index synchronization logic,
+//! strictly following LTFSCopyGUI implementation:
+//! - Write index to data partition (Partition B)
+//! - Sync index to index partition (Partition A)
+//! - Volume Coherency Information (VCI) management
+//!
 use crate::error::{Result, RustLtfsError};
 use crate::ltfs_index::LtfsIndex;
-use super::TapeOperations;
+use super::super::TapeOperations;
 use tracing::{debug, info};
 
 /// Generate LTFS-compatible Z-format timestamp (matching LTFSCopyGUI XML format)

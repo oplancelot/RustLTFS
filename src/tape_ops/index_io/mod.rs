@@ -9,6 +9,7 @@
 
 pub mod read;
 pub mod write;
+pub mod sync;
 
 // Future: Re-export commonly used items when implementations are complete
 // pub use read::*;
