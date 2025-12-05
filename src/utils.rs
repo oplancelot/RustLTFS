@@ -51,6 +51,7 @@ pub fn format_speed(bytes: u64, duration_secs: f64) -> String {
 }
 
 /// Truncate string to specified length with ellipsis
+#[allow(dead_code)]
 pub fn truncate_string(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
@@ -62,6 +63,7 @@ pub fn truncate_string(s: &str, max_len: usize) -> String {
 }
 
 /// Convert file path to display-friendly string
+#[allow(dead_code)]
 pub fn path_to_string(path: &std::path::Path) -> String {
     path.to_string_lossy().to_string()
 }

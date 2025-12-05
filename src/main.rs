@@ -5,6 +5,7 @@ mod logger;
 mod ltfs_index;
 mod scsi;
 mod tape_ops;
+mod utils;
 
 use crate::cli::{Cli, Commands};
 use crate::error::Result;

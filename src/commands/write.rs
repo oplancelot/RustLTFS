@@ -4,6 +4,7 @@
 
 use crate::error::{Result, RustLtfsError};
 use crate::tape_ops;
+use crate::utils;
 use std::io::{self, BufRead, BufReader};
 use std::path::PathBuf;
 use tracing::{error, info, warn};
@@ -135,7 +136,7 @@ pub async fn execute(
         );
         println!(
             "  Bytes processed: {}",
-            rust_ltfs::utils::format_bytes(write_progress.current_bytes_processed)
+            utils::format_bytes(write_progress.current_bytes_processed)
         );
     }
 
@@ -201,17 +202,17 @@ pub async fn execute(
     );
     println!(
         "  Bytes written: {}",
-        rust_ltfs::utils::format_bytes(final_progress.current_bytes_processed)
+        utils::format_bytes(final_progress.current_bytes_processed)
     );
     println!(
         "  Duration: {}",
-        rust_ltfs::utils::format_duration(write_duration.as_secs_f64())
+        utils::format_duration(write_duration.as_secs_f64())
     );
 
     if final_progress.current_bytes_processed > 0 && write_duration.as_secs() > 0 {
         println!(
             "  Average Speed: {}/s",
-            rust_ltfs::utils::format_speed(
+            utils::format_speed(
                 final_progress.current_bytes_processed,
                 write_duration.as_secs_f64()
             )
