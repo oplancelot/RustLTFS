@@ -6,6 +6,8 @@
 //! - Index validation and processing
 
 pub mod read;
+pub mod write;
 
 // Future: Re-export commonly used items when implementations are complete
 // pub use read::*;
+// pub use write::*;
