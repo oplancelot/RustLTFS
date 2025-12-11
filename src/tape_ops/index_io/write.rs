@@ -13,7 +13,7 @@ use tracing::debug;
 /// Index management operations for TapeOperations
 impl TapeOperations {
     /// Create new empty LTFS index
-    fn create_new_ltfs_index(&self) -> LtfsIndex {
+    pub(crate) fn create_new_ltfs_index(&self) -> LtfsIndex {
         use uuid::Uuid;
 
         let now = get_current_ltfs_timestamp();

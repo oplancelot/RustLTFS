@@ -383,20 +383,38 @@ impl TapeOperations {
     ) -> Result<()> {
         info!("Writing from reader stream to tape: {}", target_path);
 
-
+        // 🔒 CRITICAL SAFETY CHECK: Ensure index exists before writing
+        // This prevents data loss by ensuring we always have the existing tape contents
+        // in the index before adding new data
+        if self.index.is_none() {
+            // Check if this is a first-time write (empty tape) or a missing index error
+            let current_pos = self.scsi.read_position()?;
+            
+            // If we're not at the very beginning (block 0), this means the tape has data
+            // but we failed to load the index - this is a critical error
+            if current_pos.block_number > 0 || current_pos.file_number > 0 {
+                return Err(RustLtfsError::ltfs_index(format!(
+                    "CRITICAL: Cannot write to tape - index is missing but tape has existing data at p{}b{}f{}. \
+                     This would cause data loss. Please check tape status and retry reading the index.",
+                    current_pos.partition, current_pos.block_number, current_pos.file_number
+                )));
+            }
+            
+            // First-time write to empty tape - create new index
+            info!("First-time write detected (tape at beginning with no index), creating new LTFS index");
+            self.index = Some(self.create_new_ltfs_index());
+        }
 
         // Prepare for writing to tape
         self.scsi.locate_to_eod(1)?;
 
         let write_start_position = self.scsi.read_position()?;
 
-        // Create file entry in index
+        // Create file entry in index - now guaranteed to have index
         let current_time = chrono::Utc::now();
-        let file_uid = if let Some(ref index) = self.index {
-            index.highestfileuid.unwrap_or(0) + 1
-        } else {
-            1
-        };
+        let file_uid = self.index.as_ref()
+            .and_then(|idx| idx.highestfileuid)
+            .unwrap_or(0) + 1;
 
         // ⭐ STREAMING WRITE - Ensure full-sized blocks for LTFS compatibility
         // LTFSCopyGUI expects consistent block sizes when reading back
