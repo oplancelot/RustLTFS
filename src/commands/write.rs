@@ -250,21 +250,30 @@ pub async fn execute(
     // Save index to local file for backup
     if device_initialized {
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
-        let index_filename = format!("LTFSIndex_Write_{}.schema", timestamp);
+        
+        // Create schema directory if it doesn't exist
+        let schema_dir = std::path::PathBuf::from("schema");
+        if !schema_dir.exists() {
+            if let Err(e) = std::fs::create_dir_all(&schema_dir) {
+                warn!("Failed to create schema directory: {}", e);
+            }
+        }
+        
+        let index_filename = schema_dir.join(format!("LTFSIndex_Write_{}.schema", timestamp));
 
         if progress {
-            println!("\n💾 Saving index backup: {}", index_filename);
+            println!("\n💾 Saving index backup: {}", index_filename.display());
         }
 
         match ops
-            .save_index_to_file(&std::path::PathBuf::from(&index_filename))
+            .save_index_to_file(&index_filename)
             .await
         {
             Ok(_) => {
                 if progress {
                     println!("✅ Index backup saved");
                 }
-                info!("Index backup saved: {}", index_filename);
+                info!("Index backup saved: {}", index_filename.display());
             }
             Err(e) => {
                 warn!("Index backup failed: {}", e);
