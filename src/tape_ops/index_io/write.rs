@@ -30,8 +30,8 @@ impl TapeOperations {
                 startblock: 0,
             },
             previousgenerationlocation: None,
-            allowpolicyupdate: Some(true),
-            volumelockstate: None,
+            allowpolicyupdate: Some(false),
+            volumelockstate: "unlocked".to_string(),
             highestfileuid: Some(1),
             root_directory: crate::ltfs_index::Directory {
                 name: "".to_string(),

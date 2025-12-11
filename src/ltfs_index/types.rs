@@ -4,6 +4,11 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Default value for volumelockstate field
+fn default_volumelockstate() -> String {
+    "unlocked".to_string()
+}
+
 /// LTFS Index structure based on LTFS specification
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename = "ltfsindex")]
@@ -19,8 +24,8 @@ pub struct LtfsIndex {
     pub previousgenerationlocation: Option<Location>,
     #[serde(default)]
     pub allowpolicyupdate: Option<bool>,
-    #[serde(default)]
-    pub volumelockstate: Option<String>,
+    #[serde(default = "default_volumelockstate")]
+    pub volumelockstate: String,
     #[serde(default)]
     pub highestfileuid: Option<u64>,
     #[serde(rename = "directory")]
