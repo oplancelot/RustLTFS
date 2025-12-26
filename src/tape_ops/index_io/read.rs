@@ -3,7 +3,7 @@ use super::super::PartitionStrategy;
 
 use tracing::{debug, info, warn};
 use chrono;
-use crate::scsi::block_sizes;
+
 
 // LtfsPartitionLabel 在 format_operations.rs 中定义
 // 通过模块重新导出使用
@@ -69,11 +69,70 @@ impl super::super::TapeOperations {
         count
     }
 
+    /// 读取并解析 Partition Label以获取Block Size
+    /// 对应 LTFSCopyGUI 初始化阶段读取 plabel 的逻辑
+    async fn read_and_parse_partition_label(&mut self, partition: u8) -> Result<crate::tape_ops::LtfsPartitionLabel> {
+        info!("Step 0: Attempting to read Partition Label from partition {}", partition);
+        
+        // LTFSCopyGUI Logic:
+        // 1. Locate(1, partition, FileMark) -> 定位到 FM 1
+        // 2. ReadFileMark() -> Skip FM 1
+        // 3. ReadToFileMark() -> Read Label
+        
+        self.scsi.locate_to_filemark(1, partition)?;
+        self.scsi.read_file_mark()?;
+        
+        // 使用足够大的 Buffer (1MB) 读取 Label，以防 Block Size 很大
+        // Label XML 通常很小，但我们要避免 "Buffer < Block Size" 的 ILI 错误
+        let label_content = self.read_to_file_mark_with_temp_file(1024 * 1024)?; 
+        
+        // 简单解析 blocksize
+        let blocksize = if let Some(start) = label_content.find("<blocksize>") {
+            if let Some(end) = label_content[start..].find("</blocksize>") {
+                let s = &label_content[start + 11..start + end];
+                s.parse::<u32>().unwrap_or(524288)
+            } else {
+                524288
+            }
+        } else {
+            // 如果没找到标签，可能是默认值
+            524288 
+        };
+        
+        info!("Parsed blocksize from label: {}", blocksize);
+        Ok(crate::tape_ops::LtfsPartitionLabel { blocksize })
+    }
+
     /// Read LTFS index from tape (LTFSCopyGUI兼容方法)
     pub async fn read_index_from_tape(&mut self) -> Result<()> {
         info!("Starting LTFS index reading process");
 
-
+        debug!("=== Step 0: LTFSCopyGUI Initialization (Block Size Detection) ===");
+        // 尝试读取 Partition Label 以获取正确的 Block Size (通常为 512KB)
+        // 这是至关重要的一步，因为默认的 64KB 可能导致无法正确读取 512KB 的索引 Block
+        match self.read_and_parse_partition_label(0).await {
+            Ok(label) => {
+                info!("✅ Successfully read partition label. Block Size: {}", label.blocksize);
+                self.partition_label = Some(label);
+                
+                // 🔧 CRITICAL FIX: 强制将驱动器设置为 Variable Block Mode (Block Length = 0)
+                // 我们的 read_blocks 实现假设使用的是 Variable Mode。
+                // 如果 LTFSCopyGUI 之前将驱动器留在了 Fixed Mode (512KB)，我们需要将其重置，
+                // 否则后续的 Variable Mode 读取将会失败或读到空数据。
+                if let Err(e) = self.scsi.set_block_size(0) {
+                     warn!("⚠️ Failed to set drive to Variable Block Mode: {}", e);
+                } else {
+                     info!("🔧 Forcefully set drive to Variable Block Mode (Block Length = 0) for compatibility");
+                }
+            }
+            Err(e) => {
+                warn!("⚠️ Failed to read partition label: {}. Assuming standard LTFSCopyGUI block size (512KB).", e);
+                // 如果读取失败，也尝试重置为 Variable Mode，以防万一
+                let _ = self.scsi.set_block_size(0);
+                // 使用 LTFSCopyGUI 的标准 512KB 作为 Fallback
+                self.partition_label = Some(crate::tape_ops::LtfsPartitionLabel { blocksize: 524288 });
+            }
+        }
 
         debug!("=== LTFSCopyGUI Compatible Index Reading Process ===");
 
@@ -170,9 +229,9 @@ impl super::super::TapeOperations {
             }
         }
 
-        // Step 3: 最后的多分区策略回退
-        debug!("Step 3: Final multi-partition strategy fallback");
-
+        // Step 3: Final multi-partition strategy fallback
+        debug!("Step 3: Final multi-partition strategy fallback cleanup");
+        
         let partition_strategy = self
             .detect_partition_strategy()
             .await
@@ -190,60 +249,14 @@ impl super::super::TapeOperations {
             }
 
             PartitionStrategy::StandardMultiPartition => {
-                debug!("🔄 Trying standard multi-partition strategy without VOL1 validation");
+                debug!("🔄 Trying standard multi-partition strategy without brute force");
 
-                // 最后尝试：有限的固定位置搜索（仅作为最后手段）
-                let standard_locations = vec![6, 5, 2, 0]; // block 6仍然保留以兼容特殊情况
-
-                for &block in &standard_locations {
-                    debug!("Trying final fallback at p0 block {}", block);
-                    match self.scsi.locate_block(0, block) {
-                        Ok(()) => match self.read_index_xml_from_tape_with_file_mark() {
-                            Ok(xml_content) => {
-                                if self.validate_and_process_index(&xml_content).await? {
-                                    debug!("✅ Successfully read index from p0 block {} (final fallback)", block);
-                                    info!("Index loaded successfully ({} files)", self.index.as_ref().map(|i| self.count_files_in_directory(&i.root_directory)).unwrap_or(0));
-                                    return Ok(());
-                                }
-                            }
-                            Err(e) => {
-                                debug!("Failed to read index from p0 block {}: {}", block, e);
-                            }
-                        },
-                        Err(e) => {
-                            debug!("Cannot position to p0 block {}: {}", block, e);
-                        }
-                    }
-                }
-
-                debug!(
-                    "🔄 All standard locations failed, falling back to single-partition strategy"
-                );
-                match self.search_index_copies_in_data_partition().await {
-                    Ok(xml_content) => {
-                        debug!(
-                            "🔍 LTFSCopyGUI method returned {} bytes of content",
-                            xml_content.len()
-                        );
-                        match self.validate_and_process_index(&xml_content).await? {
-                            true => {
-                                debug!("✅ Step 1 succeeded - LTFS index read using LTFSCopyGUI method (dual-partition)");
-                                info!("Index loaded successfully ({} files)", self.index.as_ref().map(|i| self.count_files_in_directory(&i.root_directory)).unwrap_or(0));
-                                return Ok(());
-                            }
-                            false => {
-                                warn!("⚠️ LTFSCopyGUI method read data but XML validation failed");
-                                debug!("🔍 This suggests the data at FileMark 1 position is not valid LTFS XML");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!("❌ LTFSCopyGUI method failed completely: {}", e);
-                        debug!("LTFSCopyGUI method failed: {}", e);
-                    }
-                }
+                // Removed brute-force vec![6, 5, 2, 0] search to match LTFSCopyGUI behavior strictly.
                 
-                // Fallback to simple EOD read if LTFSCopyGUI method fails
+                debug!(
+                    "🔄 Standard locations failed, attempting final fallback to single-partition strategy"
+                );
+                // Fallback to simple EOD read as the last resort
                 let xml = self.try_read_latest_index_from_eod(0).await?;
                 if self.validate_and_process_index(&xml).await? {
                     Ok(())
@@ -420,8 +433,7 @@ impl super::super::TapeOperations {
         // hard_max_blocks is an absolute safety cap (matches previous fixed limit).
         let hard_max_blocks = 200u32; // 对应LTFSCopyGUI的固定限制上限（安全上限）
         let mut max_blocks = 50u32; // 初始较小值，避免一次读太多无效数据
-        let mut consecutive_errors = 0;
-        const MAX_CONSECUTIVE_ERRORS: u32 = 3;
+
 
         debug!(
             "Starting ReadToFileMark with blocksize {}, max {} blocks (enhanced SCSI error handling)",
@@ -441,7 +453,7 @@ impl super::super::TapeOperations {
             // 执行SCSI READ命令 (对应ScsiRead调用) + 增强错误处理
             match self.scsi.read_blocks(1, &mut buffer) {
                 Ok(blocks_read_count) => {
-                    consecutive_errors = 0; // 重置错误计数器
+
                     debug!("SCSI read returned: {} blocks", blocks_read_count);
 
                     // 对应: If bytesRead = 0 Then Exit Do
@@ -503,42 +515,20 @@ impl super::super::TapeOperations {
                     }
                 }
                 Err(e) => {
-                    consecutive_errors += 1;
-                    warn!(
-                        "SCSI read error #{} after {} blocks: {}",
-                        consecutive_errors, blocks_read, e
-                    );
-
-                    // 增强的SCSI错误分类和恢复
-                    let error_handled =
-                        self.handle_scsi_read_error(&e, blocks_read, consecutive_errors)?;
-
-                    if !error_handled {
-                        // 如果没有读取任何数据就失败，返回错误
-                        if blocks_read == 0 {
-                            return Err(RustLtfsError::ltfs_index(format!(
-                                "No data could be read from tape after {} consecutive errors: {}",
-                                consecutive_errors, e
-                            )));
-                        }
-                        // 如果已经读取了一些数据，就停止并尝试解析
-                        break;
+                    // 🔧 DEBUG MODE: 禁用所有重试逻辑，直接暴露错误
+                    warn!("DEBUG MODE: SCSI read error encountered: {}", e);
+                    
+                    // 例外：如果还没有读到任何数据，这确实是个严重错误
+                    if blocks_read == 0 {
+                        return Err(RustLtfsError::scsi(format!(
+                            "Failed to read any data (Debug Mode - No Retry): {}", e
+                        )));
                     }
-
-                    // 如果连续错误过多，停止尝试
-                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                        warn!(
-                            "Too many consecutive SCSI errors ({}), stopping read operation",
-                            consecutive_errors
-                        );
-                        if blocks_read == 0 {
-                            return Err(RustLtfsError::scsi(format!(
-                                "Failed to read any data after {} consecutive SCSI errors",
-                                consecutive_errors
-                            )));
-                        }
-                        break;
-                    }
+                    
+                    // 如果已经读取了数据，假设这是EOD或FileMark导致的错误（虽然通常READ FILEMARKS=0是正常的结束方式）
+                    // 在禁用重试模式下，这里的任何错误都视为终止信号
+                    debug!("Read loop terminated due to error (Debug Mode): {}", e);
+                    break;
                 }
             }
         }
@@ -575,105 +565,7 @@ impl super::super::TapeOperations {
         Ok(cleaned_xml)
     }
 
-    /// 增强的SCSI读取错误处理
-    /// 返回true表示错误已处理，可以继续；返回false表示应该停止
-    fn handle_scsi_read_error(
-        &self,
-        error: &RustLtfsError,
-        blocks_read: u32,
-        error_count: u32,
-    ) -> Result<bool> {
-        let error_str = error.to_string();
 
-        // 错误分类和处理策略
-        if error_str.contains("Direct block read operation failed") {
-            debug!(
-                "Detected direct block read failure - possibly reached end of data or file mark"
-            );
-
-            // 如果已经读取了一些数据，这可能是正常的文件结束
-            if blocks_read > 0 {
-                debug!(
-                    "Block read failure after {} blocks - likely reached end of index data",
-                    blocks_read
-                );
-                return Ok(false); // 正常结束
-            } else {
-                warn!("Block read failure on first block - may indicate positioning or hardware issue");
-                return Ok(error_count <= 2); // 允许重试前2次
-            }
-        }
-
-        if error_str.contains("Device not ready") || error_str.contains("Unit attention") {
-            warn!("Device status issue detected - attempting recovery");
-
-            // 尝试设备状态恢复
-            match self.scsi.test_unit_ready() {
-                Ok(_) => {
-                    debug!("Device status recovered, can continue reading");
-                    return Ok(true);
-                }
-                Err(e) => {
-                    warn!("Device status recovery failed: {}", e);
-                    return Ok(error_count <= 1); // 仅重试一次
-                }
-            }
-        }
-
-        if error_str.contains("Medium error") || error_str.contains("Unrecovered read error") {
-            warn!("Medium/read error detected - this may indicate tape defect or wear");
-
-            // 对于介质错误，如果已有数据就停止，否则尝试一次
-            if blocks_read > 10 {
-                debug!(
-                    "Medium error after reading {} blocks - stopping to preserve data",
-                    blocks_read
-                );
-                return Ok(false);
-            } else {
-                warn!("Early medium error - attempting one retry");
-                return Ok(error_count <= 1);
-            }
-        }
-
-        if error_str.contains("Illegal request") || error_str.contains("Invalid field") {
-            warn!("SCSI command error detected - likely programming issue");
-            return Ok(false); // 不重试命令错误
-        }
-
-        if error_str.contains("Hardware error") || error_str.contains("Communication failure") {
-            warn!("Hardware/communication error - attempting limited retry");
-            return Ok(error_count <= 1); // 有限重试
-        }
-
-        // 未知错误的保守处理
-        debug!(
-            "Unknown SCSI error type: {} - attempting conservative retry",
-            error_str
-        );
-        Ok(error_count <= 2) // 允许有限重试
-    }
-
-    pub async fn search_index_copies_in_data_partition(&mut self) -> Result<String> {
-        info!("Starting index search from standard locations (LTFSCopyGUI method)");
-
-        // 步骤1: 检测ExtraPartitionCount (对应LTFSCopyGUI的分区检测)
-        let extra_partition_count = self.get_extra_partition_count();
-
-        if extra_partition_count == 0 {
-            // 🔧 单分区磁带策略
-            debug!("🎯 Single partition tape detected (ExtraPartitionCount=0)");
-            self.try_read_index_single_partition().await
-        } else {
-            // 🔧 多分区磁带策略
-            debug!(
-                "🎯 Multi-partition tape detected (ExtraPartitionCount={})",
-                extra_partition_count
-            );
-            // 这里我们使用 read_index_from_data_partition_eod，因为这是多分区的数据区读取逻辑
-            self.read_index_from_data_partition_eod().await
-        }
-    }
 
 
 

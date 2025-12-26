@@ -1,4 +1,4 @@
-use crate::error::{Result, RustLtfsError};
+use crate::error::Result;
 use tracing::{debug, info};
 use crate::scsi::block_sizes;
 
