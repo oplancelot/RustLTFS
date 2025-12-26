@@ -450,12 +450,13 @@ impl super::super::TapeOperations {
         }
 
         // Step 3: 根据分区类型确定目标FileMark
-        // 🔧 修复：索引分区(P0)使用固定的FileMark 1（LTFS标准位置）
+        // 🔧 FIX: 索引分区(P0)使用FileMark 3（与LTFSCopyGUI一致）
+        // Reference: LTFSWriter.vb line 4549 - TapeUtils.Locate(driveHandle, 3UL, IndexPartition, TapeUtils.LocateDestType.FileMark)
         // 数据分区(P1)使用FM-1策略（最新索引在EOD之前）
         let target_filemark = if partition == 0 {
-            // 索引分区：LTFS标准索引位置在FileMark 1之后
-            info!("Index partition (P0): using standard LTFS location FileMark 1");
-            1
+            // 索引分区：使用FileMark 3（LTFSCopyGUI兼容）
+            info!("Index partition (P0): using FileMark 3 (LTFSCopyGUI compatible)");
+            3
         } else {
             // 数据分区：最新索引在最后一个FileMark之前
             info!("Data partition (P{}): using FM-1 strategy", partition);

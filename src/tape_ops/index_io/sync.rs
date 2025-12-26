@@ -21,6 +21,15 @@ fn get_current_ltfs_timestamp() -> String {
     format_ltfs_timestamp(chrono::Utc::now())
 }
 
+/// Helper function to count files recursively in directory tree
+fn count_files_recursive(dir: &crate::ltfs_index::Directory) -> usize {
+    let mut count = dir.contents.files.len();
+    for subdir in &dir.contents.directories {
+        count += count_files_recursive(subdir);
+    }
+    count
+}
+
 impl TapeOperations {
     /// Update index on tape with force option (corresponds to VB.NET WriteCurrentIndex + RefreshIndexPartition)
     pub async fn update_index_on_tape_with_options_dual_partition(&mut self, force_index: bool) -> Result<()> {
@@ -32,12 +41,14 @@ impl TapeOperations {
         // 优先使用 self.index (包含最新的文件状态)，回退到 self.schema
         let mut current_index = match &self.index {
             Some(idx) => {
-                info!("Using self.index with {} files", idx.root_directory.contents.files.len());
+                let total_files = count_files_recursive(&idx.root_directory);
+                info!("Using self.index with {} total files (gen {})", total_files, idx.generationnumber);
                 idx.clone()
             },
             None => match &self.schema {
                 Some(idx) => {
-                    info!("Fallback to self.schema with {} files", idx.root_directory.contents.files.len());
+                    let total_files = count_files_recursive(&idx.root_directory);
+                    info!("Fallback to self.schema with {} total files (gen {})", total_files, idx.generationnumber);
                     idx.clone()
                 },
                 None => {
@@ -204,24 +215,28 @@ impl TapeOperations {
     }
 
     /// RefreshIndexPartition: Sync index to index partition (对应LTFSCopyGUI RefreshIndexPartition)
+    /// 
+    /// 🔧 LTFSCopyGUI compatible: Uses FileMark 3 for index partition
+    /// Reference: LTFSWriter.vb line 2418 - TapeUtils.Locate(driveHandle, 3UL, IndexPartition, TapeUtils.LocateDestType.FileMark)
+    /// Reference: LTFSWriter.vb line 4549 - same location used for reading
     async fn refresh_index_partition(&mut self, current_index: &mut LtfsIndex) -> Result<()> {
         info!("=== RefreshIndexPartition: Syncing to Index Partition ===");
 
         let logical_index_partition = 0u8; // IndexPartition = 0 (Partition A)
         let index_partition = self.get_target_partition(logical_index_partition);
 
-        // 精确对应LTFSCopyGUI：TapeUtils.Locate(driveHandle, 3UL, IndexPartition, TapeUtils.LocateDestType.FileMark)
-        debug!("Locating to index partition {} at 3rd filemark", 
-              index_partition);
+        // LTFSCopyGUI uses FileMark 3 for index partition (line 2418 & 4549)
+        let target_filemark = 3u64;
+        debug!("Locating to index partition {} at FileMark {} (LTFSCopyGUI compatible)", 
+              index_partition, target_filemark);
         
-        // 使用LTFSCopyGUI的精确参数：3UL (第3个文件标记)
-        self.scsi.locate_to_filemark(3, index_partition)?;
+        self.scsi.locate_to_filemark(target_filemark, index_partition)?;
 
         let locate_position = self.scsi.read_position()?;
         debug!("Located to position: partition={}, block={}", 
               locate_position.partition, locate_position.block_number);
 
-        // Write filemark (对应LTFSCopyGUI WriteFileMark)
+        // Write filemark (对应LTFSCopyGUI WriteFileMark at line 2421)
         debug!("Writing filemark at index partition");
         self.scsi.write_filemarks(1)?;
 
@@ -233,6 +248,7 @@ impl TapeOperations {
             });
         }
 
+        // LTFSCopyGUI: schema.location.startblock = p.BlockNumber + 1 (line 2427)
         let write_position = self.scsi.read_position()?;
         current_index.location.startblock = write_position.block_number;
         current_index.location.partition = "a".to_string(); // Index partition
@@ -245,15 +261,15 @@ impl TapeOperations {
         
         let index_xml = current_index.to_xml()?;
         
-        debug!("Writing index to index partition...");
+        debug!("Writing index to index partition ({} bytes)...", index_xml.len());
         self.write_xml_to_tape(&index_xml).await?;
 
         // Write filemark after index
         self.scsi.write_filemarks(1)?;
 
         let final_position = self.scsi.read_position()?;
-        debug!("Index partition write completed at position: partition={}, block={}", 
-              final_position.partition, final_position.block_number);
+        info!("Index partition write completed: partition={}, block={}, index_size={} bytes", 
+              final_position.partition, final_position.block_number, index_xml.len());
 
         // Write VCI (Volume Coherency Information) - 对应LTFSCopyGUI WriteVCI
         debug!("Writing VCI (Volume Coherency Information)");
