@@ -104,8 +104,41 @@ impl super::super::TapeOperations {
     }
 
     /// Read LTFS index from tape (LTFSCopyGUI兼容方法)
+    /// 包含重试逻辑
     pub async fn read_index_from_tape(&mut self) -> Result<()> {
-        info!("Starting LTFS index reading process");
+        let max_retries = 3;
+        
+        for attempt in 1..=max_retries {
+            info!("🔄 Starting LTFS index reading process (Attempt {}/{})", attempt, max_retries);
+            
+            // 每次尝试前先倒带，确保状态干净
+            if attempt > 1 {
+                info!("⏪ Rewinding tape before retry...");
+                let _ = self.scsi.locate_block(0, 0);
+            }
+
+            match self.read_index_from_tape_attempt().await {
+                Ok(()) => {
+                    info!("✅ Index reading successful on attempt {}", attempt);
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!("❌ Index reading attempt {} failed: {}", attempt, e);
+                    if attempt == max_retries {
+                        return Err(e);
+                    }
+                    // 等待一小会儿可能有助于设备恢复
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+            }
+        }
+        
+        unreachable!()
+    }
+
+    /// 实际的读取逻辑（单次尝试）
+    async fn read_index_from_tape_attempt(&mut self) -> Result<()> {
+        info!("Starting LTFS index reading process (Internal)");
 
         debug!("=== Step 0: LTFSCopyGUI Initialization (Block Size Detection) ===");
         // 尝试读取 Partition Label 以获取正确的 Block Size (通常为 512KB)
@@ -542,7 +575,9 @@ impl super::super::TapeOperations {
         );
 
         // 读取并清理临时文件
-        let xml_content = std::fs::read_to_string(&temp_path)?;
+        // Use read() + from_utf8_lossy() instead of read_to_string() to handle invalid UTF-8 bytes gracefully
+        let raw_bytes = std::fs::read(&temp_path)?;
+        let xml_content = String::from_utf8_lossy(&raw_bytes).to_string();
 
         // 清理临时文件
         if let Err(e) = std::fs::remove_file(&temp_path) {
