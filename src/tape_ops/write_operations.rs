@@ -428,7 +428,7 @@ impl TapeOperations {
         let mut last_progress_bytes = 0u64;
         let mut last_progress_time = std::time::Instant::now();
         
-        info!("Starting streaming write with block size: {} bytes (LTFS fixed-block mode)", block_size);
+        info!("Starting streaming write with block size: {} bytes (fixed transfer size)", block_size);
 
         loop {
             // Read data from the stream
