@@ -11,6 +11,7 @@ use super::super::{ScsiInterface, constants::*};
 impl ScsiInterface {
     /// MODE SENSE command to read partition page 0x11 (对应LTFSCopyGUI的ModeSense实现)
     /// 这个方法复制LTFSCopyGUI的精确实现：TapeUtils.ModeSense(handle, &H11)
+    #[allow(dead_code)]
     pub fn mode_sense_partition_page_0x11(&self) -> Result<Vec<u8>> {
         debug!("Executing MODE SENSE page 0x11 for partition detection");
 
@@ -149,6 +150,75 @@ impl ScsiInterface {
             Err(crate::error::RustLtfsError::unsupported(
                 "Non-Windows platform",
             ))
+        }
+    }
+    /// Sets the block size for the tape drive using MODE SELECT (6).
+    /// If block_size > 0, the drive is set to Fixed Block Mode with the specified size.
+    /// If block_size == 0, the drive is set to Variable Block Mode.
+    /// This corresponds to LTFSCopyGUI's TapeUtils.SetBlockSize
+    pub fn set_block_size(&self, block_size: u32) -> Result<()> {
+        debug!("Executing MODE SELECT to set block size to {}", block_size);
+
+        #[cfg(windows)]
+        {
+            // CDB for MODE SELECT (6)
+            let mut cdb = [0u8; 6];
+            cdb[0] = 0x15; // MODE SELECT (6)
+            cdb[1] = 0x10; // PF=1 (Page Format, standard SCSI-2)
+            cdb[2] = 0x00; // Reserved
+            cdb[3] = 0x00; // Reserved
+            cdb[4] = 12;   // Parameter List Length (4 header + 8 block descriptor)
+            cdb[5] = 0x00; // Control
+
+            // Parameter List
+            // Header (4 bytes) + Block Descriptor (8 bytes)
+            let mut param_list = vec![0u8; 12];
+            
+            // Header: 
+            // Byte 0: Mode Data Length (Reserved)
+            // Byte 1: Medium Type
+            // Byte 2: Device-Specific Parameter
+            // Byte 3: Block Descriptor Length
+            
+            param_list[3] = 0x08; // Block Descriptor Length = 8 bytes
+
+            // Block Descriptor (8 bytes)
+            // Bytes 0: Density Code (00)
+            // Bytes 1-3: Number of Blocks (00 00 00 = all remaining)
+            // Byte 4: Reserved
+            // Bytes 5-7: Block Length
+            
+            if block_size > 0 {
+                param_list[9] = ((block_size >> 16) & 0xFF) as u8;
+                param_list[10] = ((block_size >> 8) & 0xFF) as u8;
+                param_list[11] = (block_size & 0xFF) as u8;
+            }
+
+            let mut sense_buffer = [0u8; SENSE_INFO_LEN];
+
+            let result = self.scsi_io_control(
+                &cdb,
+                Some(&mut param_list),
+                SCSI_IOCTL_DATA_OUT,
+                30,
+                Some(&mut sense_buffer),
+            )?;
+
+            if result {
+                debug!("MODE SELECT (Set Block Size) successful");
+                Ok(())
+            } else {
+                let sense_info = self.parse_sense_data(&sense_buffer);
+                Err(crate::error::RustLtfsError::scsi(format!(
+                    "MODE SELECT failed to set block size: {}",
+                    sense_info
+                )))
+            }
+        }
+
+        #[cfg(not(windows))]
+        {
+            Err(crate::error::RustLtfsError::unsupported("Non-Windows platform"))
         }
     }
 }
