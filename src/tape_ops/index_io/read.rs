@@ -84,40 +84,35 @@ impl super::super::TapeOperations {
         let extra_partition_count = self.get_extra_partition_count();
 
         if extra_partition_count > 0 {
-            // 双分区磁带：使用LTFSCopyGUI方法从数据分区读取索引
-            debug!("Dual-partition detected, using LTFSCopyGUI method from data partition");
-
-            // LTFSCopyGUI method removed as part of cleanup
-            debug!("LTFSCopyGUI method skipped (cleanup)");
-
-            // 🔧 双分区backup策略：尝试从索引分区(partition 0) EOD读取
-            debug!("🔧 Trying dual-partition backup strategy: index partition EOD");
-            match self.try_read_latest_index_from_eod(0).await {
+            // 双分区磁带：使用专门的双分区读取逻辑（FileMark 3）
+            debug!("Dual-partition detected, using FileMark 3 strategy");
+            
+            match self.try_read_index_dual_partition().await {
                 Ok(xml_content) => {
                     if self.validate_and_process_index(&xml_content).await? {
-                        debug!("✅ Step 1 succeeded - index read from index partition EOD (dual-partition fallback)");
+                        debug!("✅ Step 1 succeeded - index read from dual-partition (FileMark 3)");
                         info!("Index loaded successfully ({} files)", self.index.as_ref().map(|i| self.count_files_in_directory(&i.root_directory)).unwrap_or(0));
                         return Ok(());
                     }
                 }
                 Err(e) => {
-                    debug!("Index partition EOD strategy failed: {}", e);
+                    debug!("Dual-partition FileMark 3 strategy failed: {}", e);
                 }
             }
         } else {
-            // 单分区磁带：从partition=0读取索引
-            debug!("Single-partition detected, reading from partition 0");
+            // 单分区磁带：使用FM-1策略从partition 0读取索引
+            debug!("Single-partition detected, using FM-1 strategy");
 
-            match self.try_read_latest_index_from_eod(0).await {
+            match self.try_read_index_single_partition().await {
                 Ok(xml_content) => {
                     if self.validate_and_process_index(&xml_content).await? {
-                        debug!("✅ Step 1 succeeded - index read from partition 0 EOD (single-partition logic)");
+                        debug!("✅ Step 1 succeeded - index read from single-partition (FM-1 strategy)");
                         info!("Index loaded successfully ({} files)", self.index.as_ref().map(|i| self.count_files_in_directory(&i.root_directory)).unwrap_or(0));
                         return Ok(());
                     }
                 }
                 Err(e) => {
-                    debug!("Single-partition EOD strategy failed: {}", e);
+                    debug!("Single-partition FM-1 strategy failed: {}", e);
                 }
             }
         }
@@ -139,8 +134,8 @@ impl super::super::TapeOperations {
 
             match partition_strategy {
                 PartitionStrategy::StandardMultiPartition => {
-                    // 尝试数据分区EOD策略
-                    match self.try_read_latest_index_from_data_partition_eod().await {
+                    // 尝试数据分区EOD策略（双分区专用函数）
+                    match self.read_index_from_data_partition_eod().await {
                         Ok(xml_content) => {
                             if self.validate_and_process_index(&xml_content).await? {
                                 debug!("✅ Standard reading (data partition EOD) succeeded");
@@ -224,7 +219,7 @@ impl super::super::TapeOperations {
                 debug!(
                     "🔄 All standard locations failed, falling back to single-partition strategy"
                 );
-                match self.search_index_copies_in_data_partition() {
+                match self.search_index_copies_in_data_partition().await {
                     Ok(xml_content) => {
                         debug!(
                             "🔍 LTFSCopyGUI method returned {} bytes of content",
@@ -290,123 +285,6 @@ impl super::super::TapeOperations {
 
         // 直接使用当前TapeOperations的方法
         self.read_to_file_mark_with_temp_file(block_size)
-    }
-    /// 按照LTFSCopyGUI逻辑从数据分区EOD读取最新索引
-    /// 对应VB.NET读取数据区索引ToolStripMenuItem_Click的核心逻辑
-    async fn try_read_latest_index_from_data_partition_eod(&mut self) -> Result<String> {
-        info!("Reading latest index from data partition end");
-
-        let data_partition = 1; // 数据分区
-
-        // Step 1: 定位到数据分区EOD (对应LTFSCopyGUI: TapeUtils.Locate(driveHandle, 0UL, DataPartition, TapeUtils.LocateDestType.EOD))
-        info!("Locating to data partition {} EOD", data_partition);
-
-        match self.scsi.locate_block(data_partition, 0) {
-            Ok(()) => info!(
-                "Successfully positioned to data partition {}, block 0",
-                data_partition
-            ),
-            Err(e) => {
-                warn!(
-                    "Failed to locate to data partition {}, block 0: {}",
-                    data_partition, e
-                );
-                return Err(RustLtfsError::ltfs_index(format!(
-                    "Cannot position to data partition: {}",
-                    e
-                )));
-            }
-        }
-
-        // 使用LOCATE命令而非SPACE命令进行EOD定位（LTFSCopyGUI兼容）
-        info!("Using LOCATE command for end-of-data positioning");
-        match self.scsi.locate_to_eod(data_partition) {
-            Ok(()) => info!(
-                "Successfully located to End of Data in partition {}",
-                data_partition
-            ),
-            Err(e) => {
-                warn!(
-                    "Failed to locate to End of Data in partition {}: {}",
-                    data_partition, e
-                );
-                return Err(RustLtfsError::ltfs_index(format!(
-                    "Cannot locate to EOD: {}",
-                    e
-                )));
-            }
-        }
-
-        let eod_position = self.scsi.read_position()?;
-        info!(
-            "Data partition EOD position: partition={}, block={}, file_number={}",
-            eod_position.partition, eod_position.block_number, eod_position.file_number
-        );
-
-        // Step 2: 检查 FileNumber，确保有足够的 FileMark (对应LTFSCopyGUI: If FM <= 1 Then)
-        if eod_position.file_number <= 1 {
-            return Err(RustLtfsError::ltfs_index(
-                "Insufficient file marks in data partition for index reading".to_string(),
-            ));
-        }
-
-        // Step 3: 定位到最后一个FileMark之前 (对应LTFSCopyGUI: TapeUtils.Locate(handle:=driveHandle, BlockAddress:=FM - 1, Partition:=DataPartition, DestType:=TapeUtils.LocateDestType.FileMark))
-        let target_filemark = eod_position.file_number - 1;
-        info!("Locating to FileMark {} in data partition", target_filemark);
-
-        match self
-            .scsi
-            .locate_to_filemark(target_filemark, data_partition)
-        {
-            Ok(()) => {
-                info!("Successfully positioned to FileMark {}", target_filemark);
-
-                // Step 4: 跳过FileMark并读取索引内容 (对应LTFSCopyGUI: TapeUtils.ReadFileMark + TapeUtils.ReadToFileMark)
-                match self.scsi.space(crate::scsi::SpaceType::FileMarks, 1) {
-                    Ok(_) => {
-                        info!("Skipped FileMark, now reading latest index content");
-                        let position_after_fm = self.scsi.read_position()?;
-                        info!(
-                            "Position after FileMark: partition={}, block={}",
-                            position_after_fm.partition, position_after_fm.block_number
-                        );
-
-                        // 读取索引内容
-                        match self.try_read_index_at_current_position_with_filemarks() {
-                            Ok(xml_content) => {
-                                if xml_content.contains("<ltfsindex")
-                                    && xml_content.contains("</ltfsindex>")
-                                {
-                                    info!("✅ Successfully read latest index from data partition EOD at FileMark {}", target_filemark);
-                                    return Ok(xml_content);
-                                } else {
-                                    warn!("Content at data partition EOD FileMark {} is not valid LTFS index", target_filemark);
-                                }
-                            }
-                            Err(e) => {
-                                debug!(
-                                    "Failed to read content at data partition EOD FileMark {}: {}",
-                                    target_filemark, e
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        debug!("Failed to skip FileMark {}: {}", target_filemark, e);
-                    }
-                }
-            }
-            Err(e) => {
-                debug!(
-                    "Failed to locate to FileMark {} in data partition: {}",
-                    target_filemark, e
-                );
-            }
-        }
-
-        Err(RustLtfsError::ltfs_index(
-            "No valid latest index found at data partition EOD".to_string(),
-        ))
     }
 
     /// 按照LTFSCopyGUI逻辑从指定分区EOD读取最新索引
@@ -776,243 +654,38 @@ impl super::super::TapeOperations {
         Ok(error_count <= 2) // 允许有限重试
     }
 
-    pub fn search_index_copies_in_data_partition(&self) -> Result<String> {
-        info!("Starting index search from standard locations");
-
-        // 精确复制LTFSCopyGUI的读取索引逻辑
-        self.read_index_ltfscopygui_method()
-    }
-
-    /// 精确复制LTFSCopyGUI的索引读取逻辑 (一比一实现)
-    /// 支持单分区和多分区磁带的统一处理策略
-    fn read_index_ltfscopygui_method(&self) -> Result<String> {
-        debug!("🎯 Executing LTFSCopyGUI exact index reading method");
+    pub async fn search_index_copies_in_data_partition(&mut self) -> Result<String> {
+        info!("Starting index search from standard locations (LTFSCopyGUI method)");
 
         // 步骤1: 检测ExtraPartitionCount (对应LTFSCopyGUI的分区检测)
-        let extra_partition_count = match self.scsi.mode_sense_partition_page_0x11() {
-            Ok(mode_data) if mode_data.len() >= 4 => {
-                let count = mode_data[3];
-                debug!("📊 ExtraPartitionCount detected from MODE SENSE: {}", count);
-                count
-            }
-            _ => {
-                debug!("📊 Cannot read ExtraPartitionCount, assuming single partition");
-                0
-            }
-        };
+        let extra_partition_count = self.get_extra_partition_count();
 
         if extra_partition_count == 0 {
-            // 🔧 单分区磁带策略 (对应LTFSCopyGUI的ExtraPartitionCount = 0逻辑)
+            // 🔧 单分区磁带策略
             debug!("🎯 Single partition tape detected (ExtraPartitionCount=0)");
-            self.read_index_single_partition_ltfscopygui()
+            self.try_read_index_single_partition().await
         } else {
-            // 🔧 多分区磁带策略 (对应LTFSCopyGUI的数据分区索引读取)
+            // 🔧 多分区磁带策略
             debug!(
                 "🎯 Multi-partition tape detected (ExtraPartitionCount={})",
                 extra_partition_count
             );
-            self.read_index_multi_partition_ltfscopygui(extra_partition_count)
+            // 这里我们使用 read_index_from_data_partition_eod，因为这是多分区的数据区读取逻辑
+            self.read_index_from_data_partition_eod().await
         }
     }
 
-    /// LTFSCopyGUI单分区索引读取策略 (精确复制"读取索引ToolStripMenuItem_Click"的单分区逻辑)
-    fn read_index_single_partition_ltfscopygui(&self) -> Result<String> {
-        debug!("🔧 LTFSCopyGUI single partition index reading (ExtraPartitionCount=0)");
 
-        // 步骤1: 定位到分区0的EOD
-        debug!("Step 1: Locating to partition 0 EOD");
-        self.scsi.locate_to_eod(0)?;
 
-        // 步骤2: 获取当前FileMark编号
-        let position = self.scsi.read_position()?;
-        let current_fm = position.file_number;
 
-        debug!(
-            "🔍 Current position at EOD: P{} B{} FM{} SET{}",
-            position.partition, position.block_number, position.file_number, position.set_number
-        );
 
-        // 步骤3: LTFSCopyGUI的关键检查 - FM <= 1 则失败
-        if current_fm <= 1 {
-            return Err(RustLtfsError::ltfs_index(format!(
-                "Invalid LTFS tape: FileMark number {} <= 1, this is not a valid LTFS tape",
-                current_fm
-            )));
-        }
 
-        // 步骤4: LTFSCopyGUI真实策略 - 定位到FileMark 1 (不是FM-1!)
-        // 对应LTFSCopyGUI代码: TapeUtils.Locate(driveHandle, 1UL, partition, TapeUtils.LocateDestType.FileMark)
-        debug!("Step 4: Locating to FileMark 1 (LTFSCopyGUI standard strategy)");
-        self.scsi.locate_to_filemark(0, 1)?; // partition=0, filemark=1
-
-        // 步骤5: ReadFileMark - 跳过FileMark标记
-        debug!("Step 5: Skipping FileMark using ReadFileMark method");
-        self.scsi.read_file_mark()?;
-
-        // 步骤6: ReadToFileMark - 读取索引内容
-        debug!("Step 6: Reading index content using ReadToFileMark");
-        let index_data = self
-            .scsi
-            .read_to_file_mark(block_sizes::LTO_BLOCK_SIZE_512K)?;
-
-        // 🎯 完全按照LTFSCopyGUI的验证逻辑：检查是否包含"XMLSchema"
-        let xml_content = String::from_utf8_lossy(&index_data).to_string();
-        if xml_content.contains("XMLSchema") {
-            debug!("✅ Successfully read LTFS index using single partition method: {} bytes (contains XMLSchema)", xml_content.len());
-            Ok(xml_content)
-        } else {
-            // 🔧 LTFSCopyGUI备选路径：FromSchemaText处理
-            let processed_content = self.ltfscopygui_from_schema_text(xml_content)?;
-            debug!(
-                "✅ Successfully processed LTFS schema text format: {} bytes",
-                processed_content.len()
-            );
-            Ok(processed_content)
-        }
-    }
-
-    /// LTFSCopyGUI多分区索引读取策略 (精确复制"读取数据区索引ToolStripMenuItem_Click"逻辑)
-    fn read_index_multi_partition_ltfscopygui(&self, extra_partition_count: u8) -> Result<String> {
-        debug!(
-            "🔧 LTFSCopyGUI multi-partition index reading (ExtraPartitionCount={})",
-            extra_partition_count
-        );
-
-        // 🎯 关键修复：明确使用数据分区进行索引读取 (对应LTFSCopyGUI Line 4636逻辑)
-        let data_partition = 1u8; // 数据分区固定为1
-        debug!("🔧 Step 1: Targeting data partition {} for index reading (LTFSCopyGUI data partition strategy)", data_partition);
-
-        // 步骤1a: 先切换到数据分区Block 0 (对应LTFSCopyGUI Line 4635)
-        debug!(
-            "Step 1a: Switching to data partition {} Block 0 (LTFSCopyGUI prerequisite)",
-            data_partition
-        );
-        self.scsi.locate_block(data_partition, 0)?;
-
-        // 步骤1b: 然后定位到数据分区的EOD (对应LTFSCopyGUI Line 4636)
-        debug!("Step 1b: Locating to data partition EOD");
-        self.scsi.locate_to_eod(data_partition)?;
-
-        // 步骤3: 获取当前FileMark编号
-        let position = self.scsi.read_position()?;
-        let current_fm = position.file_number;
-
-        debug!(
-            "🔍 Data partition EOD position: P{} B{} FM{} SET{}",
-            position.partition, position.block_number, position.file_number, position.set_number
-        );
-
-        // 🎯 应用LTFSCopyGUI Line 7138的核心逻辑：TapeUtils.Locate(driveHandle, CULng(FM - 1), DataPartition, TapeUtils.LocateDestType.FileMark)
-        if current_fm > 1 {
-            let target_fm = current_fm - 1;
-            debug!("Step 2: Using LTFSCopyGUI FM-1 strategy: locating to FileMark {} on data partition", target_fm);
-            self.scsi.locate_to_filemark(target_fm, data_partition)?;
-
-            // 步骤3: ReadFileMark - 跳过FileMark
-            debug!("Step 3: Skipping FileMark using ReadFileMark");
-            self.scsi.read_file_mark()?;
-
-            // 步骤4: ReadToFileMark - 读取索引 (使用动态blocksize)
-            debug!(
-                "Step 4: Reading data partition index using ReadToFileMark (LTFSCopyGUI blocksize)"
-            );
-
-            // 🔧 关键修复：使用plabel.blocksize而非固定大小 (对应LTFSCopyGUI Line 4661)
-            let dynamic_blocksize = self
-                .partition_label
-                .as_ref()
-                .map(|label| label.blocksize)
-                .unwrap_or(block_sizes::LTO_BLOCK_SIZE);
-
-            debug!(
-                "🔧 Using dynamic blocksize: {} bytes (from partition label)",
-                dynamic_blocksize
-            );
-
-            // 🔍 添加当前位置详细诊断
-            let current_pos = self.scsi.read_position()?;
-            debug!(
-                "🔍 Current position before ReadToFileMark: P{} B{} FM{}",
-                current_pos.partition, current_pos.block_number, current_pos.file_number
-            );
-
-            let index_data = self.scsi.read_to_file_mark(dynamic_blocksize)?;
-
-            // 🎯 完全按照LTFSCopyGUI的验证逻辑：检查是否包含"XMLSchema"
-            let xml_content = String::from_utf8_lossy(&index_data).to_string();
-
-            // 🔍 添加详细诊断日志
-            debug!(
-                "🔍 Data partition index content length: {} bytes",
-                xml_content.len()
-            );
-            let preview = xml_content.chars().take(200).collect::<String>();
-            debug!("🔍 Data partition index content preview: {:?}", preview);
-            let contains_xmlschema = xml_content.contains("XMLSchema");
-            debug!(
-                "🔍 Data partition XMLSchema check result: {}",
-                contains_xmlschema
-            );
-
-            if contains_xmlschema {
-                debug!("✅ Successfully read LTFS index from data partition using FM-1 strategy: {} bytes (contains XMLSchema)", xml_content.len());
-                Ok(xml_content)
-            } else {
-                debug!("🔧 Data partition XMLSchema not found, applying FromSchemaText processing");
-                // 🔧 LTFSCopyGUI备选路径：FromSchemaText处理
-                let processed_content = self.ltfscopygui_from_schema_text(xml_content)?;
-                debug!(
-                    "✅ Successfully processed data partition LTFS schema text format: {} bytes",
-                    processed_content.len()
-                );
-                Ok(processed_content)
-            }
-        } else {
-            // 步骤4: LTFSCopyGUI的关键检查和策略选择
-            debug!("Step 2: FM <= 1, using DisablePartition fallback (Space6 -2 FileMark)");
-            self.ltfscopygui_disable_partition_fallback()
-        }
-    }
-
-    /// LTFSCopyGUI的DisablePartition后备策略 (对应TapeUtils.Space6(-2, FileMark))
-    fn ltfscopygui_disable_partition_fallback(&self) -> Result<String> {
-        debug!("🔧 Executing LTFSCopyGUI DisablePartition fallback strategy");
-
-        // 步骤1: Space6(-2, FileMark) - 后退2个FileMark
-        debug!("Step 1: Moving back 2 FileMarks using Space6 command");
-        self.scsi.space(crate::scsi::SpaceType::FileMarks, -2)?;
-
-        // 步骤2: ReadFileMark - 跳过FileMark
-        debug!("Step 2: Skipping FileMark using ReadFileMark");
-        self.scsi.read_file_mark()?;
-
-        // 步骤3: ReadToFileMark - 读取索引
-        debug!("Step 3: Reading index using ReadToFileMark");
-        let index_data = self
-            .scsi
-            .read_to_file_mark(block_sizes::LTO_BLOCK_SIZE_512K)?;
-
-        // 🎯 完全按照LTFSCopyGUI的验证逻辑：检查是否包含"XMLSchema"
-        let xml_content = String::from_utf8_lossy(&index_data).to_string();
-        if xml_content.contains("XMLSchema") {
-            debug!("✅ Successfully read LTFS index using DisablePartition fallback: {} bytes (contains XMLSchema)", xml_content.len());
-            Ok(xml_content)
-        } else {
-            // 🔧 LTFSCopyGUI备选路径：FromSchemaText处理
-            let processed_content = self.ltfscopygui_from_schema_text(xml_content)?;
-            info!(
-                "✅ Successfully processed LTFS schema text format: {} bytes",
-                processed_content.len()
-            );
-            Ok(processed_content)
-        }
-    }
 
 
 
     /// 完全复刻LTFSCopyGUI的FromSchemaText方法 (Schema.vb:542-553)
     /// 精确对应VB.NET代码的字符串替换和处理逻辑
-    fn ltfscopygui_from_schema_text(&self, mut s: String) -> Result<String> {
+    pub(crate) fn ltfscopygui_from_schema_text(&self, mut s: String) -> Result<String> {
         debug!("🔧 Applying LTFSCopyGUI FromSchemaText transformations");
 
         // 记录原始数据信息用于调试

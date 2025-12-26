@@ -8,6 +8,8 @@
 //! Note: For index data structures and format handling, see `ltfs_index` module.
 
 pub mod read;
+pub mod read_single_partition;
+pub mod read_dual_partition;
 pub mod write;
 pub mod sync;
 
