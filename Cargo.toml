@@ -1,6 +1,6 @@
 [package]
 name = "rust-ltfs"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 authors = ["<oplancelot@gmail.com>"]
 description = "A Rust CLI tool for IBM tape direct read/write operations"
