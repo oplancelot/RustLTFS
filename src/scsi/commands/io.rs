@@ -52,10 +52,10 @@ impl ScsiInterface {
 
             // Transfer Length - 精确对应LTFSCopyGUI: BlockSizeLimit >> 16 And &HFF (字节数而非块数)
             // Critical fix: LTFSCopyGUI使用字节数，而不是块数
-            let byte_count = std::cmp::min(
-                buffer.len(),
-                (block_count * block_sizes::LTO_BLOCK_SIZE) as usize,
-            ) as u32;
+            // Removed erroneous cap using LTO_BLOCK_SIZE. We should respect the provided buffer size.
+            // In Variable Block Mode, transfer length implies the maximum bytes we are willing to accept.
+            let byte_count = buffer.len() as u32;
+            
             cdb[2] = ((byte_count >> 16) & 0xFF) as u8;
             cdb[3] = ((byte_count >> 8) & 0xFF) as u8;
             cdb[4] = (byte_count & 0xFF) as u8;
