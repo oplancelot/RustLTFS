@@ -97,15 +97,25 @@ impl TapeOperations {
 
 
         // 直接使用已打开的self.scsi进行MODE SENSE检测 (对应LTFSCopyGUI的MODE SENSE检测)
-        debug!("🔧 Using opened SCSI device for MODE SENSE (fixing device handle inconsistency)");
+        // 🔧 FIX: 使用 Page 0x11 (Medium Partition) 而不是 Page 0x1D (Medium Configuration)
+        // Page 0x1D 的 byte[3] 是 Block Descriptor Length，不是分区数！
+        info!("🔧 Using MODE SENSE Page 0x11 for partition detection");
 
-        match self.scsi.mode_sense_partition_info() {
+        match self.scsi.mode_sense_partition_page_0x11() {
             Ok(mode_data) => {
-                // 精确匹配LTFSCopyGUI逻辑: If PModeData.Length >= 4 Then ExtraPartitionCount = PModeData(3)
+                // 记录原始数据以便调试
+                info!(
+                    "📊 MODE SENSE 0x11 returned {} bytes: {:02X?}",
+                    mode_data.len(),
+                    &mode_data[..std::cmp::min(16, mode_data.len())]
+                );
+                
+                // LTFSCopyGUI逻辑: If PModeData.Length >= 4 Then ExtraPartitionCount = PModeData(3)
+                // Page 0x11 byte[3] = Additional Partition Defined (分区数)
                 if mode_data.len() >= 4 {
                     let detected_count = mode_data[3];
-                    debug!(
-                        "✅ ExtraPartitionCount detected from MODE SENSE: {}",
+                    info!(
+                        "✅ ExtraPartitionCount detected from MODE SENSE 0x11: {}",
                         detected_count
                     );
 
@@ -122,7 +132,7 @@ impl TapeOperations {
                     }
 
                     self.extra_partition_count = Some(final_count);
-                    debug!(
+                    info!(
                         "✅ ExtraPartitionCount initialized: {} (detected: {}, validated: {})",
                         final_count, detected_count, final_count
                     );

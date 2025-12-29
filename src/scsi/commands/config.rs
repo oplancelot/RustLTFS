@@ -11,7 +11,6 @@ use super::super::{ScsiInterface, constants::*};
 impl ScsiInterface {
     /// MODE SENSE command to read partition page 0x11 (对应LTFSCopyGUI的ModeSense实现)
     /// 这个方法复制LTFSCopyGUI的精确实现：TapeUtils.ModeSense(handle, &H11)
-    #[allow(dead_code)]
     pub fn mode_sense_partition_page_0x11(&self) -> Result<Vec<u8>> {
         debug!("Executing MODE SENSE page 0x11 for partition detection");
 
@@ -105,53 +104,6 @@ impl ScsiInterface {
         }
     }
 
-    /// MODE SENSE command to read partition table (对应LTFSCopyGUI的分区检测)
-    pub fn mode_sense_partition_info(&self) -> Result<Vec<u8>> {
-        debug!("Executing MODE SENSE command for partition information");
-
-        #[cfg(windows)]
-        {
-            let mut cdb = [0u8; 10];
-            cdb[0] = SCSIOP_MODE_SENSE10;
-            cdb[1] = 0x00; // Reserved
-            cdb[2] = TC_MP_MEDIUM_CONFIGURATION | TC_MP_PC_CURRENT; // Page Code + PC
-            cdb[3] = 0x00; // Subpage Code
-            cdb[7] = 0x01; // Allocation Length (high byte)
-            cdb[8] = 0x00; // Allocation Length (low byte) - 256 bytes
-
-            let mut data_buffer = vec![0u8; 256];
-            let mut sense_buffer = [0u8; SENSE_INFO_LEN];
-
-            let result = self.scsi_io_control(
-                &cdb,
-                Some(&mut data_buffer),
-                SCSI_IOCTL_DATA_IN,
-                30, // 30 second timeout
-                Some(&mut sense_buffer),
-            )?;
-
-            if result {
-                debug!(
-                    "MODE SENSE completed successfully, {} bytes returned",
-                    data_buffer.len()
-                );
-                Ok(data_buffer)
-            } else {
-                let sense_info = self.parse_sense_data(&sense_buffer);
-                Err(crate::error::RustLtfsError::scsi(format!(
-                    "MODE SENSE failed: {}",
-                    sense_info
-                )))
-            }
-        }
-
-        #[cfg(not(windows))]
-        {
-            Err(crate::error::RustLtfsError::unsupported(
-                "Non-Windows platform",
-            ))
-        }
-    }
     /// Sets the block size for the tape drive using MODE SELECT (6).
     /// If block_size > 0, the drive is set to Fixed Block Mode with the specified size.
     /// If block_size == 0, the drive is set to Variable Block Mode.
