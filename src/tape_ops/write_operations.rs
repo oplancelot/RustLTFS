@@ -166,6 +166,11 @@ impl TapeOperations {
         // Locate to write position
         let _write_state = self.locate_to_write_position().await?;
 
+        // Explicitly set block size (and Buffered Mode) before writing
+        // This corresponds to LTFSCopyGUI: TapeUtils.SetBlockSize(driveHandle, plabel.blocksize)
+        info!("Setting drive block size to {} (Buffered Mode enabled)", self.block_size);
+        self.scsi.set_block_size(self.block_size)?;
+
         // Get write start position
         let write_start_position = self.scsi.read_position()?;
 
@@ -192,6 +197,8 @@ impl TapeOperations {
         let mut total_blocks_written = 0u32;
         let mut total_bytes_written = 0u64;
         let write_start_time = std::time::Instant::now();
+        let mut last_progress_bytes = 0u64;
+        let mut last_progress_time = std::time::Instant::now();
 
         // Choose processing strategy based on file size
         if file_size <= self.block_size as u64 {
@@ -240,7 +247,8 @@ impl TapeOperations {
             self.write_progress.files_written += 1;
             self.write_progress.bytes_written += bytes_read as u64;
         } else {
-            // Large file: block-wise streaming processing
+            // Large file: block-wise streaming (same as LTFSCopyGUI)
+            // Windows SCSI pass-through doesn't support multi-block batch writes
             info!(
                 "Processing large file ({} bytes), using block-wise streaming",
                 file_size
@@ -248,15 +256,12 @@ impl TapeOperations {
 
             let mut buffer = vec![0u8; self.block_size as usize];
             let mut remaining_bytes = file_size;
+            
+            info!("Starting write loop (Block size: {})", self.block_size);
 
             while remaining_bytes > 0 {
-
-
                 // Calculate bytes to read for current block
                 let bytes_to_read = std::cmp::min(remaining_bytes, self.block_size as u64) as usize;
-
-                // Clear buffer (for last block, this ensures zero padding)
-                buffer.fill(0);
 
                 // Read data from file
                 let bytes_read = buf_reader
@@ -275,10 +280,7 @@ impl TapeOperations {
                     calc.propagate(&buffer[..bytes_read]);
                 }
 
-
-
-
-                // Write block to tape (use variable-length buffer slice to avoid ILI)
+                // Write single block to tape (like LTFSCopyGUI)
                 let blocks_written = self.scsi.write_blocks(1, &buffer[..bytes_read])?;
 
                 if blocks_written != 1 {
@@ -295,10 +297,38 @@ impl TapeOperations {
                 // Update progress
                 self.write_progress.current_bytes_processed += bytes_read as u64;
 
-                debug!(
-                    "Written {} blocks, {} bytes, remaining {} bytes",
-                    total_blocks_written, total_bytes_written, remaining_bytes
-                );
+                // Log progress every 100MB
+                let bytes_since_last_log = total_bytes_written - last_progress_bytes;
+                if bytes_since_last_log >= 100 * 1024 * 1024 {
+                    let elapsed = write_start_time.elapsed();
+                    let elapsed_secs = elapsed.as_secs_f64();
+                    
+                    let overall_speed_mbps = if elapsed_secs > 0.0 {
+                        (total_bytes_written as f64 / (1024.0 * 1024.0)) / elapsed_secs
+                    } else {
+                        0.0
+                    };
+                    
+                    let recent_elapsed = last_progress_time.elapsed().as_secs_f64();
+                    let recent_speed_mbps = if recent_elapsed > 0.0 {
+                        (bytes_since_last_log as f64 / (1024.0 * 1024.0)) / recent_elapsed
+                    } else {
+                        0.0
+                    };
+                    
+                    let gb_written = total_bytes_written as f64 / (1024.0 * 1024.0 * 1024.0);
+                    
+                    info!(
+                        "📊 Write progress: {:.2} GB written | Speed: {:.2} MB/s (avg: {:.2} MB/s) | Blocks: {}",
+                        gb_written,
+                        recent_speed_mbps,
+                        overall_speed_mbps,
+                        total_blocks_written
+                    );
+                    
+                    last_progress_bytes = total_bytes_written;
+                    last_progress_time = std::time::Instant::now();
+                }
             }
 
             // Complete hash calculation
@@ -408,6 +438,11 @@ impl TapeOperations {
         // Prepare for writing to tape
         self.scsi.locate_to_eod(1)?;
 
+        // Explicitly set block size (and Buffered Mode) before writing
+        let block_size_u32 = self.write_options.block_size;
+        info!("Setting drive block size to {} (Buffered Mode enabled) for stream", block_size_u32);
+        self.scsi.set_block_size(block_size_u32)?;
+
         let write_start_position = self.scsi.read_position()?;
 
         // Create file entry in index - now guaranteed to have index
@@ -416,9 +451,10 @@ impl TapeOperations {
             .and_then(|idx| idx.highestfileuid)
             .unwrap_or(0) + 1;
 
-        // ⭐ STREAMING WRITE - Ensure full-sized blocks for LTFS compatibility
-        // LTFSCopyGUI expects consistent block sizes when reading back
+        // ⭐ STREAMING WRITE - Single block at a time (like LTFSCopyGUI)
+        // Windows SCSI pass-through doesn't support multi-block batch writes
         let block_size = self.write_options.block_size as usize;
+        
         let mut write_buffer = vec![0u8; block_size]; // Buffer for writing full blocks
         let mut read_buffer = vec![0u8; block_size];  // Buffer for reading from stream
         let mut buffer_fill = 0usize; // How many bytes are currently in write_buffer
@@ -428,7 +464,10 @@ impl TapeOperations {
         let mut last_progress_bytes = 0u64;
         let mut last_progress_time = std::time::Instant::now();
         
-        info!("Starting streaming write with block size: {} bytes (fixed transfer size)", block_size);
+        info!(
+            "Starting streaming write (Block size: {} bytes, single-block mode)",
+            block_size
+        );
 
         loop {
             // Read data from the stream
@@ -461,7 +500,7 @@ impl TapeOperations {
                 buffer_fill += bytes_to_copy;
                 offset += bytes_to_copy;
                 
-                // If buffer is full, write it to tape
+                // If buffer is full, write single block to tape
                 if buffer_fill == block_size {
                     let blocks_written = self.scsi.write_blocks(1, &write_buffer)? as u64;
                     total_blocks_written += blocks_written;
@@ -471,20 +510,18 @@ impl TapeOperations {
                 }
             }
             
-            // Log progress every 1GB with detailed statistics
+            // Log progress every 100MB with detailed statistics
             let bytes_since_last_log = total_bytes_written - last_progress_bytes;
-            if bytes_since_last_log >= 1024 * 1024 * 1024 {
+            if bytes_since_last_log >= 100 * 1024 * 1024 {
                 let elapsed = write_start_time.elapsed();
                 let elapsed_secs = elapsed.as_secs_f64();
                 
-                // Calculate overall speed
                 let overall_speed_mbps = if elapsed_secs > 0.0 {
                     (total_bytes_written as f64 / (1024.0 * 1024.0)) / elapsed_secs
                 } else {
                     0.0
                 };
                 
-                // Calculate recent speed (since last log)
                 let recent_elapsed = last_progress_time.elapsed().as_secs_f64();
                 let recent_speed_mbps = if recent_elapsed > 0.0 {
                     (bytes_since_last_log as f64 / (1024.0 * 1024.0)) / recent_elapsed

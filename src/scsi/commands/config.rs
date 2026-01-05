@@ -132,6 +132,8 @@ impl ScsiInterface {
             // Byte 2: Device-Specific Parameter
             // Byte 3: Block Descriptor Length
             
+            param_list[2] = 0x10; // Buffered Mode = 1 (like LTFSCopyGUI)
+                                   // This allows drive to return success after writing to buffer
             param_list[3] = 0x08; // Block Descriptor Length = 8 bytes
 
             // Block Descriptor (8 bytes)
