@@ -285,26 +285,65 @@ impl TapeOperations {
         Ok(())
     }
 
-    /// Write XML content to tape (following commit 3432483 variable-length pattern)
+    /// Write XML content to tape in blocksize-aligned chunks (LTFSCopyGUI compatible)
+    ///
+    /// 🔧 CRITICAL FIX: Previously wrote the entire XML as a single variable-length block.
+    /// When the XML exceeded blocksize (524288 bytes), the reader's buffer was too small,
+    /// causing an ILI (Incorrect Length Indicator) error that truncated the last bytes
+    /// and lost the closing `</ltfsindex>` tag — the root cause of the May 7 index loss.
+    ///
+    /// Now writes in blocksize-aligned chunks so each block fits in the reader's buffer.
     async fn write_xml_to_tape(&mut self, xml_content: &str) -> Result<()> {
-        // Convert XML to bytes
         let xml_bytes = xml_content.as_bytes();
         let xml_size = xml_bytes.len();
-        
-        // Following commit 3432483 pattern: use variable-length write to avoid ILI warning
-        // LTFS indexes should be written as single variable-length blocks without padding
-        // This matches LTFSCopyGUI behavior and prevents the 0-padding issue
-        
-        // Write XML as single variable-length block (commit 3432483 style)
-        let blocks_written = self.scsi.write_blocks(1, &xml_bytes[..xml_size])?;
-        
-        if blocks_written != 1 {
-            return Err(RustLtfsError::tape_device(format!(
-                "Expected to write 1 block, but wrote {} blocks", blocks_written
-            )));
+
+        // Use the partition label's blocksize for chunking (same size the reader uses)
+        let block_size = self
+            .partition_label
+            .as_ref()
+            .map(|plabel| plabel.blocksize as usize)
+            .unwrap_or(self.block_size as usize);
+
+        if xml_size <= block_size {
+            // Small enough to fit in a single block — write directly
+            let blocks_written = self.scsi.write_blocks(1, &xml_bytes[..xml_size])?;
+            if blocks_written != 1 {
+                return Err(RustLtfsError::tape_device(format!(
+                    "Expected to write 1 block, but wrote {} blocks", blocks_written
+                )));
+            }
+            debug!("Wrote XML as single block: {} bytes (within blocksize {})", xml_size, block_size);
+        } else {
+            // XML exceeds blocksize — split into chunks (LTFSCopyGUI compatible)
+            info!(
+                "XML size ({} bytes) exceeds blocksize ({} bytes), writing in chunks",
+                xml_size, block_size
+            );
+            let mut offset = 0;
+            let mut chunk_count = 0u32;
+            while offset < xml_size {
+                let chunk_end = std::cmp::min(offset + block_size, xml_size);
+                let chunk = &xml_bytes[offset..chunk_end];
+                let blocks_written = self.scsi.write_blocks(1, chunk)?;
+                if blocks_written != 1 {
+                    return Err(RustLtfsError::tape_device(format!(
+                        "Expected to write 1 block for chunk {}, but wrote {} blocks",
+                        chunk_count, blocks_written
+                    )));
+                }
+                chunk_count += 1;
+                offset = chunk_end;
+                debug!(
+                    "Wrote XML chunk {}: {} bytes (offset {}/{})",
+                    chunk_count, chunk.len(), offset, xml_size
+                );
+            }
+            info!(
+                "Wrote XML in {} chunks: {} total bytes (blocksize: {})",
+                chunk_count, xml_size, block_size
+            );
         }
-        
-        debug!("Wrote XML as variable-length block: {} bytes (commit 3432483 pattern)", xml_size);
+
         info!("XML write completed: {} bytes written", xml_size);
         Ok(())
     }

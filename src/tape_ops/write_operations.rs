@@ -155,6 +155,25 @@ impl TapeOperations {
             return Ok(());
         }
 
+        // 🔒 CRITICAL SAFETY CHECK: Ensure index exists before writing
+        // This prevents data loss by ensuring we always have the existing tape contents
+        // in the index before adding new data (mirrors the same check in write_reader_to_tape)
+        if self.index.is_none() {
+            let current_pos = self.scsi.read_position()?;
+            
+            if current_pos.block_number > 0 || current_pos.file_number > 0 {
+                return Err(RustLtfsError::ltfs_index(format!(
+                    "CRITICAL: Cannot write to tape - index is missing but tape has existing data at p{}b{}f{}. \
+                     This would cause data loss. Please check tape status and retry reading the index.",
+                    current_pos.partition, current_pos.block_number, current_pos.file_number
+                )));
+            }
+            
+            // First-time write to empty tape - create new index
+            info!("First-time write detected (tape at beginning with no index), creating new LTFS index");
+            self.index = Some(self.create_new_ltfs_index());
+        }
+
         // Check available tape space
         if let Err(e) = self.check_available_space(file_size) {
             return Err(RustLtfsError::tape_device(format!(

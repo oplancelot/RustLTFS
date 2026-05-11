@@ -354,12 +354,23 @@ impl TapeOperations {
                         let file_count = self
                             .index
                             .as_ref()
-                            .map(|idx| idx.root_directory.contents.files.len())
+                            .map(|idx| count_files_in_directory(&idx.root_directory))
                             .unwrap_or(0);
-                        debug!("Index loaded successfully ({} files)", file_count);
+                        let dir_count = self
+                            .index
+                            .as_ref()
+                            .map(|idx| count_directories_in_directory(&idx.root_directory))
+                            .unwrap_or(0);
+                        info!("✅ Index loaded successfully ({} files, {} directories)", file_count, dir_count);
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        warn!("⚠️ Failed to load existing LTFS index: {}", e);
+                        warn!("⚠️ A new empty index will be created. Existing files on tape will NOT be included in the updated index!");
+                        warn!("⚠️ If the tape already has data, consider using 'read' command first to verify tape contents.");
                         info!("Will create new index");
+
+                        // 写入独立的错误日志文件，便于快速发现问题
+                        Self::write_index_error_log(&self.device_path, &e);
                     }
                 }
             }
@@ -585,6 +596,67 @@ impl TapeOperations {
             used_space,
             available_space: total_capacity.saturating_sub(used_space),
         })
+    }
+
+    /// Write a standalone error log file for index reading failures
+    fn write_index_error_log(device_name: &str, error: &RustLtfsError) {
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        use std::path::Path;
+
+        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+        
+        // Try 'log' first, then 'logs', then current dir
+        let log_dir = if Path::new("log").exists() {
+            "log"
+        } else if Path::new("logs").exists() {
+            "logs"
+        } else {
+            "."
+        };
+
+        let file_path = format!("{}/INDEX_READ_FAILED_{}_{}.log", log_dir, device_name.replace("\\", "_").replace(".", ""), timestamp);
+        
+        match OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(true)
+            .open(&file_path)
+        {
+            Ok(mut file) => {
+                let message = format!(
+                    "==============================================================\n\
+                     🚨 CRITICAL ERROR: LTFS INDEX LOAD FAILED\n\
+                     ==============================================================\n\
+                     Time: {}\n\
+                     Device: {}\n\
+                     Error Details: {}\n\
+                     \n\
+                     WARNING: The tool could not read the existing tape index.\n\
+                     Because of this, a NEW EMPTY INDEX will be created if a write operation continues.\n\
+                     If this tape already contains data, proceeding with a write operation\n\
+                     will OVERWRITE the current index, causing existing files to become invisible.\n\
+                     \n\
+                     ACTION REQUIRED:\n\
+                     1. Cancel any active backup/write operations immediately.\n\
+                     2. Use the 'rustltfs read' command to verify if the index can be read.\n\
+                     3. Check tape health and drive status.\n\
+                     ==============================================================\n",
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+                    device_name,
+                    error
+                );
+
+                if let Err(e) = file.write_all(message.as_bytes()) {
+                    warn!("Failed to write index error log to {}: {}", file_path, e);
+                } else {
+                    info!("Wrote standalone index error log to: {}", file_path);
+                }
+            }
+            Err(e) => {
+                warn!("Failed to create index error log file {}: {}", file_path, e);
+            }
+        }
     }
 }
 

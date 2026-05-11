@@ -522,20 +522,22 @@ impl super::super::TapeOperations {
                     // 动态扩展策略：
                     // 如果我们尚未扩大到硬上限，并且临时文件中检测到了 "<?xml"（意味着索引开始出现），
                     // 则将 max_blocks 扩展到 hard_max_blocks，以便继续读取直至找到完整的 </ltfsindex>（或达到硬上限）。
+                    // 🔧 FIX: 检查文件开头而非结尾，因为 XML 在 block 开头，block 末尾是 null 填充
                     if max_blocks < hard_max_blocks {
                         if let Ok(mut f) = std::fs::File::open(&temp_path) {
                             use std::io::{Read, Seek, SeekFrom};
                             if let Ok(file_len) = f.seek(SeekFrom::End(0)) {
-                                // 检查文件末尾的一小段（最多 4KB），通常足以检测 "<?xml" 或其他索引起始标识
-                                let check_len = std::cmp::min(4096, file_len) as usize;
+                                // 检查文件开头的一段（最多 8KB），检测 "<?xml" 或 "<ltfsindex" 标识
+                                let check_len = std::cmp::min(8192, file_len) as usize;
                                 if check_len > 0 {
-                                    if f.seek(SeekFrom::End(-(check_len as i64))).is_ok() {
-                                        let mut tail_buf = vec![0u8; check_len];
-                                        if f.read_exact(&mut tail_buf).is_ok() {
-                                            if String::from_utf8_lossy(&tail_buf).contains("<?xml")
+                                    if f.seek(SeekFrom::Start(0)).is_ok() {
+                                        let mut head_buf = vec![0u8; check_len];
+                                        if f.read_exact(&mut head_buf).is_ok() {
+                                            let head_str = String::from_utf8_lossy(&head_buf);
+                                            if head_str.contains("<?xml") || head_str.contains("<ltfsindex")
                                             {
                                                 debug!(
-                                                    "Detected '<?xml' in temporary index file; expanding max_blocks: {} -> {}",
+                                                    "Detected XML/LTFS index in temporary file head; expanding max_blocks: {} -> {}",
                                                     max_blocks, hard_max_blocks
                                                 );
                                                 max_blocks = hard_max_blocks;
